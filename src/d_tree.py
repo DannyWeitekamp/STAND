@@ -422,7 +422,7 @@ def choose_pure_majority_general(leaf_counts,positive_class):
 	return False
 
 
-# @njit(nogil=True,fastmath=True)
+@njit(nogil=True,fastmath=True)
 def predict_tree(tree,X,choice_func,positive_class=0):
 	out = np.empty((X.shape[0]))
 	
