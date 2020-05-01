@@ -2,14 +2,15 @@
 # define NPY_NO_DEPRECATED_API NPY_1_7_API_VERSION
 import numpy as np
 import numba
-from numba import types, njit,jitclass, guvectorize,vectorize,prange
+from numba import types, njit, guvectorize,vectorize,prange
+from numba.experimental import jitclass
 from numba import deferred_type, optional
 from numba import void,b1,u1,u2,u4,u8,i1,i2,i4,i8,f4,f8,c8,c16
 from numba.typed import List, Dict
-from numba.types import ListType, unicode_type
+from numba.core.types import ListType, unicode_type
 import timeit
 from sklearn import tree as SKTree
-from compile_template import compile_template
+from .compile_template import compile_template
 from enum import IntEnum
 from numba.pycc import CC
 from fnvhash import hasharray
