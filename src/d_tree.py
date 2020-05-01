@@ -385,13 +385,24 @@ def fit_Atree(x,y,criterion_func,split_chooser):
 		contexts = new_contexts
 	return tree
 
-def print_tree(tree):
+def str_tree(tree):
+	l = []
 	for i in range(len(tree.nodes)):
 		tn = tree.nodes[i]
 		if(tn.ttype == TreeTypes.NODE):
-			print(tn.index,": ",tn.split_on, tn.left, tn.right)
+			l.append("%s : %s %s %s" % (tn.index, tn.split_on, tn.left, tn.right))
 		else:
-			print(tn.index,": ",tn.counts)
+			l.append("%s : %s" % (tn.index, tn.counts))
+	return "\n".join(l)
+
+def print_tree(tree):
+	print(str_tree(tree))
+	# for i in range(len(tree.nodes)):
+	# 	tn = tree.nodes[i]
+	# 	if(tn.ttype == TreeTypes.NODE):
+	# 		print(tn.index,": ",tn.split_on, tn.left, tn.right)
+	# 	else:
+	# 		print(tn.index,": ",tn.counts)
 
 
 # def purest_leaf(leaf_counts):
@@ -426,11 +437,12 @@ def choose_pure_majority_general(leaf_counts,positive_class):
 def predict_tree(tree,X,choice_func,positive_class=0):
 	out = np.empty((X.shape[0]))
 	
-	for i,x in enumerate(X):
+	for i in range(len(X)):
+		x = X[i]
 		nodes = List(); nodes.append(tree.nodes[0])
 		leafs = List()
 		while len(nodes) > 0:
-			new_nodes = []
+			new_nodes = List()
 			for node in nodes:
 				if(node.ttype == TreeTypes.NODE):
 					for j,s in enumerate(node.split_on):
@@ -443,7 +455,8 @@ def predict_tree(tree,X,choice_func,positive_class=0):
 						new_nodes.append(tree.nodes[_n])
 				else:
 					# out[i] = np.argmax(node.counts)
-					leafs.append(node.counts)
+					### TODO: Need to copy to unoptionalize the type: remove [:] if #4382 ever fixed
+					leafs.append(node.counts[:])
 			nodes = new_nodes
 		# print(str(i)+":",["["+",".join([str(_x) for _x in l])+"]" for l in leafs])
 		out[i] = choice_func(leafs,positive_class)
@@ -456,9 +469,10 @@ class TreeClassifier(object):
 					  split_chooser='choose_all_max',
 					  choice_func='choose_pure_majority_general',
 					  positive_class=1):
-		criterion_func = locals(criterion_func)
-		split_chooser = locals(split_chooser)
-		choice_func = locals(choice_func)
+		l = globals()
+		criterion_func = l[criterion_func]
+		split_chooser = l[split_chooser]
+		choice_func = l[choice_func]
 		positive_class = positive_class
 		
 		ft = fit_Atree if tree_type == 'ambiguity' else fit_tree
@@ -479,6 +493,9 @@ class TreeClassifier(object):
 
 	def predict(self,X):
 		return self._predict(self.tree,X)
+
+	def __str__(self):
+		return str_tree(self.tree)
 
 # @jitclass([('criterion', unicode_type)])
 # @jitclass([])
@@ -562,7 +579,10 @@ if(__name__ == "__main__"):
 
 	labels = np.asarray([3,1,1,1,2,2,2],np.int32);
 	clf = SKTree.DecisionTreeClassifier()
-	my_bdt = ILPTree()
+	# my_bdt = ILPTree()
+	my_AT = TreeClassifier()
+
+
 	# nb_fit = my_bdt.nb_ilp_tree.fit
 
 	##Compiled 
@@ -651,6 +671,9 @@ if(__name__ == "__main__"):
 	print("___")
 	print_tree(treeA)
 	print("PREDICT AT",predict_tree(treeA,data,choose_pure_majority_general,positive_class=1))
+	my_AT.fit(data,labels)
+	print("MY_AT",my_AT.predict(data))
+	print("MY_AT",my_AT)
 
 	data = np.asarray([
 #	 0 1 2 3 4 5 6 7 8 9 10111213141516
