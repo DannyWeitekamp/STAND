@@ -13,7 +13,7 @@ from sklearn import tree as SKTree
 from numbaILP.compile_template import compile_template
 from enum import IntEnum
 from numba.pycc import CC
-from fnvhash import hasharray, AKD, akd_insert,akd_get
+from fnvhash import hasharray, AKD#, akd_insert,akd_get
 
 # from enum import IntEnum
 # class Entropy(IntEnum):
@@ -380,7 +380,8 @@ def r_l_n_split(x,sep_nan=False):
 	# return np.array(l), np.array(r), np.array(n)
 	return l[:nl], r[:nr], n[:nn]
 
-AKD_TN = AKD(TN)
+BE, akd_get, akd_includes, akd_insert = AKD(TN)
+
 
 @njit(nogil=True,fastmath=True,inline='always')
 def fit_Atree(x,y,criterion_func,split_chooser,sep_nan=False):
@@ -395,7 +396,8 @@ def fit_Atree(x,y,criterion_func,split_chooser,sep_nan=False):
 		impurity,counts,new_node(tree)))
 
 	# parent_node = TreeNode()
-	node_dict = AKD_TN()#Dict.empty(u4,TN)
+	# node_dict = AKD_TN()#Dict.empty(u4,TN)
+	node_dict = Dict.empty(u4,BE)#Dict.empty(u4,TN)
 	# node_dict = Dict.empty(u4,TN)
 	while len(contexts) > 0:
 		new_contexts = List()

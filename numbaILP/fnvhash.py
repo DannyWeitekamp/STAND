@@ -1,5 +1,6 @@
 #From here: https://github.com/znerol/py-fnvhash/blob/master/fnvhash/__init__.py
-from numba import types, njit
+from numba import types, njit, jit
+from numba import deferred_type, optional
 from numba import void,b1,u1,u2,u4,u8,i1,i2,i4,i8,f4,f8,c8,c16
 from numba.typed import List, Dict
 from numba.core.types import ListType, DictType, unicode_type
@@ -53,76 +54,147 @@ def hasharray(array):
 	return fnv0_32(array.view(np.uint8))
 
 bytarr_type = u1[:]
-lst_bytarr_type = ListType(bytarr_type)
+# lst_bytarr_type = ListType(bytarr_type)
 def AKD(typ):
-    lst_custom_type = ListType(typ)
+    # lst_custom_type = ListType(typ)
 
-    # @jitclass([('key', bytarr_type),
-    #            ('value', typ),
-    #            ('next', types.de])
-    # class BinElem(object):
+    BE_deffered = deferred_type()
+    @jitclass([('key', bytarr_type),
+               ('value', typ),
+               ('next', optional(BE_deffered))])
+    class BinElem(object):
+        def __init__(self,key,value):
+            self.key = key
+            self.value = value
+            self.next = None
+
+    BE = BinElem.class_type.instance_type
+    BE_deffered.define(BE)
+
+    @njit(nogil=True,fastmath=True)
+    def akd_insert(akd,_arr,item):
+        arr = _arr.view(np.uint8)
+        h = hasharray(arr)
+        elem = akd.get(h,None)
+        if(elem is not None):
+            is_in = False
+            while(elem != None):
+                if((elem.key == arr).all()): 
+                    is_in = True
+                    break
+            if(not is_in):
+                new_elem = BinElem(arr,item)
+                akd[h] = new_elem
+        else:
+            new_elem = BinElem(arr,item)
+            new_elem.next = elem
+            akd[h] = new_elem
+            
+    @njit(nogil=True,fastmath=True)
+    def akd_includes(akd,_arr):
+        arr = _arr.view(np.uint8)
+        h = hasharray(arr)
+        elem = akd.get(h,None)
+        if(elem is not None):
+            is_in = False
+            while(elem != None):
+                if((elem.key == arr).all()): 
+                    is_in = True
+                    break
+                elem = elem.next
+            if(is_in):
+                return True
+        return False
+
+    @njit(nogil=True,fastmath=True)
+    def akd_get(akd,_arr):
+        arr = _arr.view(np.uint8)
+        h = hasharray(arr)
+        elem = akd.get(h,None)
+        if(elem is not None):
+            while(elem != None):
+                if((elem.key == arr).all()): 
+                    return elem.value
+                elem = elem.next
+            
+        return None
 
 
-    @jitclass([('bin_map', DictType(u4,i8)),
-               ('bins', ListType(lst_bytarr_type)),
-               ('values', ListType(lst_custom_type))])
-    class ArrayKeyedDict(object):
-        def __init__(self):
-            self.bin_map = Dict.empty(u4,i8)
-            self.bins = List.empty_list(lst_bytarr_type)
-            self.values = List.empty_list(lst_custom_type)
-    return ArrayKeyedDict
+    # @jitclass([('bin_map', DictType(u4,i8)),
+    #            ('bins', ListType(lst_bytarr_type)),
+    #            ('values', ListType(lst_custom_type))])
+    # class ArrayKeyedDict(object):
+    #     def __init__(self):
+    #         self.bin_map = Dict.empty(u4,i8)
+    #         self.bins = List.empty_list(lst_bytarr_type)
+    #         self.values = List.empty_list(lst_custom_type)
+
+    # @jitclass([('bin_map', DictType(u4,BinElem))])
+    # class ArrayKeyedDict(object):
+    #     def __init__(self):
+    #         self.bin_map = Dict.empty(u4,i8)
+    #         self.bins = List.empty_list(lst_bytarr_type)
+    #         self.values = List.empty_list(lst_custom_type)
+
+    # @jit(fastmath=True)
+    # def new_AKD():
+    #     d = Dict.empty(u4,BE)
+    #     return d
+    # new_AKD()
+
+    return BE,akd_get, akd_includes, akd_insert
 
 
 
-@njit(nogil=True,fastmath=True,cache=True)
-def akd_insert(akd,_arr,item):
-    arr = _arr.view(np.uint8)
-    h = hasharray(arr)
-    if(h in akd.bin_map):
-        l = akd.bins[akd.bin_map[h]]
-        is_in = False
-        for i in range(len(l)):
-            if((l[i] == arr).all()): is_in = True
-        # if(arr not in l):
-        if(not is_in):
-            l.append(arr)
-            akd.values[akd.bin_map[h]].append(item)
-    else:
-        akd.bin_map[h] = len(akd.bins)
-        l = List.empty_list(bytarr_type)
-        l.append(arr)
-        akd.bins.append(l)
-        l2 = List()
-        l2.append(item)
-        akd.values.append(l2)
 
-@njit(nogil=True,fastmath=True,cache=True)
-def akd_includes(akd,_arr):
-    arr = _arr.view(np.uint8)
-    h = hasharray(arr)
-    if(h in akd.bin_map):
-        l = akd.bins[akd.bin_map[h]]
-        is_in = False
-        for i in range(len(l)):
-            if((l[i] == arr).all()): is_in = True
-        # if(arr in l):
-        if(is_in):
-            return True
-    return False
+# @njit(nogil=True,fastmath=True,cache=True)
+# def akd_insert(akd,_arr,item):
+#     arr = _arr.view(np.uint8)
+#     h = hasharray(arr)
+#     if(h in akd.bin_map):
+#         l = akd.bins[akd.bin_map[h]]
+#         is_in = False
+#         for i in range(len(l)):
+#             if((l[i] == arr).all()): is_in = True
+#         # if(arr not in l):
+#         if(not is_in):
+#             l.append(arr)
+#             akd.values[akd.bin_map[h]].append(item)
+#     else:
+#         akd.bin_map[h] = len(akd.bins)
+#         l = List.empty_list(bytarr_type)
+#         l.append(arr)
+#         akd.bins.append(l)
+#         l2 = List()
+#         l2.append(item)
+#         akd.values.append(l2)
 
-@njit(nogil=True,fastmath=True,cache=True)
-def akd_get(akd,_arr):
-    arr = _arr.view(np.uint8)
-    h = hasharray(arr)
-    if(h in akd.bin_map):
-        l = akd.bins[akd.bin_map[h]]
-        is_in = False
-        for i in range(len(l)):
-            if((l[i] == arr).all()):
-                return akd.values[akd.bin_map[h]][i]
+# @njit(nogil=True,fastmath=True,cache=True)
+# def akd_includes(akd,_arr):
+#     arr = _arr.view(np.uint8)
+#     h = hasharray(arr)
+#     if(h in akd.bin_map):
+#         l = akd.bins[akd.bin_map[h]]
+#         is_in = False
+#         for i in range(len(l)):
+#             if((l[i] == arr).all()): is_in = True
+#         # if(arr in l):
+#         if(is_in):
+#             return True
+#     return False
+
+# @njit(nogil=True,fastmath=True,cache=True)
+# def akd_get(akd,_arr):
+#     arr = _arr.view(np.uint8)
+#     h = hasharray(arr)
+#     if(h in akd.bin_map):
+#         l = akd.bins[akd.bin_map[h]]
+#         is_in = False
+#         for i in range(len(l)):
+#             if((l[i] == arr).all()):
+#                 return akd.values[akd.bin_map[h]][i]
         
-    return None
+#     return None
 
 
 import unittest
@@ -130,7 +202,9 @@ import unittest
 class TestAKD(unittest.TestCase):
 
     def test_insert_include(self):
-        akd = AKD(i8)()
+        BE, akd_get, akd_includes, akd_insert = AKD(i8)
+        akd = Dict.empty(u4,BE)
+        # akd, akd_get, akd_includes, akd_insert = AKD(i8)
         a = np.array([1,2,3,4,5],np.float)
         akd_insert(akd,a,1)
         self.assertTrue(akd_includes(akd,a))
@@ -138,7 +212,8 @@ class TestAKD(unittest.TestCase):
         self.assertEqual(akd_get(akd,a),1)
 
     def test_false_pos(self):
-        akd = AKD(unicode_type)()
+        BE, akd_get, akd_includes, akd_insert = AKD(unicode_type)
+        akd = Dict.empty(u4,BE)
         a = np.array([1,2,3,4,5],np.uint32)
         b = np.array([1,2,3,4],np.uint32)
         c = np.array([5,5,3,4],np.uint32)
@@ -156,5 +231,7 @@ class TestAKD(unittest.TestCase):
 
 
 if __name__ == '__main__':
+    # new_AKD, akd_get, akd_includes, akd_insert = AKD(unicode_type)
+    # akd = new_AKD()
     unittest.main()
 
