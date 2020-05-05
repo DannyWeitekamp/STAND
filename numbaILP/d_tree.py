@@ -10,10 +10,10 @@ from numba.typed import List, Dict
 from numba.core.types import ListType, unicode_type
 import timeit
 from sklearn import tree as SKTree
-from .compile_template import compile_template
+from numbaILP.compile_template import compile_template
 from enum import IntEnum
 from numba.pycc import CC
-from fnvhash import hasharray
+from fnvhash import hasharray, AKD, akd_insert,akd_get
 
 # from enum import IntEnum
 # class Entropy(IntEnum):
@@ -64,15 +64,18 @@ def return_zero(counts):
 
 
 @njit(nogil=True,fastmath=True,cache=True)
-def counts_per_split(start_counts, x, y_inds):
-	counts = np.zeros((x.shape[1],2,len(start_counts)),dtype=np.uint32);
+def counts_per_split(start_counts, x, y_inds, sep_nan=False):
+	counts = np.zeros((x.shape[1],2+sep_nan,len(start_counts)),dtype=np.uint32);
 	for i in range(x.shape[0]):
 		for j in range(x.shape[1]):
-			if(x[i,j]):
-				counts[j,1,y_inds[i]] += 1;	
-	# counts[:,0,:] = start_counts - counts[:,1,:]
+			if(sep_nan and np.isnan(x[i,j])):
+				counts[j,2,y_inds[i]] += 1;	
 			else:
-				counts[j,0,y_inds[i]] += 1;	
+				if(x[i,j]):
+					counts[j,1,y_inds[i]] += 1;	
+		# counts[:,0,:] = start_counts - counts[:,1,:]
+				else:
+					counts[j,0,y_inds[i]] += 1;	
 	return counts;
 
 
@@ -158,7 +161,8 @@ class TreeTypes(IntEnum):
 		   ('split_on',	 ListType(i4)),
 		   ('left',      ListType(i4)),
 		   ('right',     ListType(i4)),
-		   ('counts',  optional(u4[:]))])
+		   ('nan',       ListType(i4)),
+		   ('counts',    optional(u4[:]))])
 class TreeNode(object):
 	def __init__(self):
 		self.ttype = 0
@@ -167,6 +171,7 @@ class TreeNode(object):
 		self.split_on = List.empty_list(i4)
 		self.left = List.empty_list(i4)
 		self.right = List.empty_list(i4)
+		self.nan = List.empty_list(i4)
 		#For Leaves
 		self.counts = None
 
@@ -205,6 +210,7 @@ def assign_node(tn,split_on,left,right):
 	tn.left.append(left)
 	tn.right.append(right)
 
+
 @njit(void(TN,u4[:]),nogil=True,fastmath=True)
 def assign_leaf(tn,counts):
 	tn.ttype = TreeTypes.LEAF
@@ -238,12 +244,13 @@ def choose_all_max(impurity_decrease):
 def test_fit(x,y):	
 	out =fit_tree(x,y,
 			criterion_func=gini,
-			split_chooser=choose_single_max
+			split_chooser=choose_single_max,
+			sep_nan=True
 		 )
 	return out
 
 @njit(nogil=True,fastmath=True)
-def fit_tree(x,y,criterion_func,split_chooser):
+def fit_tree(x,y,criterion_func,split_chooser,sep_nan=False):
 	# criterion_func = gini#get_criterion_func(criterion)
 	sorted_inds = np.argsort(y)
 	x_sorted = x[sorted_inds]
@@ -265,13 +272,14 @@ def fit_tree(x,y,criterion_func,split_chooser):
 			c_y = y_inds[c.inds]
 			# print(c_y)
 
-			countsPS = counts_per_split(c.counts,c_x,c_y)
+			countsPS = counts_per_split(c.counts,c_x,c_y,sep_nan)
 			flat_countsPS = countsPS.reshape((-1,countsPS.shape[2]))
 			flat_impurities = criterion_func(flat_countsPS)
 			impurities = flat_impurities.reshape((countsPS.shape[0],countsPS.shape[1]))
 
 			#Sum of new impurities of left and right side of split
-			total_split_impurity = impurities[:,0] + impurities[:,1];  
+			total_split_impurity = impurities[:,0] + impurities[:,1] 
+			if(sep_nan): total_split_impurity += impurities[:,2];
 			impurity_decrease = c.impurity - (total_split_impurity);
 			splits = split_chooser(impurity_decrease)
 			for j in range(len(splits)):
@@ -301,6 +309,17 @@ def fit_tree(x,y,criterion_func,split_chooser):
 					else:
 						assign_leaf(node_r, countsPS[split,1])
 
+					if(sep_nan):
+						node_nan = new_node(tree)
+						ms_impurity_nan = impurities[split,2].item()
+						if(ms_impurity_nan > 0):
+							sel = np.argwhere(np.isnan(mask))[:,0]
+							new_contexts.append(SplitContext(c.inds[sel],#c.x[sel], c.y[sel],
+								ms_impurity_r,countsPS[split,2], node_nan))
+						else:
+							c.parent_node.nan.append(node_nan.index)
+
+
 		contexts = new_contexts
 	return tree
 
@@ -312,8 +331,59 @@ def test_Afit(x,y):
 		 )
 	return out
 
+# @njit(nogil=True,fastmath=True,inline='always')
+# def build_new_node(split_locals,new_inds,split,k):
+# 	'''Handle the creation of a new node. For each splitable node this will be run for
+# 		the left, right, and NaN children. If the new node would be redundant but comes
+# 		from a different set of splits then just retrieve the equivalent node from the
+# 		node_dict since all subtrees will be redundant. Otherwise determine if the new 
+# 		node will be a leaf or not. If not, push a new context to compute its children.
+# 	'''
+# 	# new_inds = c.inds[np.argwhere(~mask)[:,0]]
+# 	tree,node_dict,new_contexts,countsPS,impurities = split_locals
+# 	new_inds_hash = hasharray(new_inds)
+# 	if(new_inds_hash not in node_dict):
+# 		node_dict[new_inds_hash] = node = new_node(tree)
+# 		ms_impurity = impurities[split,k].item()
+# 		if(ms_impurity > 0):
+# 			new_contexts.append(SplitContext(new_inds,#c.x[sel], c.y[sel],
+# 				ms_impurity,countsPS[split,k], node))
+# 		else:
+# 			# print("L:",countsPS[split,0],split, ms_impurity_l)
+# 			assign_leaf(node, countsPS[split,k])
+# 	else:
+# 		node = node_dict[new_inds_hash]
+# 	return node
+
 @njit(nogil=True,fastmath=True)
-def fit_Atree(x,y,criterion_func,split_chooser):
+def r_l_n_split(x,sep_nan=False):
+	'''Similar to argwhere applied 3 times each for 0,1 and nan, but does all
+	    three at once.'''
+	nl,nr,nn = 0,0,0
+	l = np.empty(x.shape,np.uint32)
+	r = np.empty(x.shape,np.uint32)
+	n = np.empty(x.shape,np.uint32)
+	
+	for i in range(len(x)):
+		x_i = x[i]
+		if(sep_nan and x_i == 255):
+			n[nn] = i
+			nn += 1
+		else:
+			if(x[i]):
+				r[nr] = i
+				nr += 1
+			else:
+				l[nl] = i
+				nl += 1
+
+	# return np.array(l), np.array(r), np.array(n)
+	return l[:nl], r[:nr], n[:nn]
+
+AKD_TN = AKD(TN)
+
+@njit(nogil=True,fastmath=True,inline='always')
+def fit_Atree(x,y,criterion_func,split_chooser,sep_nan=False):
 	# criterion_func = gini#get_criterion_func(criterion)
 	sorted_inds = np.argsort(y)
 	x_sorted = x[sorted_inds]
@@ -325,26 +395,29 @@ def fit_Atree(x,y,criterion_func,split_chooser):
 		impurity,counts,new_node(tree)))
 
 	# parent_node = TreeNode()
-	node_dict = Dict.empty(u4,TN)
+	node_dict = AKD_TN()#Dict.empty(u4,TN)
+	# node_dict = Dict.empty(u4,TN)
 	while len(contexts) > 0:
 		new_contexts = List()
-
 		for i in range(len(contexts)):
 			c = contexts[i]
 			c_x, c_y = x_sorted[c.inds], y_inds[c.inds]
 			# print(c_y)
 
-			countsPS = counts_per_split(c.counts,c_x,c_y)
+			countsPS = counts_per_split(c.counts,c_x,c_y,sep_nan)
 			flat_countsPS = countsPS.reshape((-1,countsPS.shape[2]))
 			flat_impurities = criterion_func(flat_countsPS)
 			impurities = flat_impurities.reshape((countsPS.shape[0],countsPS.shape[1]))
 			# print(impurities)
 			#Sum of new impurities of left and right side of split
-			total_split_impurity = impurities[:,0] + impurities[:,1];  
+			total_split_impurity = impurities[:,0] + impurities[:,1];
+			if(sep_nan): total_split_impurity += impurities[:,2]
 			impurity_decrease = c.impurity - (total_split_impurity);
 			# print(c.impurity,criterion_func(np.expand_dims(c.counts,0)))
 			# print(impurity_decrease)
 			splits = split_chooser(impurity_decrease)
+
+			# split_locals = (tree,node_dict,new_contexts,countsPS,impurities)
 			for j in range(len(splits)):
 				split = splits[j]
 
@@ -353,10 +426,16 @@ def fit_Atree(x,y,criterion_func,split_chooser):
 				else:
 					mask = c_x[:,split];
 
-					new_inds_l = c.inds[np.argwhere(~mask)[:,0]]
-					new_inds_lt = hasharray(new_inds_l)
-					if(new_inds_lt not in node_dict):
-						node_dict[new_inds_lt] = node_l = new_node(tree)
+					new_inds_l, new_inds_r, new_inds_n = r_l_n_split(mask)
+					
+					#New node for left.
+					# new_inds_lt = hasharray(new_inds_l)
+					# if(new_inds_lt not in node_dict):
+					# 	node_dict[new_inds_lt] = node_l = new_node(tree)
+					node_l = akd_get(node_dict,new_inds_l)
+					if(node_l is None):
+						node_l = new_node(tree)
+						akd_insert(node_dict,new_inds_l,node_l)
 						ms_impurity_l = impurities[split,0].item()
 						if(ms_impurity_l > 0):
 							new_contexts.append(SplitContext(new_inds_l,#c.x[sel], c.y[sel],
@@ -364,13 +443,18 @@ def fit_Atree(x,y,criterion_func,split_chooser):
 						else:
 							# print("L:",countsPS[split,0],split, ms_impurity_l)
 							assign_leaf(node_l, countsPS[split,0])
-					else:
-						node_l = node_dict[new_inds_lt]
+					# else:
+					# 	node_l = node_dict[new_inds_lt]
 
-					new_inds_r = c.inds[np.argwhere(mask)[:,0]]
-					new_inds_rt = hasharray(new_inds_r)
-					if(new_inds_rt not in node_dict):
-						node_dict[new_inds_rt] = node_r = new_node(tree)
+
+					#New node for right.
+					# new_inds_rt = hasharray(new_inds_r)
+					# if(new_inds_rt not in node_dict):
+					# 	node_dict[new_inds_rt] = node_r = new_node(tree)
+					node_r = akd_get(node_dict,new_inds_r)
+					if(node_r is None):
+						node_r = new_node(tree)
+						akd_insert(node_dict,new_inds_r,node_r)
 						ms_impurity_r = impurities[split,1].item()
 						if(ms_impurity_r > 0):
 							new_contexts.append(SplitContext(new_inds_r,#c.x[sel], c.y[sel],
@@ -378,10 +462,25 @@ def fit_Atree(x,y,criterion_func,split_chooser):
 						else:
 							# print("R:",countsPS[split,1])
 							assign_leaf(node_r, countsPS[split,1])
-					else:
-						node_r = node_dict[new_inds_rt]
+					# else:
+					# 	node_r = node_dict[new_inds_rt]
 
-					assign_node(c.parent_node,split,node_l.index,node_r.index)
+
+					assign_node(c.parent_node, split, node_l.index, node_r.index)
+					#New node for NaN values.
+					# if(sep_nan):
+					# 	new_inds_nt = hasharray(new_inds_n)
+					# 	if(new_inds_nt not in node_dict):
+					# 		node_dict[new_inds_nt] = node_n = new_node(tree)
+					# 		ms_impurity_n = impurities[split,2].item()
+					# 		if(ms_impurity_n > 0):
+					# 			new_contexts.append(SplitContext(new_inds_n,#c.x[sel], c.y[sel],
+					# 				ms_impurity_n,countsPS[split,2], node_n))
+					# 		else:
+					# 			assign_leaf(node_n, countsPS[split,2])
+					# 	else:
+					# 		node_n = node_dict[new_inds_nt]
+					# 	c.parent_node.nan.append(node_n)
 
 		contexts = new_contexts
 	return tree
@@ -391,7 +490,10 @@ def str_tree(tree):
 	for i in range(len(tree.nodes)):
 		tn = tree.nodes[i]
 		if(tn.ttype == TreeTypes.NODE):
-			l.append("%s : %s %s %s" % (tn.index, tn.split_on, tn.left, tn.right))
+			if(len(tn.nan) == 0):
+				l.append("%s : %s %s %s" % (tn.index, tn.split_on, tn.left, tn.right))
+			else:
+				l.append("%s : %s %s %s %s" % (tn.index, tn.split_on, tn.left, tn.right, tn.nan))
 		else:
 			l.append("%s : %s" % (tn.index, tn.counts))
 	return "\n".join(l)
@@ -630,7 +732,7 @@ if(__name__ == "__main__"):
 	# print("t6:", time_ms(t6))
 
 	# print("d_tree:   ", time_ms(bdt))
-	# print("a_tree:   ", time_ms(At))
+	print("a_tree:   ", time_ms(At))
 	# print("numba_c  ", time_ms(c_bdt))
 	# print("sklearn: ", time_ms(skldt))
 
