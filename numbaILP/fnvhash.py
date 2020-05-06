@@ -55,7 +55,9 @@ def hasharray(array):
 
 bytarr_type = u1[:]
 # lst_bytarr_type = ListType(bytarr_type)
-def AKD(typ):
+
+
+def AKD(typ,ret_be=False):
     # lst_custom_type = ListType(typ)
 
     BE_deffered = deferred_type()
@@ -67,55 +69,63 @@ def AKD(typ):
             self.key = key
             self.value = value
             self.next = None
-
+    # print(BinElem)
     BE = BinElem.class_type.instance_type
     BE_deffered.define(BE)
 
     @njit(nogil=True,fastmath=True)
-    def akd_insert(akd,_arr,item):
+    def akd_insert(akd,_arr,item,h=None):
         arr = _arr.view(np.uint8)
-        h = hasharray(arr)
+        if(h is None): h = hasharray(arr)
         elem = akd.get(h,None)
-        if(elem is not None):
-            is_in = False
-            while(elem != None):
-                if((elem.key == arr).all()): 
-                    is_in = True
-                    break
-            if(not is_in):
-                new_elem = BinElem(arr,item)
-                akd[h] = new_elem
-        else:
+        is_in = False
+        while(elem is not None):
+            if(len(elem.key) == len(arr) and
+                (elem.key == arr).all()): 
+                is_in = True
+                break
+            if(elem.next is None): break 
+            elem = elem.next
+        if(not is_in):
             new_elem = BinElem(arr,item)
             new_elem.next = elem
             akd[h] = new_elem
+            # print("HERE",elem.value,new_elem.value)
+
+        # else:
+        #     new_elem = BinElem(arr,item)
+        #     akd[h] = new_elem
             
     @njit(nogil=True,fastmath=True)
-    def akd_includes(akd,_arr):
+    def akd_includes(akd,_arr,h=None):
         arr = _arr.view(np.uint8)
-        h = hasharray(arr)
+        if(h is None): h = hasharray(arr)
         elem = akd.get(h,None)
-        if(elem is not None):
-            is_in = False
-            while(elem != None):
-                if((elem.key == arr).all()): 
-                    is_in = True
-                    break
-                elem = elem.next
-            if(is_in):
-                return True
-        return False
+        # if(elem is not None):
+        is_in = False
+        while(elem is not None):
+            if(len(elem.key) == len(arr) and
+                (elem.key == arr).all()): 
+                is_in = True
+                break
+            if(elem.next is None): break 
+            elem = elem.next
+            # if(is_in):
+            #     return True
+        return is_in
 
     @njit(nogil=True,fastmath=True)
-    def akd_get(akd,_arr):
+    def akd_get(akd,_arr,h=None):
         arr = _arr.view(np.uint8)
-        h = hasharray(arr)
+        if(h is None): h = hasharray(arr) 
         elem = akd.get(h,None)
-        if(elem is not None):
-            while(elem != None):
-                if((elem.key == arr).all()): 
-                    return elem.value
-                elem = elem.next
+        while(elem is not None):
+            # print(":",elem.value)
+            if(len(elem.key) == len(arr) and
+                (elem.key == arr).all()): 
+                return elem.value
+            if(elem.next is None): break 
+            elem = elem.next
             
         return None
 
@@ -141,8 +151,10 @@ def AKD(typ):
     #     d = Dict.empty(u4,BE)
     #     return d
     # new_AKD()
-
-    return BE,akd_get, akd_includes, akd_insert
+    if(not ret_be):
+        return BE,akd_get, akd_includes, akd_insert
+    else:
+        return BE,akd_get, akd_includes, akd_insert,BinElem
 
 
 
@@ -225,9 +237,67 @@ class TestAKD(unittest.TestCase):
         self.assertEqual(akd_get(akd,a),"A")
         self.assertEqual(akd_get(akd,b),"B")
         self.assertEqual(akd_get(akd,c),None)
+
+    def test_hash_conflict(self):
+        BE, akd_get, akd_includes, akd_insert = AKD(unicode_type)
+        akd = Dict.empty(u4,BE)
+        a = np.array([1,2,3,4,5],np.uint32)
+        b = np.array([1,2,3,4],np.uint32)
+        c = np.array([5,5,3,4],np.uint32)
+        akd_insert(akd,a,"C",0)
+        akd_insert(akd,b,"D",0)
+        self.assertTrue(akd_includes(akd,a,0))
+        self.assertEqual(akd_get(akd,a,0),"C")
+        self.assertTrue(akd_includes(akd,b,0))
+        self.assertEqual(akd_get(akd,b,0),"D")
+
+        self.assertFalse(akd_includes(akd,c,0))
+        self.assertEqual(akd_get(akd,c,0),None)
+
+        # BE_deffered = deferred_type()
+# @jitclass([('key', u4),
+#            ('value', u4),
+#            ])
+# class BinElem(object):
+#     def __init__(self,key,value):
+#         self.key = key
+#         self.value = value
+#         # self.next = None
+
+#         @njit
+#         def new_BinElm(key,value):
+#             return BinElem(key.view(np.uint8),value)
+        # BE, akd_get, akd_includes, akd_insert, BinElem = AKD(unicode_type,True)
+        # # print(BE.class_type)
+        # @njit(nogil=True,fastmath=True)
+        # def add_to(akd,y,x1,v1,x2,v2):
+        #     akd = Dict.empty(u4,BE)
+        #     h = hasharray(y)
+        #     be_a = BinElem(x1.view(np.uint8),v1)
+        #     be_b = BinElem(x2.view(np.uint8),v2)
+        #     # be_b.next = be_a
+        #     akd[h] = be_b
+        #     print("MEEP",akd_get(akd,x1))
+        #     # return akd
+
+        # # BE = BinElem.class_type.instance_type
+        # # BE_deffered.define(BE)        
         
+        
+        # a = np.array([1,2,3,4,5],np.uint32)
+        # b = np.array([1,2,3,4],np.uint32)
 
-
+        # # be_a = new_BinElm(a,"A")
+        # # be_b = new_BinElm(b,"A")
+        # # be_b.next = be_a
+        # akd = Dict.empty(u4,BE)
+        # add_to(akd,a,a,"A",b,"B")
+        # add_to(akd,a,be_b)
+        # h = hasharray(a)
+        # akd[h] = be_b
+        # akd_includes(akd,a)
+        # self.assertTrue(akd_includes(akd,a))
+        # self.assertEqual(akd_get(akd,a),"A")
 
 
 if __name__ == '__main__':

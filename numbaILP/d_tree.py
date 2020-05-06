@@ -203,12 +203,13 @@ class SplitContext(object):
 		self.counts = counts
 		self.parent_node = parent_node
 
-@njit(void(TN,i4,i4,i4),nogil=True,fastmath=True)
-def assign_node(tn,split_on,left,right):
+@njit(void(TN,i4,TN,TN,optional(TN)),nogil=True,fastmath=True)
+def assign_node(tn,split_on,left,right,nan=None):
 	tn.ttype = TreeTypes.NODE
 	tn.split_on.append(split_on)
-	tn.left.append(left)
-	tn.right.append(right)
+	tn.left.append(left.index)
+	tn.right.append(right.index)
+	if(nan is not None): tn.nan.append(nan.index)
 
 
 @njit(void(TN,u4[:]),nogil=True,fastmath=True)
@@ -242,7 +243,7 @@ def choose_all_max(impurity_decrease):
 
 @njit(nogil=True,fastmath=True)
 def test_fit(x,y):	
-	out =fit_tree(x,y,
+	out =fit_Atree(x,y,
 			criterion_func=gini,
 			split_chooser=choose_single_max,
 			sep_nan=True
@@ -327,7 +328,8 @@ def fit_tree(x,y,criterion_func,split_chooser,sep_nan=False):
 def test_Afit(x,y):	
 	out =fit_Atree(x,y,
 			criterion_func=gini,
-			split_chooser=choose_all_max
+			split_chooser=choose_all_max,
+			cache_nodes=True,
 		 )
 	return out
 
@@ -384,7 +386,7 @@ BE, akd_get, akd_includes, akd_insert = AKD(TN)
 
 
 @njit(nogil=True,fastmath=True,inline='always')
-def fit_Atree(x,y,criterion_func,split_chooser,sep_nan=False):
+def fit_Atree(x,y,criterion_func,split_chooser,sep_nan=False, cache_nodes=False):
 	# criterion_func = gini#get_criterion_func(criterion)
 	sorted_inds = np.argsort(y)
 	x_sorted = x[sorted_inds]
@@ -407,8 +409,8 @@ def fit_Atree(x,y,criterion_func,split_chooser,sep_nan=False):
 			# print(c_y)
 
 			countsPS = counts_per_split(c.counts,c_x,c_y,sep_nan)
-			flat_countsPS = countsPS.reshape((-1,countsPS.shape[2]))
-			flat_impurities = criterion_func(flat_countsPS)
+			# flat_countsPS = countsPS.reshape((-1,countsPS.shape[2]))
+			flat_impurities = criterion_func(countsPS.reshape((-1,countsPS.shape[2])))
 			impurities = flat_impurities.reshape((countsPS.shape[0],countsPS.shape[1]))
 			# print(impurities)
 			#Sum of new impurities of left and right side of split
@@ -419,7 +421,6 @@ def fit_Atree(x,y,criterion_func,split_chooser,sep_nan=False):
 			# print(impurity_decrease)
 			splits = split_chooser(impurity_decrease)
 
-			# split_locals = (tree,node_dict,new_contexts,countsPS,impurities)
 			for j in range(len(splits)):
 				split = splits[j]
 
@@ -427,62 +428,46 @@ def fit_Atree(x,y,criterion_func,split_chooser,sep_nan=False):
 					assign_leaf(c.parent_node, c.counts)
 				else:
 					mask = c_x[:,split];
-
+					node_l, node_r, node_n = None, None, None
 					new_inds_l, new_inds_r, new_inds_n = r_l_n_split(mask)
 					
 					#New node for left.
-					# new_inds_lt = hasharray(new_inds_l)
-					# if(new_inds_lt not in node_dict):
-					# 	node_dict[new_inds_lt] = node_l = new_node(tree)
-					node_l = akd_get(node_dict,new_inds_l)
+					if (cache_nodes): node_l = akd_get(node_dict,new_inds_l)
 					if(node_l is None):
 						node_l = new_node(tree)
-						akd_insert(node_dict,new_inds_l,node_l)
+						if(cache_nodes): akd_insert(node_dict,new_inds_l,node_l)
 						ms_impurity_l = impurities[split,0].item()
 						if(ms_impurity_l > 0):
-							new_contexts.append(SplitContext(new_inds_l,#c.x[sel], c.y[sel],
+							new_contexts.append(SplitContext(new_inds_l,
 								ms_impurity_l,countsPS[split,0], node_l))
 						else:
-							# print("L:",countsPS[split,0],split, ms_impurity_l)
 							assign_leaf(node_l, countsPS[split,0])
-					# else:
-					# 	node_l = node_dict[new_inds_lt]
-
 
 					#New node for right.
-					# new_inds_rt = hasharray(new_inds_r)
-					# if(new_inds_rt not in node_dict):
-					# 	node_dict[new_inds_rt] = node_r = new_node(tree)
-					node_r = akd_get(node_dict,new_inds_r)
+					if (cache_nodes): node_r = akd_get(node_dict,new_inds_r)
 					if(node_r is None):
 						node_r = new_node(tree)
-						akd_insert(node_dict,new_inds_r,node_r)
+						if(cache_nodes): akd_insert(node_dict,new_inds_r,node_r)
 						ms_impurity_r = impurities[split,1].item()
 						if(ms_impurity_r > 0):
-							new_contexts.append(SplitContext(new_inds_r,#c.x[sel], c.y[sel],
+							new_contexts.append(SplitContext(new_inds_r,
 								ms_impurity_r,countsPS[split,1], node_r))
 						else:
-							# print("R:",countsPS[split,1])
 							assign_leaf(node_r, countsPS[split,1])
-					# else:
-					# 	node_r = node_dict[new_inds_rt]
 
-
-					assign_node(c.parent_node, split, node_l.index, node_r.index)
 					#New node for NaN values.
-					# if(sep_nan):
-					# 	new_inds_nt = hasharray(new_inds_n)
-					# 	if(new_inds_nt not in node_dict):
-					# 		node_dict[new_inds_nt] = node_n = new_node(tree)
-					# 		ms_impurity_n = impurities[split,2].item()
-					# 		if(ms_impurity_n > 0):
-					# 			new_contexts.append(SplitContext(new_inds_n,#c.x[sel], c.y[sel],
-					# 				ms_impurity_n,countsPS[split,2], node_n))
-					# 		else:
-					# 			assign_leaf(node_n, countsPS[split,2])
-					# 	else:
-					# 		node_n = node_dict[new_inds_nt]
-					# 	c.parent_node.nan.append(node_n)
+					if(sep_nan):
+						if (cache_nodes): node_n = akd_get(node_dict,new_inds_n)
+						if(node_n is None):
+							node_n = new_node(tree)
+							if(cache_nodes): akd_insert(node_dict,new_inds_n,node_n)
+							ms_impurity_n = impurities[split,2].item()
+							if(ms_impurity_n > 0):
+								new_contexts.append(SplitContext(new_inds_n,
+									ms_impurity_n,countsPS[split,2], node_n))
+							else:
+								assign_leaf(node_n, countsPS[split,2])
+					assign_node(c.parent_node, split, node_l, node_r,node_n)
 
 		contexts = new_contexts
 	return tree
@@ -527,7 +512,7 @@ def choose_pure_majority_general(leaf_counts,positive_class):
 	for count in leaf_counts:
 		# count = leaf_counts[i]
 		# if(np.sum(count > 0) == 1):
-		print("count",count,count.dtype)
+		# print("count",count,count.dtype)
 		if(np.count_nonzero(count) == 1):
 			pure_counts.append(count)
 	leaf_counts = pure_counts if len(pure_counts) > 0 else leaf_counts
@@ -733,7 +718,7 @@ if(__name__ == "__main__"):
 	# print("t5:", time_ms(t5))
 	# print("t6:", time_ms(t6))
 
-	# print("d_tree:   ", time_ms(bdt))
+	print("d_tree:   ", time_ms(bdt))
 	print("a_tree:   ", time_ms(At))
 	# print("numba_c  ", time_ms(c_bdt))
 	# print("sklearn: ", time_ms(skldt))
