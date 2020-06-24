@@ -15,6 +15,7 @@ from enum import IntEnum
 from numba.pycc import CC
 from fnvhash import hasharray, AKD#, akd_insert,akd_get
 
+
 # from enum import IntEnum
 # class Entropy(IntEnum):
 # 	gini = 0
@@ -807,6 +808,58 @@ if(__name__ == "__main__"):
 	
 
 	# print(gini(x))
+
+a = {"obj1-contenteditable": False,
+ "obj2-contenteditable": False,
+ "obj3-contenteditable": False,
+ "obj1-value": 5,
+ "obj2-value": "",
+ "obj3-value": "",
+}
+
+a = {"obj2-contenteditable": False,
+ "obj3-contenteditable": True,
+ "obj4-contenteditable": False,
+ "obj2-value": "",
+ "obj3-value": "",
+ "obj4-value": 7,
+}
+
+
+class DictVectorizer(object):
+	def __init__(self):
+		self.map = {}
+
+	def vectorize(self,flat_state):
+		# new_map = self.map
+		for k in flat_state.keys():
+			self.map[k] = len(self.map)
+
+		out = np.array(len(self.map),dtype=np.float64)
+		for k, v in flat_state.items():
+			out[self.map[k]] = v
+
+		return out
+
+
+dv = DictVectorizer()
+
+dv.vectorize(a)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
