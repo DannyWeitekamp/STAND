@@ -7,7 +7,7 @@ from numba.experimental import jitclass
 from numba import deferred_type, optional
 from numba import void,b1,u1,u2,u4,u8,i1,i2,i4,i8,f4,f8,c8,c16
 from numba.typed import List, Dict
-from numba.core.types import ListType, unicode_type, NamedTuple
+from numba.core.types import ListType, unicode_type, NamedTuple,NamedUniTuple
 from collections import namedtuple
 import timeit
 from sklearn import tree as SKTree
@@ -103,40 +103,43 @@ class TreeTypes(IntEnum):
 	LEAF = 2
 
 ######### Struct Definitions #########
+# SplitData = namedtuple("SplitData",['split_on','left','right','nan'])
+# NBSplitData = NamedUniTuple(i8,4,SplitData)
 
-# TreeNode = namedtuple("TreeNode",['ttype','index','split_on','left','right','nan','counts'])
-# TN = NamedTuple([i4,i4,ListType(i4),ListType(i4),ListType(i4),ListType(i4),optional(u4[:])],TreeNode)
-@jitclass([('ttype',	   i4),
-		   ('index',	   i4),
-		   ('split_on',	 ListType(i4)),
-		   ('left',      ListType(i4)),
-		   ('right',     ListType(i4)),
-		   ('nan',       ListType(i4)),
-		   ('counts',    optional(u4[:]))])
-class TreeNode(object):
-	'''A particular node in the tree
-		ttype -- Indicates if it is a leaf or node
-		index -- The location of the node in the list of all nodes
-		split_on -- If is a non-leaf node, the set of splits made on this node
-			can be more than one in the case of ambiguity tree
-		left -- For each split in split_on the index of the node to the left
-		right -- For each split in split_on the index of the node to the right
-		nan -- For each split in split_on the index of the node in the nan slot
-		counts -- If is a leaf node the number of samples of each class falling in it
-	'''
 
-	def __init__(self):
-		self.ttype = 0
-		self.index = 0
-		#For Nodes
-		self.split_on = List.empty_list(i4)
-		self.left = List.empty_list(i4)
-		self.right = List.empty_list(i4)
-		self.nan = List.empty_list(i4)
-		#For Leaves
-		self.counts = None
+TreeNode = namedtuple("TreeNode",['ttype','index','split_data','counts'])
+TN = NamedTuple([i8,i4,ListType(i4[::1]),u4[::1]],TreeNode)
+# @jitclass([('ttype',	   i4),
+# 		   ('index',	   i4),
+# 		   ('split_on',	 ListType(i4)),
+# 		   ('left',      ListType(i4)),
+# 		   ('right',     ListType(i4)),
+# 		   ('nan',       ListType(i4)),
+# 		   ('counts',    optional(u4[:]))])
+# class TreeNode(object):
+# 	'''A particular node in the tree
+# 		ttype -- Indicates if it is a leaf or node
+# 		index -- The location of the node in the list of all nodes
+# 		split_on -- If is a non-leaf node, the set of splits made on this node
+# 			can be more than one in the case of ambiguity tree
+# 		left -- For each split in split_on the index of the node to the left
+# 		right -- For each split in split_on the index of the node to the right
+# 		nan -- For each split in split_on the index of the node in the nan slot
+# 		counts -- If is a leaf node the number of samples of each class falling in it
+# 	'''
 
-TN = TreeNode.class_type.instance_type
+# 	def __init__(self):
+# 		self.ttype = 0
+# 		self.index = 0
+# 		#For Nodes
+# 		self.split_on = List.empty_list(i4)
+# 		self.left = List.empty_list(i4)
+# 		self.right = List.empty_list(i4)
+# 		self.nan = List.empty_list(i4)
+# 		#For Leaves
+# 		self.counts = None
+
+# TN = TreeNode.class_type.instance_type
 
 @jitclass([('nodes',ListType(TN))])
 class Tree(object):
@@ -146,10 +149,10 @@ class Tree(object):
 
 TR = Tree.class_type.instance_type
 
-@jitclass([('inds', u4[:]),
+@jitclass([('inds', u4[::1]),
 		   ('impurity', f8),
-		   ('counts', u4[:]),
-		   ('parent_node', TN)])
+		   ('counts', u4[::1]),
+		   ('parent_node', i4)])
 class SplitContext(object):
 	''' An object holding relevant local variables of the tree after a split.
 		This is used to avoid using recursion.
@@ -214,30 +217,42 @@ def unique_counts(inp):
 
 
 
-@njit(void(TN,i4,TN,TN,optional(TN)),nogil=True,fastmath=True)
-def assign_node(tn,split_on,left,right,nan=None):
+@njit(void(TR,i4,i4,u4[::1],i4,i4,optional(i4)),nogil=True,fastmath=True)
+def assign_node(tree,tn_ind,split_on,counts,left,right,nan=None):
 	'''Sets as NODE type and fills in content of node'''
-	tn.ttype = TreeTypes.NODE
-	tn.split_on.append(split_on)
-	tn.left.append(left.index)
-	tn.right.append(right.index)
-	if(nan is not None): tn.nan.append(nan.index)
+	_nan = np.array(-1,dtype=np.int32).item() #if(nan is None) else nan
+	# split_data = SplitData(split_on,left,right,_nan)
+	split_data_list = tree.nodes[tn_ind].split_data
+	split_data_list.append(np.array([split_on,left,right,_nan],dtype=np.int32))#split_data)
+	# tn = TreeNode(TreeTypes.NODE,tn_ind,split_data,None)
+	# tn.ttype = TreeTypes.NODE
+	# tn.split_on.append(split_on)
+	# tn.left.append(left)
+	# tn.right.append(right)
+	# if(nan is not None): tn.nan.append(nan)
+	tree.nodes[tn_ind] = TreeNode(2,tn_ind,split_data_list,counts)
 
 
-@njit(void(TN,u4[:]),nogil=True,fastmath=True,cache=True)
-def assign_leaf(tn,counts):
+# @njit(void(TN,u4[:]),nogil=True,fastmath=True,cache=True)
+@njit(void(TR,i4,u4[::1]),nogil=True,fastmath=True,cache=True)
+def assign_leaf(tree,tn_ind,counts):
 	'''Sets as LEAF type Fills in counts'''
-	tn.ttype = TreeTypes.LEAF
-	tn.counts = counts
+	# tn = TreeNode()
+	# tn.ttype = TreeTypes.LEAF
+	# tn.counts = counts
+	tree.nodes[tn_ind] = TreeNode(1,tn_ind,tree.nodes[tn_ind].split_data,counts)
 
-@njit(TN(TR),nogil=True,fastmath=True)
-def new_node(tree):
+# @njit(TN(TR),nogil=True,fastmath=True)
+@njit(i4(TR,u4[::1]),nogil=True,fastmath=True)
+def new_node(tree,counts):
 	'''Instantiates a new node, of undetermined type'''
-	tn = TreeNode()
 	index = len(tree.nodes)
+	tn = TreeNode(0,np.array(len(tree.nodes),dtype=np.int32).item(),np.empty(4,dtype=np.int32),counts)
+	
+	# tree.nodes.append(tn)
 	tree.nodes.append(tn)
-	tn.index = index
-	return tn
+	# tn.index = index
+	return index
 
 
 @njit(nogil=True,fastmath=True,cache=True)
@@ -265,7 +280,7 @@ def r_l_n_split(x,sep_nan=False):
 	# return np.array(l), np.array(r), np.array(n)
 	return l[:nl], r[:nr], n[:nn]
 
-BE, akd_get, akd_includes, akd_insert = AKD(TN)
+BE, akd_get, akd_includes, akd_insert = AKD(i4)
 
 
 ######### Fit #########
@@ -312,14 +327,15 @@ def fit_Atree(x,y,criterion_func,split_chooser,sep_nan=False, cache_nodes=False)
 				split = splits[j]
 
 				if(impurity_decrease[split] <= 0.0):
-					assign_leaf(c.parent_node, c.counts)
+					pass
+					# assign_leaf(tree,c.parent_node, c.counts)
 				else:
 					mask = c_x[:,split];
 					node_l, node_r, node_n = None, None, None
 					new_inds_l, new_inds_r, new_inds_n = r_l_n_split(mask)
 					
 					#New node for left.
-					if (cache_nodes): node_l = akd_get(node_dict,new_inds_l)
+					if (cache_nodes): node_l_inst = akd_get(node_dict,new_inds_l)
 					if(node_l is None):
 						node_l = new_node(tree)
 						if(cache_nodes): akd_insert(node_dict,new_inds_l,node_l)
@@ -328,7 +344,8 @@ def fit_Atree(x,y,criterion_func,split_chooser,sep_nan=False, cache_nodes=False)
 							new_contexts.append(SplitContext(new_inds_l,
 								ms_impurity_l,countsPS[split,0], node_l))
 						else:
-							assign_leaf(node_l, countsPS[split,0])
+							pass
+							# assign_leaf(tree,node_l, countsPS[split,0])
 
 					#New node for right.
 					if (cache_nodes): node_r = akd_get(node_dict,new_inds_r)
@@ -340,7 +357,8 @@ def fit_Atree(x,y,criterion_func,split_chooser,sep_nan=False, cache_nodes=False)
 							new_contexts.append(SplitContext(new_inds_r,
 								ms_impurity_r,countsPS[split,1], node_r))
 						else:
-							assign_leaf(node_r, countsPS[split,1])
+							pass
+							# assign_leaf(tree,node_r, countsPS[split,1])
 
 					#New node for NaN values.
 					if(sep_nan):
@@ -353,12 +371,13 @@ def fit_Atree(x,y,criterion_func,split_chooser,sep_nan=False, cache_nodes=False)
 								new_contexts.append(SplitContext(new_inds_n,
 									ms_impurity_n,countsPS[split,2], node_n))
 							else:
-								assign_leaf(node_n, countsPS[split,2])
-					assign_node(c.parent_node, split, node_l, node_r,node_n)
+								pass
+								# assign_leaf(tree,node_n, countsPS[split,2])
+					# assign_node(tree,c.parent_node, split, node_l, node_r,node_n)
 
 		contexts = new_contexts
 	return tree
-
+  
 
 ######### Predict #########
 
