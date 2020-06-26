@@ -7,7 +7,8 @@ from numba.experimental import jitclass
 from numba import deferred_type, optional
 from numba import void,b1,u1,u2,u4,u8,i1,i2,i4,i8,f4,f8,c8,c16
 from numba.typed import List, Dict
-from numba.core.types import ListType, unicode_type
+from numba.core.types import ListType, unicode_type, NamedTuple
+from collections import namedtuple
 import timeit
 from sklearn import tree as SKTree
 from numbaILP.compile_template import compile_template
@@ -16,23 +17,20 @@ from numba.pycc import CC
 from fnvhash import hasharray, AKD#, akd_insert,akd_get
 
 
-# from enum import IntEnum
-# class Entropy(IntEnum):
-# 	gini = 0
+NUMBA_FUNCS = {
+	"criterion" : {
+		'gini' : gini,
+		'giniimpurity' : gini,
+		'zero' : return_zero
+	},
+	'split_chooser' : {
+		'single' : None
+	}	
+}
 
 
+#########  Impurity Functions #######
 
-		
-	# if(criterion_func != None):
-	# 	criterion_func(np.ones((1,2)))
-	# 	return criterion_func
-	# else:
-	# 	return None
-
-#uint[::1] counts
-# totals = np.expand_dims(np.sum(counts,1)+1e-10,1)
-# prob = counts / totals
-# out = 1.0-(np.sum(np.square(prob),1))
 @njit(f8[::1](u4[:,:]),nogil=True,fastmath=True,cache=True)
 def gini(counts):
 	out = np.empty(counts.shape[0], dtype=np.double)
@@ -54,18 +52,125 @@ def gini(counts):
 def return_zero(counts):
 	return np.zeros(counts.shape[0],dtype=np.double)
 
-# @njit(nogil=True,fastmath=True,cache=True)
-# def calc_criterion(counts,criterion_func):
-# 	out = np.empty(counts.shape[0], dtype=np.double)
-# 	out_v = out
-	
-# 	for i in range(counts.shape[0]):
-# 		out_v[i] = criterion_func(counts[i])
-# 	return out
+
+######### Split Choosers ##########
+
+@njit(nogil=True,fastmath=True,cache=True)
+def choose_single_max(impurity_decrease):
+	'''A split chooser that expands greedily by max impurity 
+		(i.e. this is the chooser for typical decision trees)'''
+	return np.asarray([np.argmax(impurity_decrease)])
+
+@njit(nogil=True,fastmath=True,cache=True)
+def choose_all_max(impurity_decrease):
+	'''A split chooser that expands every decision tree 
+		(i.e. this chooser forces to build whole ambiguity tree)'''
+	m = np.max(impurity_decrease)
+	return np.where(impurity_decrease==m)[0]
+
+######### Prediction Choice Functions #########
+
+@njit(nogil=True,fastmath=True,cache=True)
+def choose_majority_general(leaf_counts,positive_class):
+	''' If multiple leaves on predict (i.e. ambiguity tree), choose 
+		the class predicted by the majority of leaves.''' 
+	for i,count in enumerate(leaf_counts):
+		pred = np.argmax(count)
+		if(pred == positive_class):
+			return True
+	return False
+
+@njit(nogil=True,fastmath=True,cache=True)
+def choose_pure_majority_general(leaf_counts,positive_class):
+	''' If multiple leaves on predict (i.e. ambiguity tree), choose 
+		the class predicted by the majority pure of leaves.''' 
+	pure_counts = List()
+	for count in leaf_counts:
+		if(np.count_nonzero(count) == 1):
+			pure_counts.append(count)
+	leaf_counts = pure_counts if len(pure_counts) > 0 else leaf_counts
+	for i,count in enumerate(leaf_counts):
+		pred = np.argmax(count)
+		if(pred == positive_class):
+			return True
+	return False
+
+
+class TreeTypes(IntEnum):
+	NODE = 1
+	LEAF = 2
+
+######### Struct Definitions #########
+
+# TreeNode = namedtuple("TreeNode",['ttype','index','split_on','left','right','nan','counts'])
+# TN = NamedTuple([i4,i4,ListType(i4),ListType(i4),ListType(i4),ListType(i4),optional(u4[:])],TreeNode)
+@jitclass([('ttype',	   i4),
+		   ('index',	   i4),
+		   ('split_on',	 ListType(i4)),
+		   ('left',      ListType(i4)),
+		   ('right',     ListType(i4)),
+		   ('nan',       ListType(i4)),
+		   ('counts',    optional(u4[:]))])
+class TreeNode(object):
+	'''A particular node in the tree
+		ttype -- Indicates if it is a leaf or node
+		index -- The location of the node in the list of all nodes
+		split_on -- If is a non-leaf node, the set of splits made on this node
+			can be more than one in the case of ambiguity tree
+		left -- For each split in split_on the index of the node to the left
+		right -- For each split in split_on the index of the node to the right
+		nan -- For each split in split_on the index of the node in the nan slot
+		counts -- If is a leaf node the number of samples of each class falling in it
+	'''
+
+	def __init__(self):
+		self.ttype = 0
+		self.index = 0
+		#For Nodes
+		self.split_on = List.empty_list(i4)
+		self.left = List.empty_list(i4)
+		self.right = List.empty_list(i4)
+		self.nan = List.empty_list(i4)
+		#For Leaves
+		self.counts = None
+
+TN = TreeNode.class_type.instance_type
+
+@jitclass([('nodes',ListType(TN))])
+class Tree(object):
+	'''A list of nodes'''
+	def __init__(self):
+		self.nodes = List.empty_list(TN)
+
+TR = Tree.class_type.instance_type
+
+@jitclass([('inds', u4[:]),
+		   ('impurity', f8),
+		   ('counts', u4[:]),
+		   ('parent_node', TN)])
+class SplitContext(object):
+	''' An object holding relevant local variables of the tree after a split.
+		This is used to avoid using recursion.
+		inds -- A list of indicies of samples which fall in the present branch of the tree.
+		impurity -- The impurity of this branch of the tree.
+		counts -- The number of samples of each class.
+		parent node -- The node from which this branch was produced.
+	'''
+	def __init__(self,inds,
+		impurity,counts,parent_node):
+		self.inds = inds
+		self.impurity = impurity
+		self.counts = counts
+		self.parent_node = parent_node
+
 
 
 @njit(nogil=True,fastmath=True,cache=True)
 def counts_per_split(start_counts, x, y_inds, sep_nan=False):
+	''' 
+		Determines the number of elements of each class that would be in the resulting
+		left, right and nan nodes if a split was made at each possible feature.
+	'''
 	counts = np.zeros((x.shape[1],2+sep_nan,len(start_counts)),dtype=np.uint32);
 	for i in range(x.shape[0]):
 		for j in range(x.shape[1]):
@@ -74,16 +179,17 @@ def counts_per_split(start_counts, x, y_inds, sep_nan=False):
 			else:
 				if(x[i,j]):
 					counts[j,1,y_inds[i]] += 1;	
-		# counts[:,0,:] = start_counts - counts[:,1,:]
 				else:
 					counts[j,0,y_inds[i]] += 1;	
 	return counts;
 
 
 
-
 @njit(nogil=True,fastmath=True,cache=True)
 def unique_counts(inp):
+	''' 
+		Finds the unique classes in an input array of class labels
+	'''
 	counts = [];
 	uniques = [];
 	inds = np.zeros(len(inp),np.uint32);
@@ -103,109 +209,12 @@ def unique_counts(inp):
 	u = np.asarray(uniques,dtype=np.int32)
 	return c, u, inds
 
-# @njit(nogil=True,fastmath=True,cache=True)
-# def ambiguity_tree(x, y):
-#f8[::1](u4[:,:]))
-# criterion_type = numba.deferred_type()
-NUMBA_FUNCS = {
-	"criterion" : {
-		'gini' : gini,
-		'giniimpurity' : gini,
-		'zero' : return_zero
-	},
-	'split_chooser' : {
-		'single' : None
-	}	
-}
 
 
-
-	
-	
-
-
-
-
-# @njit(nogil=True,fastmath=True,cache=True)
-def get_numba_func(ftype,name):
-	name = name.lower().replace("_","")
-	if(ftype in NUMBA_FUNCS):
-		if(name in NUMBA_FUNCS[ftype]):
-			return NUMBA_FUNCS[ftype][name]
-		else:
-			raise ValueError("Criterion %r not recognized." % name)
-	else:
-		raise ValueError("ftype %f not recognized" % ftype)
-
-
-
-
-class ILPTree(object):
-	def __init__(self,criterion='gini',split_chooser=''):
-		self.criterion = criterion
-		# self.nb_ilp_tree = NB_ILPTree()
-		self.criterion_func = get_numba_func('criterion',self.criterion)
-
-		# criterion_type.define(numba.typeof(gini))
-	# def run_it(self,inp):
-	# 	return self.nb_ilp_tree.run_it(inp,self.criterion_func)
-	# def fit(self,x,y):
-	# 	return self.nb_ilp_tree.fit(x,y,self.criterion_func)
-class TreeTypes(IntEnum):
-	NODE = 1
-	LEAF = 2
-
-# TN_deffered = deferred_type()
-
-@jitclass([('ttype',	   i4),
-		   ('index',	   i4),
-		   ('split_on',	 ListType(i4)),
-		   ('left',      ListType(i4)),
-		   ('right',     ListType(i4)),
-		   ('nan',       ListType(i4)),
-		   ('counts',    optional(u4[:]))])
-class TreeNode(object):
-	def __init__(self):
-		self.ttype = 0
-		self.index = 0
-		#For Nodes
-		self.split_on = List.empty_list(i4)
-		self.left = List.empty_list(i4)
-		self.right = List.empty_list(i4)
-		self.nan = List.empty_list(i4)
-		#For Leaves
-		self.counts = None
-
-TN = TreeNode.class_type.instance_type
-
-@jitclass([('nodes',ListType(TN))])
-class Tree(object):
-	def __init__(self):
-		self.nodes = List.empty_list(TN)
-
-TR = Tree.class_type.instance_type
-
-# TN_deffered.define(TN)
-# _tn = TreeNode()
-
-@jitclass([#('x', b1[:,:]),
-		   #('y', u4[:]),
-		   ('inds', u4[:]),
-		   ('impurity', f8),
-		   ('counts', u4[:]),
-		   ('parent_node', TN)])
-class SplitContext(object):
-	def __init__(self,inds,#,x,y,
-		impurity,counts,parent_node):
-		# self.x = x
-		# self.y = y
-		self.inds = inds
-		self.impurity = impurity
-		self.counts = counts
-		self.parent_node = parent_node
 
 @njit(void(TN,i4,TN,TN,optional(TN)),nogil=True,fastmath=True)
 def assign_node(tn,split_on,left,right,nan=None):
+	'''Sets as NODE type and fills in content of node'''
 	tn.ttype = TreeTypes.NODE
 	tn.split_on.append(split_on)
 	tn.left.append(left.index)
@@ -213,152 +222,23 @@ def assign_node(tn,split_on,left,right,nan=None):
 	if(nan is not None): tn.nan.append(nan.index)
 
 
-@njit(void(TN,u4[:]),nogil=True,fastmath=True)
+@njit(void(TN,u4[:]),nogil=True,fastmath=True,cache=True)
 def assign_leaf(tn,counts):
+	'''Sets as LEAF type Fills in counts'''
 	tn.ttype = TreeTypes.LEAF
 	tn.counts = counts
 
 @njit(TN(TR),nogil=True,fastmath=True)
 def new_node(tree):
+	'''Instantiates a new node, of undetermined type'''
 	tn = TreeNode()
 	index = len(tree.nodes)
 	tree.nodes.append(tn)
 	tn.index = index
 	return tn
-# @njit(nogil=True,fastmath=True,cache=True)
-# def new_Node(split_on,left=None,right=None):
-# 	return TreeNode(TreeTypes.NODE,split_on,left,right,None)
 
-# @njit(nogil=True,fastmath=True,cache=True)
-# def new_Leaf(counts):
-# 	return TreeNode(TreeTypes.LEAF,counts=counts)
-@njit(nogil=True,fastmath=True,cache=True)
-def choose_single_max(impurity_decrease):
-	return np.asarray([np.argmax(impurity_decrease)])
 
 @njit(nogil=True,fastmath=True,cache=True)
-def choose_all_max(impurity_decrease):
-	m = np.max(impurity_decrease)
-	return np.where(impurity_decrease==m)[0]
-	# return np.asarray([np.argmax(impurity_decrease)])
-
-@njit(nogil=True,fastmath=True)
-def test_fit(x,y):	
-	out =fit_Atree(x,y,
-			criterion_func=gini,
-			split_chooser=choose_single_max,
-			sep_nan=True
-		 )
-	return out
-
-@njit(nogil=True,fastmath=True)
-def fit_tree(x,y,criterion_func,split_chooser,sep_nan=False):
-	# criterion_func = gini#get_criterion_func(criterion)
-	sorted_inds = np.argsort(y)
-	x_sorted = x[sorted_inds]
-	counts, u_ys, y_inds = unique_counts(y[sorted_inds]);
-	impurity = criterion_func(np.expand_dims(counts,0))[0]
-	contexts = List()
-	tree = Tree()
-	contexts.append(SplitContext(np.arange(0,len(x),dtype=np.uint32),#x_sorted,y_inds,
-		impurity,counts,new_node(tree)))
-
-	# parent_node = TreeNode()
-
-	while len(contexts) > 0:
-		new_contexts = List()
-
-		for i in range(len(contexts)):
-			c = contexts[i]
-			c_x = x_sorted[c.inds]
-			c_y = y_inds[c.inds]
-			# print(c_y)
-
-			countsPS = counts_per_split(c.counts,c_x,c_y,sep_nan)
-			flat_countsPS = countsPS.reshape((-1,countsPS.shape[2]))
-			flat_impurities = criterion_func(flat_countsPS)
-			impurities = flat_impurities.reshape((countsPS.shape[0],countsPS.shape[1]))
-
-			#Sum of new impurities of left and right side of split
-			total_split_impurity = impurities[:,0] + impurities[:,1] 
-			if(sep_nan): total_split_impurity += impurities[:,2];
-			impurity_decrease = c.impurity - (total_split_impurity);
-			splits = split_chooser(impurity_decrease)
-			for j in range(len(splits)):
-				split = splits[j]
-
-				if(impurity_decrease[split] <= 0):
-					assign_leaf(c.parent_node, c.counts)
-				else:
-					node_l, node_r = new_node(tree), new_node(tree)
-					assign_node(c.parent_node,split,node_l.index,node_r.index)
-
-					ms_impurity_l = impurities[split,0].item()
-					ms_impurity_r = impurities[split,1].item()
-
-					mask = c_x[:,split];
-					if(ms_impurity_l > 0):
-						sel = np.argwhere(np.logical_not(mask))[:,0]
-						new_contexts.append(SplitContext(c.inds[sel],#c.x[sel], c.y[sel],
-							ms_impurity_l,countsPS[split,0], node_l))
-					else:
-						assign_leaf(node_l, countsPS[split,0])
-					
-					if(ms_impurity_r > 0):
-						sel = np.argwhere(mask)[:,0]
-						new_contexts.append(SplitContext(c.inds[sel],#c.x[sel], c.y[sel],
-							ms_impurity_r,countsPS[split,1], node_r))
-					else:
-						assign_leaf(node_r, countsPS[split,1])
-
-					if(sep_nan):
-						node_nan = new_node(tree)
-						ms_impurity_nan = impurities[split,2].item()
-						if(ms_impurity_nan > 0):
-							sel = np.argwhere(np.isnan(mask))[:,0]
-							new_contexts.append(SplitContext(c.inds[sel],#c.x[sel], c.y[sel],
-								ms_impurity_r,countsPS[split,2], node_nan))
-						else:
-							c.parent_node.nan.append(node_nan.index)
-
-
-		contexts = new_contexts
-	return tree
-
-@njit(nogil=True,fastmath=True)
-def test_Afit(x,y):	
-	out =fit_Atree(x,y,
-			criterion_func=gini,
-			split_chooser=choose_all_max,
-			cache_nodes=True,
-		 )
-	return out
-
-# @njit(nogil=True,fastmath=True,inline='always')
-# def build_new_node(split_locals,new_inds,split,k):
-# 	'''Handle the creation of a new node. For each splitable node this will be run for
-# 		the left, right, and NaN children. If the new node would be redundant but comes
-# 		from a different set of splits then just retrieve the equivalent node from the
-# 		node_dict since all subtrees will be redundant. Otherwise determine if the new 
-# 		node will be a leaf or not. If not, push a new context to compute its children.
-# 	'''
-# 	# new_inds = c.inds[np.argwhere(~mask)[:,0]]
-# 	tree,node_dict,new_contexts,countsPS,impurities = split_locals
-# 	new_inds_hash = hasharray(new_inds)
-# 	if(new_inds_hash not in node_dict):
-# 		node_dict[new_inds_hash] = node = new_node(tree)
-# 		ms_impurity = impurities[split,k].item()
-# 		if(ms_impurity > 0):
-# 			new_contexts.append(SplitContext(new_inds,#c.x[sel], c.y[sel],
-# 				ms_impurity,countsPS[split,k], node))
-# 		else:
-# 			# print("L:",countsPS[split,0],split, ms_impurity_l)
-# 			assign_leaf(node, countsPS[split,k])
-# 	else:
-# 		node = node_dict[new_inds_hash]
-# 	return node
-
-@njit(nogil=True,fastmath=True)
 def r_l_n_split(x,sep_nan=False):
 	'''Similar to argwhere applied 3 times each for 0,1 and nan, but does all
 	    three at once.'''
@@ -388,6 +268,8 @@ BE, akd_get, akd_includes, akd_insert = AKD(TN)
 
 @njit(nogil=True,fastmath=True,inline='always')
 def fit_Atree(x,y,criterion_func,split_chooser,sep_nan=False, cache_nodes=False):
+	'''Fits a decision/ambiguity tree'''
+
 	# criterion_func = gini#get_criterion_func(criterion)
 	sorted_inds = np.argsort(y)
 	x_sorted = x[sorted_inds]
@@ -488,44 +370,11 @@ def str_tree(tree):
 
 def print_tree(tree):
 	print(str_tree(tree))
-	# for i in range(len(tree.nodes)):
-	# 	tn = tree.nodes[i]
-	# 	if(tn.ttype == TreeTypes.NODE):
-	# 		print(tn.index,": ",tn.split_on, tn.left, tn.right)
-	# 	else:
-	# 		print(tn.index,": ",tn.counts)
-
-
-# def purest_leaf(leaf_counts):
-
-# @njit(nogil=True,fastmath=True)
-def choose_majority_general(leaf_counts,positive_class):
-	for i,count in enumerate(leaf_counts):
-		pred = np.argmax(count)
-		if(pred == positive_class):
-			return True
-	return False
-
-@njit(nogil=True,fastmath=True)
-def choose_pure_majority_general(leaf_counts,positive_class):
-	pure_counts = List()
-	# for i in range(len(leaf_counts)):
-	for count in leaf_counts:
-		# count = leaf_counts[i]
-		# if(np.sum(count > 0) == 1):
-		# print("count",count,count.dtype)
-		if(np.count_nonzero(count) == 1):
-			pure_counts.append(count)
-	leaf_counts = pure_counts if len(pure_counts) > 0 else leaf_counts
-	for i,count in enumerate(leaf_counts):
-		pred = np.argmax(count)
-		if(pred == positive_class):
-			return True
-	return False
 
 
 @njit(nogil=True,fastmath=True)
-def predict_tree(tree,X,choice_func,positive_class=0):
+def predict_tree(tree,X,pred_choice_func,positive_class=0):
+	'''Predicts the class associated with an unlabelled sample using a fitted tree'''
 	out = np.empty((X.shape[0]))
 	
 	for i in range(len(X)):
@@ -550,23 +399,24 @@ def predict_tree(tree,X,choice_func,positive_class=0):
 					leafs.append(node.counts[:])
 			nodes = new_nodes
 		# print(str(i)+":",["["+",".join([str(_x) for _x in l])+"]" for l in leafs])
-		out[i] = choice_func(leafs,positive_class)
+		out[i] = pred_choice_func(leafs,positive_class)
 		
 	return out
 		
 class TreeClassifier(object):
-	def __init__(self, tree_type='ambiguity',
+	def __init__(self, 
 					  criterion_func='gini',
 					  split_chooser='choose_all_max',
-					  choice_func='choose_pure_majority_general',
+					  pred_choice_func='choose_pure_majority_general',
 					  positive_class=1):
+
 		l = globals()
 		criterion_func = l[criterion_func]
 		split_chooser = l[split_chooser]
-		choice_func = l[choice_func]
+		pred_choice_func = l[pred_choice_func]
 		positive_class = positive_class
 		
-		ft = fit_Atree if tree_type == 'ambiguity' else fit_tree
+		ft = fit_Atree
 		@njit(nogil=True,fastmath=True)
 		def _fit(X,y):
 			return ft(X,y,criterion_func,split_chooser)
@@ -574,7 +424,7 @@ class TreeClassifier(object):
 
 		@njit(nogil=True,fastmath=True)
 		def _predict(tree,X):
-			return predict_tree(tree,X,choice_func,positive_class)
+			return predict_tree(tree,X,pred_choice_func,positive_class)
 		self._predict = _predict
 
 		self.tree = None
@@ -588,73 +438,27 @@ class TreeClassifier(object):
 	def __str__(self):
 		return str_tree(self.tree)
 
-# @jitclass([('criterion', unicode_type)])
-# @jitclass([])
-# class NB_ILPTree(object):
-# 	def __init__(self):
-# 		pass
 
-# 	# @njit(nogil=True,fastmath=True,cache=True)
-# 	def run_it(self,inp,criterion_func):
-# 		# criterion_func = get_criterion_func(self.criterion)
-# 		return criterion_func(inp)
-# 	def fit():
-		# pass
+@njit(nogil=True,fastmath=True)
+def test_fit(x,y):	
+	out =fit_Atree(x,y,
+			criterion_func=gini,
+			split_chooser=choose_single_max,
+			sep_nan=True
+		 )
+	return out
 
 
 
+@njit(nogil=True,fastmath=True)
+def test_Afit(x,y):	
+	out =fit_Atree(x,y,
+			criterion_func=gini,
+			split_chooser=choose_all_max,
+			cache_nodes=True,
+		 )
+	return out
 
-
-# @njit(nogil=True,fastmath=True,cache=True)
-# def binary_decision_tree(x, y, criterion='gini', split_chooser=''):
-# 	criterion_func = gini#get_criterion_func(criterion)
-# 	sorted_inds = np.argsort(y)
-# 	x_sorted = x[sorted_inds]
-# 	y_sorted = y[sorted_inds]
-# 	counts, u_ys, y_inds = unique_counts(y_sorted);
-# 	impurity = criterion_func(np.expand_dims(counts,0))[0]
-# 	contexts = List()
-# 	contexts.append(SplitContext(x_sorted,y_inds,impurity,counts))
-
-# 	while len(contexts) > 0:
-# 		new_contexts = List()
-
-# 		for i in range(len(contexts)):
-# 			c = contexts[i]
-
-# 			countsPS = counts_per_split(c.counts,c.x,c.y)
-# 			flat_countsPS = countsPS.reshape((-1,countsPS.shape[2]))
-# 			flat_impurities = criterion_func(flat_countsPS)
-# 			impurities = flat_impurities.reshape((countsPS.shape[0],countsPS.shape[1]))
-
-# 			#Sum of new impurities of left and right side of split
-# 			total_split_impurity = impurities[:,0] + impurities[:,1];  
-# 			impurity_decrease = impurity - (total_split_impurity);
-# 			max_split = np.argmax(impurity_decrease);
-			
-# 			if(impurity_decrease[max_split] <= 0):
-# 				max_count = countsPS[max_split,0,:];
-
-# 			elif(total_split_impurity[max_split] > 0):
-# 				ms_impurity_l = impurities[max_split,0].item()
-# 				ms_impurity_r = impurities[max_split,1].item()
-
-# 				mask = c.x[:,max_split];
-# 				if(ms_impurity_l > 0):
-# 					sel = np.argwhere(np.logical_not(mask))[:,0]
-# 					new_contexts.append(SplitContext(c.x[sel], c.y[sel],
-# 						ms_impurity_l,countsPS[max_split,0]))
-# 				else:
-# 					pass
-
-# 				if(ms_impurity_r > 0):
-# 					sel = np.argwhere(mask)[:,0]
-# 					new_contexts.append(SplitContext(c.x[sel], c.y[sel],
-# 						ms_impurity_r,countsPS[max_split,1]))
-# 				else:
-# 					pass
-# 		contexts = new_contexts
-# 	return 0
 
 if(__name__ == "__main__"):
 	data = np.asarray([
@@ -684,7 +488,7 @@ if(__name__ == "__main__"):
 	# def c_bdt():
 	# 	fit_tree_gini(data,labels)
 	###
-
+	N = 100
 	def time_ms(f):
 		f() #warm start
 		return " %0.6f ms" % (1000.0*(timeit.timeit(f, number=N)/float(N)))
@@ -704,7 +508,7 @@ if(__name__ == "__main__"):
 	def control():
 		return 0
 	
-	N = 10000
+	
 	# f = get_criterion_func('gini')
 	print(numba.typeof(gini))
 	print(numba.typeof(unique_counts(labels)))
@@ -826,25 +630,25 @@ a = {"obj2-contenteditable": False,
 }
 
 
-class DictVectorizer(object):
-	def __init__(self):
-		self.map = {}
+# class DictVectorizer(object):
+# 	def __init__(self):
+# 		self.map = {}
 
-	def vectorize(self,flat_state):
-		# new_map = self.map
-		for k in flat_state.keys():
-			self.map[k] = len(self.map)
+# 	def vectorize(self,flat_state):
+# 		# new_map = self.map
+# 		for k in flat_state.keys():
+# 			self.map[k] = len(self.map)
 
-		out = np.array(len(self.map),dtype=np.float64)
-		for k, v in flat_state.items():
-			out[self.map[k]] = v
+# 		out = np.array(len(self.map),dtype=np.float64)
+# 		for k, v in flat_state.items():
+# 			out[self.map[k]] = v
 
-		return out
+# 		return out
 
 
-dv = DictVectorizer()
+# dv = DictVectorizer()
 
-dv.vectorize(a)
+# dv.vectorize(a)
 
 
 
