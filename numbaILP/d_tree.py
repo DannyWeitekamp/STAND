@@ -491,10 +491,22 @@ if(__name__ == "__main__"):
 	# nb_fit = my_bdt.nb_ilp_tree.fit
 
 	##Compiled 
+
+
 	# cc = CC("my_module")
-	# compile_template(fit_tree,{'criterion_func': gini},cc,'TR(b1[:,:],u4[:])',globals())
+	# # compile_template(fit_Atree,{'criterion_func': gini,'split_chooser': choose_single_max,
+	# # 	'sep_nan':False, 'cache_nodes':False,},cc,'TR(b1[:,:],u4[:])',globals())
+	# compile_template(fit_Atree,{'criterion_func': gini,'split_chooser': choose_all_max,
+	# 	'sep_nan':False, 'cache_nodes':True,},cc,'TR(b1[:,:],u4[:])',globals())
 	# cc.compile()
-	# from my_module import fit_tree_gini	
+	from my_module import fit_Atree_gini_choose_all_max_False_True
+
+
+	# cc = CC("my_module")
+	# compile_template(fit_Atree,{'criterion_func': gini,'split_chooser': choose_single_max,
+	# 	'sep_nan':False, 'cache_nodes':False,},cc,'TR(b1[:,:],u4[:])',globals())
+	# cc.compile()
+	# from my_module import fit_Atree_gini_choose_single_max_False_False
 	# def c_bdt():
 	# 	fit_tree_gini(data,labels)
 	###
@@ -507,7 +519,8 @@ if(__name__ == "__main__"):
 		test_fit(data,labels)
 
 	def At():
-		test_Afit(data,labels)
+		fit_Atree_gini_choose_all_max_False_True(data,labels)
+		# test_Afit(data,labels)
 		# binary_decision_tree(data,labels)
 		# my_bdt.fit(data,labels)
 		# nb_fit(data,labels,gini)
