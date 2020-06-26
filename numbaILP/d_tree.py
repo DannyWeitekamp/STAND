@@ -5,9 +5,9 @@ import numba
 from numba import types, njit, guvectorize,vectorize,prange
 from numba.experimental import jitclass
 from numba import deferred_type, optional
-from numba import void,b1,u1,u2,u4,u8,i1,i2,i4,i8,f4,f8,c8,c16
+from numba import void,b1,u1,u2,u8,u8,i1,i2,i8,i8,f4,f8,c8,c16
 from numba.typed import List, Dict
-from numba.core.types import ListType, unicode_type, NamedTuple,NamedUniTuple
+from numba.core.types import DictType,ListType, unicode_type, NamedTuple,NamedUniTuple
 from collections import namedtuple
 import timeit
 from sklearn import tree as SKTree
@@ -22,7 +22,7 @@ from fnvhash import hasharray, AKD#, akd_insert,akd_get
 
 #########  Impurity Functions #######
 
-@njit(f8[::1](u4[:,:]),nogil=True,fastmath=True,cache=True)
+@njit(f8[::1](u8[:,:]),nogil=True,fastmath=True,cache=True)
 def gini(counts):
 	out = np.empty(counts.shape[0], dtype=np.double)
 	for j in range(counts.shape[0]):
@@ -39,7 +39,7 @@ def gini(counts):
 		out[j] = s;
 	return out
 
-@njit(f8[::1](u4[:,:]),nogil=True,fastmath=True,cache=True)
+@njit(f8[::1](u8[:,:]),nogil=True,fastmath=True,cache=True)
 def return_zero(counts):
 	return np.zeros(counts.shape[0],dtype=np.double)
 
@@ -103,19 +103,15 @@ class TreeTypes(IntEnum):
 	LEAF = 2
 
 ######### Struct Definitions #########
-# SplitData = namedtuple("SplitData",['split_on','left','right','nan'])
-# NBSplitData = NamedUniTuple(i8,4,SplitData)
 
-
-TreeNode = namedtuple("TreeNode",['ttype','index','split_data','counts'])
-TN = NamedTuple([i8,i4,ListType(i4[::1]),u4[::1]],TreeNode)
-# @jitclass([('ttype',	   i4),
-# 		   ('index',	   i4),
-# 		   ('split_on',	 ListType(i4)),
-# 		   ('left',      ListType(i4)),
-# 		   ('right',     ListType(i4)),
-# 		   ('nan',       ListType(i4)),
-# 		   ('counts',    optional(u4[:]))])
+# TN = NamedTuple([i8,i8,ListType(i8[::1]),u8[::1]],TreeNode)
+# @jitclass([('ttype',	   i8),
+# 		   ('index',	   i8),
+# 		   ('split_on',	 ListType(i8)),
+# 		   ('left',      ListType(i8)),
+# 		   ('right',     ListType(i8)),
+# 		   ('nan',       ListType(i8)),
+# 		   ('counts',    optional(u8[:]))])
 # class TreeNode(object):
 # 	'''A particular node in the tree
 # 		ttype -- Indicates if it is a leaf or node
@@ -132,27 +128,30 @@ TN = NamedTuple([i8,i4,ListType(i4[::1]),u4[::1]],TreeNode)
 # 		self.ttype = 0
 # 		self.index = 0
 # 		#For Nodes
-# 		self.split_on = List.empty_list(i4)
-# 		self.left = List.empty_list(i4)
-# 		self.right = List.empty_list(i4)
-# 		self.nan = List.empty_list(i4)
+# 		self.split_on = List.empty_list(i8)
+# 		self.left = List.empty_list(i8)
+# 		self.right = List.empty_list(i8)
+# 		self.nan = List.empty_list(i8)
 # 		#For Leaves
 # 		self.counts = None
 
 # TN = TreeNode.class_type.instance_type
 
-@jitclass([('nodes',ListType(TN))])
-class Tree(object):
-	'''A list of nodes'''
-	def __init__(self):
-		self.nodes = List.empty_list(TN)
+# Tree = namedtuple("Tree",['nodes'])
+# TR = NamedTuple([DictType(i8,TN)],Tree)
 
-TR = Tree.class_type.instance_type
+# @jitclass([('nodes',DictType(i8,TN))])
+# class Tree(object):
+# 	'''A list of nodes'''
+# 	def __init__(self):
+# 		self.nodes = Dict.empty(i8,TN)#List.empty_list(TN)
 
-@jitclass([('inds', u4[::1]),
+# TR = Tree.class_type.instance_type
+
+@jitclass([('inds', u8[::1]),
 		   ('impurity', f8),
-		   ('counts', u4[::1]),
-		   ('parent_node', i4)])
+		   ('counts', u8[::1]),
+		   ('parent_node', i8)])
 class SplitContext(object):
 	''' An object holding relevant local variables of the tree after a split.
 		This is used to avoid using recursion.
@@ -176,7 +175,7 @@ def counts_per_split(start_counts, x, y_inds, sep_nan=False):
 		Determines the number of elements of each class that would be in the resulting
 		left, right and nan nodes if a split was made at each possible feature.
 	'''
-	counts = np.zeros((x.shape[1],2+sep_nan,len(start_counts)),dtype=np.uint32);
+	counts = np.zeros((x.shape[1],2+sep_nan,len(start_counts)),dtype=np.uint64);
 	for i in range(x.shape[0]):
 		for j in range(x.shape[1]):
 			if(sep_nan and np.isnan(x[i,j])):
@@ -190,14 +189,14 @@ def counts_per_split(start_counts, x, y_inds, sep_nan=False):
 
 
 
-@njit(nogil=True,fastmath=True,cache=True)
+@njit(nogil=True,fastmath=True,cache=False)
 def unique_counts(inp):
 	''' 
 		Finds the unique classes in an input array of class labels
 	'''
 	counts = [];
 	uniques = [];
-	inds = np.zeros(len(inp),np.uint32);
+	inds = np.zeros(len(inp),dtype=np.uint64);
 	ind=0;
 	last = 0;
 	for i in range(1,len(inp)):
@@ -210,49 +209,53 @@ def unique_counts(inp):
 	counts.append((i+1)-last);
 	uniques.append(inp[i]);
 
-	c = np.asarray(counts,dtype=np.uint32)
-	u = np.asarray(uniques,dtype=np.int32)
+	c = np.asarray(counts,dtype=np.uint64)
+	# c = np.empty(len(counts), dtype=np.uint64)#np.asarray(counts,dtype=np.uint64)
+	# for i,v in enumerate(c):
+	# 	c[i] = v
+	u = np.asarray(uniques,dtype=np.int64)
 	return c, u, inds
 
 
 
 
-@njit(void(TR,i4,i4,u4[::1],i4,i4,optional(i4)),nogil=True,fastmath=True)
-def assign_node(tree,tn_ind,split_on,counts,left,right,nan=None):
-	'''Sets as NODE type and fills in content of node'''
-	_nan = np.array(-1,dtype=np.int32).item() #if(nan is None) else nan
-	# split_data = SplitData(split_on,left,right,_nan)
-	split_data_list = tree.nodes[tn_ind].split_data
-	split_data_list.append(np.array([split_on,left,right,_nan],dtype=np.int32))#split_data)
-	# tn = TreeNode(TreeTypes.NODE,tn_ind,split_data,None)
-	# tn.ttype = TreeTypes.NODE
-	# tn.split_on.append(split_on)
-	# tn.left.append(left)
-	# tn.right.append(right)
-	# if(nan is not None): tn.nan.append(nan)
-	tree.nodes[tn_ind] = TreeNode(2,tn_ind,split_data_list,counts)
+# @njit(void(TR,i8,i8,u8[::1],i8,i8,optional(i8)),nogil=True,fastmath=True)
+# def assign_node(tree,tn_ind,split_on,counts,left,right,nan=None):
+# 	'''Sets as NODE type and fills in content of node'''
+# 	_nan = np.array(-1,dtype=np.int64).item() #if(nan is None) else nan
+# 	# split_data = SplitData(split_on,left,right,_nan)
+# 	split_data_list = tree.nodes[tn_ind].split_data
+# 	split_data_list.append(np.array([split_on,left,right,_nan],dtype=np.int64))#split_data)
+# 	# tn = TreeNode(TreeTypes.NODE,tn_ind,split_data,None)
+# 	# tn.ttype = TreeTypes.NODE
+# 	# tn.split_on.append(split_on)
+# 	# tn.left.append(left)
+# 	# tn.right.append(right)
+# 	# if(nan is not None): tn.nan.append(nan)
+# 	tree.nodes[tn_ind] = TreeNode(2,tn_ind,split_data_list,counts)
 
 
-# @njit(void(TN,u4[:]),nogil=True,fastmath=True,cache=True)
-@njit(void(TR,i4,u4[::1]),nogil=True,fastmath=True,cache=True)
-def assign_leaf(tree,tn_ind,counts):
-	'''Sets as LEAF type Fills in counts'''
-	# tn = TreeNode()
-	# tn.ttype = TreeTypes.LEAF
-	# tn.counts = counts
-	tree.nodes[tn_ind] = TreeNode(1,tn_ind,tree.nodes[tn_ind].split_data,counts)
+# # @njit(void(TN,u8[:]),nogil=True,fastmath=True,cache=True)
+# @njit(void(TR,i8,u8[::1]),nogil=True,fastmath=True,cache=True)
+# def assign_leaf(tree,tn_ind,counts):
+# 	'''Sets as LEAF type Fills in counts'''
+# 	# tn = TreeNode()
+# 	# tn.ttype = TreeTypes.LEAF
+# 	# tn.counts = counts
+# 	tree.nodes[tn_ind] = TreeNode(1,tn_ind,tree.nodes[tn_ind].split_data,counts)
 
-# @njit(TN(TR),nogil=True,fastmath=True)
-@njit(i4(TR,u4[::1]),nogil=True,fastmath=True)
-def new_node(tree,counts):
+# # @njit(TN(TR),nogil=True,fastmath=True)
+# @njit(i8(TR,u8[::1]),nogil=True,fastmath=True)
+# def new_node(tree,counts):
+# 	return 1
 	'''Instantiates a new node, of undetermined type'''
-	index = len(tree.nodes)
-	tn = TreeNode(0,np.array(len(tree.nodes),dtype=np.int32).item(),np.empty(4,dtype=np.int32),counts)
+	# index = len(tree.nodes)
+	# tn = TreeNode(0,np.array(len(tree.nodes),dtype=np.int64).item(),np.empty(4,dtype=np.int64),counts)
 	
 	# tree.nodes.append(tn)
-	tree.nodes.append(tn)
+	# tree.nodes.append(tn)
 	# tn.index = index
-	return index
+	# return index
 
 
 @njit(nogil=True,fastmath=True,cache=True)
@@ -260,9 +263,9 @@ def r_l_n_split(x,sep_nan=False):
 	'''Similar to argwhere applied 3 times each for 0,1 and nan, but does all
 	    three at once.'''
 	nl,nr,nn = 0,0,0
-	l = np.empty(x.shape,np.uint32)
-	r = np.empty(x.shape,np.uint32)
-	n = np.empty(x.shape,np.uint32)
+	l = np.empty(x.shape,np.uint64)
+	r = np.empty(x.shape,np.uint64)
+	n = np.empty(x.shape,np.uint64)
 	
 	for i in range(len(x)):
 		x_i = x[i]
@@ -280,29 +283,51 @@ def r_l_n_split(x,sep_nan=False):
 	# return np.array(l), np.array(r), np.array(n)
 	return l[:nl], r[:nr], n[:nn]
 
-BE, akd_get, akd_includes, akd_insert = AKD(i4)
+BE, akd_get, akd_includes, akd_insert = AKD(i8)
 
 
 ######### Fit #########
 
-@njit(nogil=True,fastmath=True,inline='always')
+SplitData = namedtuple("SplitData",['split_on','left','right','nan'])
+NBSplitData = NamedUniTuple(i8,4,SplitData)
+
+
+TreeNode = namedtuple("TreeNode",['ttype','index','split_data','counts'])
+TN = NamedTuple([i8,i8,ListType(NBSplitData),u8[::1]],TreeNode)
+
+@njit
+def new_node(indx,counts):
+	return TreeNode(1,indx,List.empty_list(NBSplitData),counts)
+
+@njit
+def new_leaf(indx,counts):
+	return TreeNode(2,indx,List.empty_list(NBSplitData),counts)
+
+@njit()
 def fit_Atree(x,y,criterion_func,split_chooser,sep_nan=False, cache_nodes=False):
 	'''Fits a decision/ambiguity tree'''
-
+	#ENUMS
+	ZERO,NODE, LEAF = 0,1, 2
 	# criterion_func = gini#get_criterion_func(criterion)
 	sorted_inds = np.argsort(y)
 	x_sorted = x[sorted_inds]
 	counts, u_ys, y_inds = unique_counts(y[sorted_inds]);
 	impurity = criterion_func(np.expand_dims(counts,0))[0]
 	contexts = List()
-	tree = Tree()
-	contexts.append(SplitContext(np.arange(0,len(x),dtype=np.uint32),#x_sorted,y_inds,
-		impurity,counts,new_node(tree)))
+	# tree = Tree()
+
+	contexts.append(SplitContext(np.arange(0,len(x),dtype=np.uint64),#x_sorted,y_inds,
+		impurity,counts,0))#new_node(tree)))
 
 	# parent_node = TreeNode()
-	# node_dict = AKD_TN()#Dict.empty(u4,TN)
-	node_dict = Dict.empty(u4,BE)#Dict.empty(u4,TN)
-	# node_dict = Dict.empty(u4,TN)
+	# node_dict = AKD_TN()#Dict.empty(u8,TN)
+	node_dict = Dict.empty(u8,BE)#Dict.empty(u8,TN)
+	# node_dict = Dict.empty(u8,TN)
+	n_nodes = 1
+	nodes = Dict.empty(i8,TN)#tree.nodes
+	# nodes[ZERO] = TreeNode(NODE,0,List.empty_list(NBSplitData),counts)
+	nodes[0] = TreeNode(NODE,0,List.empty_list(NBSplitData),counts)
+
 	while len(contexts) > 0:
 		new_contexts = List()
 		for i in range(len(contexts)):
@@ -335,48 +360,60 @@ def fit_Atree(x,y,criterion_func,split_chooser,sep_nan=False, cache_nodes=False)
 					new_inds_l, new_inds_r, new_inds_n = r_l_n_split(mask)
 					
 					#New node for left.
-					if (cache_nodes): node_l_inst = akd_get(node_dict,new_inds_l)
+					# if (cache_nodes): node_l_inst = akd_get(node_dict,new_inds_l)
 					if(node_l is None):
-						node_l = new_node(tree)
-						if(cache_nodes): akd_insert(node_dict,new_inds_l,node_l)
+						# node_l = new_node(tree)
+						node_l = n_nodes
 						ms_impurity_l = impurities[split,0].item()
 						if(ms_impurity_l > 0):
+							nodes[n_nodes]=TreeNode(NODE,n_nodes,List.empty_list(NBSplitData),countsPS[split,1])
 							new_contexts.append(SplitContext(new_inds_l,
-								ms_impurity_l,countsPS[split,0], node_l))
+								ms_impurity_l,countsPS[split,0], n_nodes))
 						else:
-							pass
+							nodes[n_nodes]=TreeNode(LEAF,n_nodes,List.empty_list(NBSplitData),countsPS[split,0])
 							# assign_leaf(tree,node_l, countsPS[split,0])
+						n_nodes += 1
+						# if(cache_nodes): akd_insert(node_dict,new_inds_l,node_l)
 
 					#New node for right.
-					if (cache_nodes): node_r = akd_get(node_dict,new_inds_r)
+					# if (cache_nodes): node_r = akd_get(node_dict,new_inds_r)
 					if(node_r is None):
-						node_r = new_node(tree)
-						if(cache_nodes): akd_insert(node_dict,new_inds_r,node_r)
+						# node_r = new_node(tree)
+						node_r = n_nodes
 						ms_impurity_r = impurities[split,1].item()
 						if(ms_impurity_r > 0):
+							nodes[n_nodes]=TreeNode(NODE,n_nodes,List.empty_list(NBSplitData),countsPS[split,1])
 							new_contexts.append(SplitContext(new_inds_r,
-								ms_impurity_r,countsPS[split,1], node_r))
+								ms_impurity_r,countsPS[split,1], n_nodes))
 						else:
-							pass
+							nodes[n_nodes]=TreeNode(LEAF,n_nodes,List.empty_list(NBSplitData),countsPS[split,1])
 							# assign_leaf(tree,node_r, countsPS[split,1])
+						n_nodes += 1
+						# if(cache_nodes): akd_insert(node_dict,new_inds_r,node_r)
 
 					#New node for NaN values.
 					if(sep_nan):
-						if (cache_nodes): node_n = akd_get(node_dict,new_inds_n)
+						
 						if(node_n is None):
-							node_n = new_node(tree)
-							if(cache_nodes): akd_insert(node_dict,new_inds_n,node_n)
+							# node_n = new_node(tree)
+							node_n = n_nodes
+							
 							ms_impurity_n = impurities[split,2].item()
 							if(ms_impurity_n > 0):
+								nodes[n_nodes]=TreeNode(NODE,n_nodes,List.empty_list(NBSplitData),countsPS[split,2])
 								new_contexts.append(SplitContext(new_inds_n,
-									ms_impurity_n,countsPS[split,2], node_n))
+									ms_impurity_n,countsPS[split,2], n_nodes))
 							else:
-								pass
+								nodes[n_nodes]=TreeNode(LEAF,n_nodes,List.empty_list(NBSplitData),countsPS[split,2])
 								# assign_leaf(tree,node_n, countsPS[split,2])
+							n_nodes += 1
+							# if(cache_nodes): akd_insert(node_dict,new_inds_n,node_n)
+						# if (cache_nodes): node_n = akd_get(node_dict,new_inds_n)
 					# assign_node(tree,c.parent_node, split, node_l, node_r,node_n)
 
 		contexts = new_contexts
-	return tree
+	# tree = Tree(nodes)
+	return nodes
   
 
 ######### Predict #########
@@ -501,7 +538,7 @@ if(__name__ == "__main__"):
 	[1,0,1,0,1,0,1,1,1,1,1,0,0,0,0,1,0], #2
 	],np.bool);
 
-	labels = np.asarray([3,1,1,1,2,2,2],np.int32);
+	labels = np.asarray([3,1,1,1,2,2,2],np.int64);
 	clf = SKTree.DecisionTreeClassifier()
 	# my_bdt = ILPTree()
 	my_AT = TreeClassifier()
@@ -511,7 +548,7 @@ if(__name__ == "__main__"):
 
 	##Compiled 
 	# cc = CC("my_module")
-	# compile_template(fit_tree,{'criterion_func': gini},cc,'TR(b1[:,:],u4[:])',globals())
+	# compile_template(fit_tree,{'criterion_func': gini},cc,'TR(b1[:,:],u8[:])',globals())
 	# cc.compile()
 	# from my_module import fit_tree_gini	
 	# def c_bdt():
@@ -582,7 +619,7 @@ if(__name__ == "__main__"):
 	[1,1,1,0,1,0], #2
 	],np.bool);
 
-	labels = np.asarray([1,1,1,2,2,2],np.int32);
+	labels = np.asarray([1,1,1,2,2,2],np.int64);
 	data = data[:,[1,0,2,3,4,5]]
 
 	# tree = test_fit(data[:,[1,0,2,3,4,5]],labels)
@@ -607,7 +644,7 @@ if(__name__ == "__main__"):
 	[1,1], #2
 	],np.bool);
 
-	labels = np.asarray([1,1,1,2],np.int32);
+	labels = np.asarray([1,1,1,2],np.int64);
 
 	tree = test_fit(data,labels)
 	treeA = test_Afit(data,labels)
