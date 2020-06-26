@@ -17,16 +17,7 @@ from numba.pycc import CC
 from fnvhash import hasharray, AKD#, akd_insert,akd_get
 
 
-NUMBA_FUNCS = {
-	"criterion" : {
-		'gini' : gini,
-		'giniimpurity' : gini,
-		'zero' : return_zero
-	},
-	'split_chooser' : {
-		'single' : None
-	}	
-}
+
 
 
 #########  Impurity Functions #######
@@ -96,6 +87,17 @@ def choose_pure_majority_general(leaf_counts,positive_class):
 	return False
 
 
+NUMBA_FUNCS = {
+	"criterion" : {
+		'gini' : gini,
+		'giniimpurity' : gini,
+		'zero' : return_zero
+	},
+	'split_chooser' : {
+		'single' : None
+	}	
+}
+
 class TreeTypes(IntEnum):
 	NODE = 1
 	LEAF = 2
@@ -163,7 +165,7 @@ class SplitContext(object):
 		self.counts = counts
 		self.parent_node = parent_node
 
-
+######### Utility Functions for Fit/Predict  #########
 
 @njit(nogil=True,fastmath=True,cache=True)
 def counts_per_split(start_counts, x, y_inds, sep_nan=False):
@@ -266,6 +268,8 @@ def r_l_n_split(x,sep_nan=False):
 BE, akd_get, akd_includes, akd_insert = AKD(TN)
 
 
+######### Fit #########
+
 @njit(nogil=True,fastmath=True,inline='always')
 def fit_Atree(x,y,criterion_func,split_chooser,sep_nan=False, cache_nodes=False):
 	'''Fits a decision/ambiguity tree'''
@@ -355,26 +359,13 @@ def fit_Atree(x,y,criterion_func,split_chooser,sep_nan=False, cache_nodes=False)
 		contexts = new_contexts
 	return tree
 
-def str_tree(tree):
-	l = []
-	for i in range(len(tree.nodes)):
-		tn = tree.nodes[i]
-		if(tn.ttype == TreeTypes.NODE):
-			if(len(tn.nan) == 0):
-				l.append("%s : %s %s %s" % (tn.index, tn.split_on, tn.left, tn.right))
-			else:
-				l.append("%s : %s %s %s %s" % (tn.index, tn.split_on, tn.left, tn.right, tn.nan))
-		else:
-			l.append("%s : %s" % (tn.index, tn.counts))
-	return "\n".join(l)
 
-def print_tree(tree):
-	print(str_tree(tree))
-
+######### Predict #########
 
 @njit(nogil=True,fastmath=True)
 def predict_tree(tree,X,pred_choice_func,positive_class=0):
-	'''Predicts the class associated with an unlabelled sample using a fitted tree'''
+	'''Predicts the class associated with an unlabelled sample using a fitted 
+		decision/ambiguity tree'''
 	out = np.empty((X.shape[0]))
 	
 	for i in range(len(X)):
@@ -402,6 +393,25 @@ def predict_tree(tree,X,pred_choice_func,positive_class=0):
 		out[i] = pred_choice_func(leafs,positive_class)
 		
 	return out
+
+
+######### Repr/Visualtization #########
+
+def str_tree(tree):
+	l = []
+	for i in range(len(tree.nodes)):
+		tn = tree.nodes[i]
+		if(tn.ttype == TreeTypes.NODE):
+			if(len(tn.nan) == 0):
+				l.append("%s : %s %s %s" % (tn.index, tn.split_on, tn.left, tn.right))
+			else:
+				l.append("%s : %s %s %s %s" % (tn.index, tn.split_on, tn.left, tn.right, tn.nan))
+		else:
+			l.append("%s : %s" % (tn.index, tn.counts))
+	return "\n".join(l)
+
+def print_tree(tree):
+	print(str_tree(tree))
 		
 class TreeClassifier(object):
 	def __init__(self, 
