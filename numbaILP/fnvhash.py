@@ -54,45 +54,49 @@ def fnv0_32(data):
 def hasharray(array):
 	return fnv0_32(array.view(np.uint8))
 
-bytarr_type = u1[:]
+bytarr_type = u1[::1]
 # lst_bytarr_type = ListType(bytarr_type)
 
 
 def AKD(typ,ret_be=False):
     # lst_custom_type = ListType(typ)
 
-    BE_deffered = deferred_type()
-    # BinElem = namedtuple("BinElem",['key','value','next'])
-    # BE = NamedTuple([bytarr_type,typ,optional(BE_deffered)],BinElem)
-    @jitclass([('key', bytarr_type),
-               ('value', typ),
-               ('next', optional(BE_deffered))])
-    class BinElem(object):
-        def __init__(self,key,value):
-            self.key = key
-            self.value = value
-            self.next = None
+    # BE_deffered = deferred_type()
+    BinElem = namedtuple("BinElem",['key','value'])
+    BE = NamedTuple([bytarr_type,typ],BinElem)
+
+    # @jitclass([('key', bytarr_type),
+    #            ('value', typ),
+    #            ('next', optional(BE_deffered))])
+    # class BinElem(object):
+    #     def __init__(self,key,value):
+    #         self.key = key
+    #         self.value = value
+    #         self.next = None
     # print(BinElem)
-    BE = BinElem.class_type.instance_type
-    BE_deffered.define(BE)
+    # BE = BinElem.class_type.instance_type
+    # BE_deffered.define(BE)
 
     @njit(nogil=True,fastmath=True)
     def akd_insert(akd,_arr,item,h=None):
         arr = _arr.view(np.uint8)
         if(h is None): h = hasharray(arr)
-        elem = akd.get(h,None)
+        elems = akd.get(h,List.empty_list(BE))
         is_in = False
-        while(elem is not None):
+        for elem in elems:
+        # while(elem is not None):
             if(len(elem.key) == len(arr) and
                 (elem.key == arr).all()): 
                 is_in = True
                 break
-            if(elem.next is None): break 
-            elem = elem.next
+            # if(elem.next is None): break 
+            # elem = elem.next
         if(not is_in):
             new_elem = BinElem(arr,item)
-            new_elem.next = elem
-            akd[h] = new_elem
+            elems.append(new_elem)
+            # new_elem.next = elem
+            akd[h] = elems
+            # akd[h] = new_elem
             # print("HERE",elem.value,new_elem.value)
 
         # else:
@@ -121,16 +125,14 @@ def AKD(typ,ret_be=False):
     def akd_get(akd,_arr,h=None):
         arr = _arr.view(np.uint8)
         if(h is None): h = hasharray(arr) 
-        elem = akd.get(h,None)
-        while(elem is not None):
-            # print(":",elem.value)
+        elems = akd.get(h,List.empty_list(BE))
+        for elem in elems:
+        # while(elem is not None):
             if(len(elem.key) == len(arr) and
                 (elem.key == arr).all()): 
                 return elem.value
-            if(elem.next is None): break 
-            elem = elem.next
             
-        return -1
+        return None
 
 
     # @jitclass([('bin_map', DictType(u4,i8)),

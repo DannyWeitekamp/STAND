@@ -7,7 +7,7 @@ from numba.experimental import jitclass
 from numba import deferred_type, optional
 from numba import void,b1,u1,u2,u4,u8,i1,i2,i4,i8,f4,f8,c8,c16
 from numba.typed import List, Dict
-from numba.core.types import DictType,ListType, unicode_type, NamedTuple,NamedUniTuple
+from numba.core.types import DictType,ListType, unicode_type, NamedTuple,NamedUniTuple,Tuple
 from collections import namedtuple
 import timeit
 from sklearn import tree as SKTree
@@ -285,8 +285,33 @@ def r_l_n_split(x,sep_nan=False):
 	# return np.array(l), np.array(r), np.array(n)
 	return l[:nl], r[:nr], n[:nn]
 
-BE, akd_get, akd_includes, akd_insert = AKD(i8)
+BE = Tuple([u1[::1],i4])
 
+@njit(nogil=True,fastmath=True)
+def akd_insert(akd,_arr,item,h=None):
+    arr = _arr.view(np.uint8)
+    if(h is None): h = hasharray(arr)
+    elems = akd.get(h,List.empty_list(BE))
+    is_in = False
+    for elem in elems:
+        if(len(elem[0]) == len(arr) and
+            (elem[0] == arr).all()): 
+            is_in = True
+            break
+    if(not is_in):
+        elems.append((arr,item))
+        akd[h] = elems
+
+@njit(nogil=True,fastmath=True)
+def akd_get(akd,_arr,h=None):
+    arr = _arr.view(np.uint8)
+    if(h is None): h = hasharray(arr) 
+    if(h in akd):
+	    for elem in akd[h]:
+	        if(len(elem[0]) == len(arr) and
+	            (elem[0] == arr).all()): 
+	            return elem[1]
+    return -1
 
 ######### Fit #########
 
@@ -317,8 +342,9 @@ def new_leaf(indx,counts):
 	return TreeNode(2,indx,List.empty_list(NBSplitData),counts)
 
 i4_arr = i4[:]
+BE_List = ListType(BE)
 
-@njit( locals={"ZERO":i4,"NODE":i4,"LEAF":i4,"n_nodes":i4,"node_l":i4,"node_r":i4,"node_n":i4,"split":i4})
+@njit(cache=True, locals={"ZERO":i4,"NODE":i4,"LEAF":i4,"n_nodes":i4,"node_l":i4,"node_r":i4,"node_n":i4,"split":i4})
 def fit_Atree(x,y,criterion_func,split_chooser,sep_nan=False, cache_nodes=False):
 	'''Fits a decision/ambiguity tree'''
 	#ENUMS
@@ -332,7 +358,7 @@ def fit_Atree(x,y,criterion_func,split_chooser,sep_nan=False, cache_nodes=False)
 
 	contexts.append(SplitContext(np.arange(0,len(x),dtype=np.uint32),impurity,counts,ZERO))
 
-	node_dict = Dict.empty(u4,BE)
+	node_dict = Dict.empty(u4,BE_List)
 	n_classes = len(counts)
 	nodes = List.empty_list(TN)
 	nodes.append(TreeNode(NODE,ZERO,List.empty_list(i4_arr),counts))
@@ -444,9 +470,9 @@ def encode_tree(nodes):
 			out[ind+1] = out_node_slices[sd[1]] if sd[1] != -1 else -1; 
 			out[ind+2] = out_node_slices[sd[2]] if sd[2] != -1 else -1; 
 			out[ind+3] = out_node_slices[sd[3]] if sd[3] != -1 else -1; 
-			print(sd,out[ind:ind+4])
+			# print(sd,out[ind:ind+4])
 			ind += 4
-		print(ind,out_node_slices[i+1])
+		# print(ind,out_node_slices[i+1])
 		out[ind:out_node_slices[i+1]] = node.counts
 
 	return out
@@ -518,8 +544,8 @@ def str_tree(tree):
 	print(tree)
 	while node_offset < len(tree):
 		node_width = tree[node_offset]
-		ttype, index, splits, counts = _unpack_node(tree,node_offset)
-		print()
+		# ttype, index, splits, counts = _unpack_node(tree,node_offset)
+		# print()
 		# if(ttype == TreeTypes.NODE):
 
 		# else:
@@ -588,7 +614,7 @@ class TreeClassifier(object):
 		return str_tree(self.tree)
 
 
-@njit(nogil=True,fastmath=True)
+@njit(nogil=True,fastmath=True,cache=True)
 def test_fit(x,y):	
 	out =fit_Atree(x,y,
 			criterion_func=gini,
@@ -599,7 +625,7 @@ def test_fit(x,y):
 
 
 
-@njit(nogil=True,fastmath=True)
+@njit(nogil=True,fastmath=True,cache=True)
 def test_Afit(x,y):	
 	out =fit_Atree(x,y,
 			criterion_func=gini,
@@ -630,10 +656,10 @@ if(__name__ == "__main__"):
 	# nb_fit = my_bdt.nb_ilp_tree.fit
 
 	##Compiled 
-	# cc = CC("my_module")
-	# compile_template(fit_tree,{'criterion_func': gini},cc,'TR(b1[:,:],u8[:])',globals())
-	# cc.compile()
-	# from my_module import fit_tree_gini	
+	cc = CC("my_module")
+	compile_template(fit_Atree,{'criterion_func': gini,"split_chooser":choose_single_max},cc,'i4[:](b1[:,:],u8[:])',globals())
+	cc.compile()
+	from my_module import fit_tree_gini	
 	# def c_bdt():
 	# 	fit_tree_gini(data,labels)
 	###
@@ -643,7 +669,7 @@ if(__name__ == "__main__"):
 		return " %0.6f ms" % (1000.0*(timeit.timeit(f, number=N)/float(N)))
 
 	def bdt():
-		test_fit(data,labels)
+		fit_tree_gini(data,labels)
 
 	def At():
 		test_Afit(data,labels)
@@ -672,8 +698,8 @@ if(__name__ == "__main__"):
 	# print("t5:", time_ms(t5))
 	# print("t6:", time_ms(t6))
 
-	# print("d_tree:   ", time_ms(bdt))
-	# print("a_tree:   ", time_ms(At))
+	print("d_tree:   ", time_ms(bdt))
+	print("a_tree:   ", time_ms(At))
 	# print("numba_c  ", time_ms(c_bdt))
 	# print("sklearn: ", time_ms(skldt))
 
