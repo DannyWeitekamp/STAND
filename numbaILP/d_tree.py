@@ -265,7 +265,76 @@ def r_l_n_split(x,sep_nan=False):
 	# return np.array(l), np.array(r), np.array(n)
 	return l[:nl], r[:nr], n[:nn]
 
-BE, akd_get, akd_includes, akd_insert = AKD(TN)
+
+# BE, akd_get, akd_includes, akd_insert = AKD(TN)
+BE_deffered = deferred_type()
+@jitclass([('key', u1[:]),
+           ('value', TN),
+           ('next', optional(BE_deffered))])
+class BinElem(object):
+    def __init__(self,key,value):
+        self.key = key
+        self.value = value
+        self.next = None
+# print(BinElem)
+BE = BinElem.class_type.instance_type
+BE_deffered.define(BE)
+
+@njit(nogil=True,fastmath=True)
+def akd_insert(akd,_arr,item,h=None):
+    arr = _arr.view(np.uint8)
+    if(h is None): h = hasharray(arr)
+    elem = akd.get(h,None)
+    is_in = False
+    while(elem is not None):
+        if(len(elem.key) == len(arr) and
+            (elem.key == arr).all()): 
+            is_in = True
+            break
+        if(elem.next is None): break 
+        elem = elem.next
+    if(not is_in):
+        new_elem = BinElem(arr,item)
+        new_elem.next = elem
+        akd[h] = new_elem
+        # print("HERE",elem.value,new_elem.value)
+
+    # else:
+    #     new_elem = BinElem(arr,item)
+    #     akd[h] = new_elem
+        
+@njit(nogil=True,fastmath=True)
+def akd_includes(akd,_arr,h=None):
+    arr = _arr.view(np.uint8)
+    if(h is None): h = hasharray(arr)
+    elem = akd.get(h,None)
+    # if(elem is not None):
+    is_in = False
+    while(elem is not None):
+        if(len(elem.key) == len(arr) and
+            (elem.key == arr).all()): 
+            is_in = True
+            break
+        if(elem.next is None): break 
+        elem = elem.next
+        # if(is_in):
+        #     return True
+    return is_in
+
+@njit(nogil=True,fastmath=True)
+def akd_get(akd,_arr,h=None):
+    arr = _arr.view(np.uint8)
+    if(h is None): h = hasharray(arr) 
+    elem = akd.get(h,None)
+    while(elem is not None):
+        # print(":",elem.value)
+        if(len(elem.key) == len(arr) and
+            (elem.key == arr).all()): 
+            return elem.value
+        if(elem.next is None): break 
+        elem = elem.next
+        
+    return None
 
 
 ######### Fit #########
