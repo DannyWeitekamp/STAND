@@ -3,8 +3,9 @@ from numba import types, njit, jit
 from numba import deferred_type, optional
 from numba import void,b1,u1,u2,u4,u8,i1,i2,i4,i8,f4,f8,c8,c16
 from numba.typed import List, Dict
-from numba.core.types import ListType, DictType, unicode_type
+from numba.core.types import ListType, DictType, unicode_type, NamedTuple
 from numba.experimental import jitclass
+from collections import namedtuple
 import numpy as np
 
 FNV_32_PRIME = 0x01000193
@@ -61,6 +62,8 @@ def AKD(typ,ret_be=False):
     # lst_custom_type = ListType(typ)
 
     BE_deffered = deferred_type()
+    # BinElem = namedtuple("BinElem",['key','value','next'])
+    # BE = NamedTuple([bytarr_type,typ,optional(BE_deffered)],BinElem)
     @jitclass([('key', bytarr_type),
                ('value', typ),
                ('next', optional(BE_deffered))])
@@ -127,7 +130,7 @@ def AKD(typ,ret_be=False):
             if(elem.next is None): break 
             elem = elem.next
             
-        return None
+        return -1
 
 
     # @jitclass([('bin_map', DictType(u4,i8)),
