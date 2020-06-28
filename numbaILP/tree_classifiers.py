@@ -18,8 +18,6 @@ from fnvhash import hasharray, AKD#, akd_insert,akd_get
 
 
 
-
-
 #########  Impurity Functions #######
 class CRITERION(IntEnum):
 	gini = 1
@@ -79,16 +77,16 @@ def choose_all_max(impurity_decrease):
 
 @njit(cache=True,inline='always')
 def split_chooser(func_enum,impurity_decrease):
-	if(func_enum == SPLIT_CHOICE.choose_single_max):
+	if(func_enum == SPLIT_CHOICE.single_max):
 		return choose_single_max(impurity_decrease)
-	elif(func_enum == SPLIT_CHOICE.choose_all_max):
+	elif(func_enum == SPLIT_CHOICE.all_max):
 		return choose_all_max(impurity_decrease)
 	return choose_single_max(impurity_decrease)
 
 ######### Prediction Choice Functions #########
 class PRED_CHOICE(IntEnum):
-	choose_majority_general = 1
-	choose_pure_majority_general = 2
+	majority_general = 1
+	pure_majority_general = 2
 
 
 @njit(nogil=True,fastmath=True,cache=True)
@@ -118,95 +116,17 @@ def choose_pure_majority_general(leaf_counts,positive_class):
 
 @njit(nogil=True,fastmath=True,cache=True)
 def pred_choice_func(func_enum,leaf_counts,positive_class):
-	if(func_enum == PRED_CHOICE.choose_majority_general):
+	if(func_enum == PRED_CHOICE.majority_general):
 		return choose_majority_general(leaf_counts,positive_class)
-	elif(func_enum == PRED_CHOICE.choose_pure_majority_general):
+	elif(func_enum == PRED_CHOICE.pure_majority_general):
 		return choose_pure_majority_general(leaf_counts,positive_class)
 	return choose_majority_general(leaf_counts,positive_class)
 
-
-
-
-
-NUMBA_FUNCS = {
-	"criterion" : {
-		'gini' : gini,
-		'giniimpurity' : gini,
-		'zero' : return_zero
-	},
-	'split_chooser' : {
-		'single' : None
-	}	
-}
 
 class TreeTypes(IntEnum):
 	NODE = 1
 	LEAF = 2
 
-######### Struct Definitions #########
-
-# TN = NamedTuple([i8,i8,ListType(i8[::1]),u8[::1]],TreeNode)
-# @jitclass([('ttype',	   i8),
-# 		   ('index',	   i8),
-# 		   ('split_on',	 ListType(i8)),
-# 		   ('left',      ListType(i8)),
-# 		   ('right',     ListType(i8)),
-# 		   ('nan',       ListType(i8)),
-# 		   ('counts',    optional(u8[:]))])
-# class TreeNode(object):
-# 	'''A particular node in the tree
-# 		ttype -- Indicates if it is a leaf or node
-# 		index -- The location of the node in the list of all nodes
-# 		split_on -- If is a non-leaf node, the set of splits made on this node
-# 			can be more than one in the case of ambiguity tree
-# 		left -- For each split in split_on the index of the node to the left
-# 		right -- For each split in split_on the index of the node to the right
-# 		nan -- For each split in split_on the index of the node in the nan slot
-# 		counts -- If is a leaf node the number of samples of each class falling in it
-# 	'''
-
-# 	def __init__(self):
-# 		self.ttype = 0
-# 		self.index = 0
-# 		#For Nodes
-# 		self.split_on = List.empty_list(i8)
-# 		self.left = List.empty_list(i8)
-# 		self.right = List.empty_list(i8)
-# 		self.nan = List.empty_list(i8)
-# 		#For Leaves
-# 		self.counts = None
-
-# TN = TreeNode.class_type.instance_type
-
-# Tree = namedtuple("Tree",['nodes'])
-# TR = NamedTuple([DictType(i8,TN)],Tree)
-
-# @jitclass([('nodes',DictType(i8,TN))])
-# class Tree(object):
-# 	'''A list of nodes'''
-# 	def __init__(self):
-# 		self.nodes = Dict.empty(i8,TN)#List.empty_list(TN)
-
-# TR = Tree.class_type.instance_type
-
-# @jitclass([('inds', u4[::1]),
-# 		   ('impurity', f8),
-# 		   ('counts', u4[::1]),
-# 		   ('parent_node', i4)])
-# class SplitContext(object):
-# 	''' An object holding relevant local variables of the tree after a split.
-# 		This is used to avoid using recursion.
-# 		inds -- A list of indicies of samples which fall in the present branch of the tree.
-# 		impurity -- The impurity of this branch of the tree.
-# 		counts -- The number of samples of each class.
-# 		parent node -- The node from which this branch was produced.
-# 	'''
-# 	def __init__(self,inds,
-# 		impurity,counts,parent_node):
-# 		self.inds = inds
-# 		self.impurity = impurity
-# 		self.counts = counts
-# 		self.parent_node = parent_node
 
 ######### Utility Functions for Fit/Predict  #########
 
@@ -227,7 +147,6 @@ def counts_per_split(start_counts, x, y_inds, sep_nan=False):
 				else:
 					counts[j,0,y_inds[i]] += 1;	
 	return counts;
-
 
 
 @njit(nogil=True,fastmath=True,cache=False)
@@ -251,52 +170,9 @@ def unique_counts(inp):
 	uniques.append(inp[i]);
 
 	c = np.asarray(counts,dtype=np.uint32)
-	# c = np.empty(len(counts), dtype=np.uint64)#np.asarray(counts,dtype=np.uint64)
-	# for i,v in enumerate(c):
-	# 	c[i] = v
 	u = np.asarray(uniques,dtype=np.int32)
 	return c, u, inds
 
-
-
-
-# @njit(void(TR,i8,i8,u8[::1],i8,i8,optional(i8)),nogil=True,fastmath=True)
-# def assign_node(tree,tn_ind,split_on,counts,left,right,nan=None):
-# 	'''Sets as NODE type and fills in content of node'''
-# 	_nan = np.array(-1,dtype=np.int64).item() #if(nan is None) else nan
-# 	# split_data = SplitData(split_on,left,right,_nan)
-# 	split_data_list = tree.nodes[tn_ind].split_data
-# 	split_data_list.append(np.array([split_on,left,right,_nan],dtype=np.int64))#split_data)
-# 	# tn = TreeNode(TreeTypes.NODE,tn_ind,split_data,None)
-# 	# tn.ttype = TreeTypes.NODE
-# 	# tn.split_on.append(split_on)
-# 	# tn.left.append(left)
-# 	# tn.right.append(right)
-# 	# if(nan is not None): tn.nan.append(nan)
-# 	tree.nodes[tn_ind] = TreeNode(2,tn_ind,split_data_list,counts)
-
-
-# # @njit(void(TN,u8[:]),nogil=True,fastmath=True,cache=True)
-# @njit(void(TR,i8,u8[::1]),nogil=True,fastmath=True,cache=True)
-# def assign_leaf(tree,tn_ind,counts):
-# 	'''Sets as LEAF type Fills in counts'''
-# 	# tn = TreeNode()
-# 	# tn.ttype = TreeTypes.LEAF
-# 	# tn.counts = counts
-# 	tree.nodes[tn_ind] = TreeNode(1,tn_ind,tree.nodes[tn_ind].split_data,counts)
-
-# # @njit(TN(TR),nogil=True,fastmath=True)
-# @njit(i8(TR,u8[::1]),nogil=True,fastmath=True)
-# def new_node(tree,counts):
-# 	return 1
-	'''Instantiates a new node, of undetermined type'''
-	# index = len(tree.nodes)
-	# tn = TreeNode(0,np.array(len(tree.nodes),dtype=np.int64).item(),np.empty(4,dtype=np.int64),counts)
-	
-	# tree.nodes.append(tn)
-	# tree.nodes.append(tn)
-	# tn.index = index
-	# return index
 
 
 @njit(nogil=True,fastmath=True,cache=True)
@@ -320,14 +196,17 @@ def r_l_n_split(x,sep_nan=False):
 			else:
 				l[nl] = i
 				nl += 1
-
-	# return np.array(l), np.array(r), np.array(n)
 	return l[:nl], r[:nr], n[:nn]
 
+
+###### Array Keyed Dictionaries ######
+
 BE = Tuple([u1[::1],i4])
+BE_List = ListType(BE)
 
 @njit(nogil=True,fastmath=True)
 def akd_insert(akd,_arr,item,h=None):
+	'''Inserts an i4 item into the dictionary keyed by an array _arr'''
     arr = _arr.view(np.uint8)
     if(h is None): h = hasharray(arr)
     elems = akd.get(h,List.empty_list(BE))
@@ -343,6 +222,7 @@ def akd_insert(akd,_arr,item,h=None):
 
 @njit(nogil=True,fastmath=True)
 def akd_get(akd,_arr,h=None):
+	'''Gets an i4 from a dictionary keyed by an array _arr'''
     arr = _arr.view(np.uint8)
     if(h is None): h = hasharray(arr) 
     if(h in akd):
@@ -352,56 +232,40 @@ def akd_get(akd,_arr,h=None):
 	            return elem[1]
     return -1
 
-######### Fit #########
-
-SplitData = namedtuple("SplitData",['split_on','left','right','nan'])
-NBSplitData = NamedUniTuple(i4,4,SplitData)
-
-
+'''
+TreeNode: A particular node in the tree
+	ttype -- Indicates if it is a leaf or node
+	index -- The location of the node in the list of all nodes
+	split_on -- If is a non-leaf node, the set of splits made on this node
+		can be more than one in the case of ambiguity tree
+	left -- For each split in split_on the index of the node to the left
+	right -- For each split in split_on the index of the node to the right
+	nan -- For each split in split_on the index of the node in the nan slot
+	counts -- If is a leaf node the number of samples of each class falling in it
+'''
 TreeNode = namedtuple("TreeNode",['ttype','index','split_data','counts'])
 TN = NamedTuple([i4,i4,ListType(i4[:]),u4[::1]],TreeNode)
+
+
+'''
+SplitContext: An object holding relevant local variables of the tree after a split.
+	This struct is used to avoid using recursion.
+	inds -- A list of indicies of samples which fall in the present branch of the tree.
+	impurity -- The impurity of this branch of the tree.
+	counts -- The number of samples of each class.
+	parent node -- The node from which this branch was produced.
+'''
 
 SplitContext = namedtuple("SplitContext",['inds','impurity','counts','parent_node'])
 SC = NamedTuple([u4[::1],f8,u4[::1],i4],SplitContext)
 
-# jitclass([('inds', u4[::1]),
-# 		   ('impurity', f8),
-# 		   ('counts', u4[::1]),
-# 		   ('parent_node', i4)])
-
-# Tree = namedtuple("Tree",['nodes'])
-# TR = NamedTuple([DictType(i4,TN)],Tree)
-
-@njit
-def new_node(indx,counts):
-	return TreeNode(1,indx,List.empty_list(NBSplitData),counts)
-
-@njit
-def new_leaf(indx,counts):
-	return TreeNode(2,indx,List.empty_list(NBSplitData),counts)
-
 i4_arr = i4[:]
-BE_List = ListType(BE)
-
-# @njit
-# def _resolve_criterion(f_name):
-# 	if(f_name == "gini"):
-# 		return gini
-# 	return gini
-
-# @njit
-# def _resolve_split_chooser(f_name):
-# 	if(f_name == "choose_all_max"):
-# 		return choose_all_max
-# 	elif(f_name == "choose_single_max"):
-# 		return choose_single_max
-# 	return choose_single_max
 
 
+######### Fit #########
 
-
-
-
+#NOTE: new_node is probably commented out in fit_tree and replaced by an inline implementation
+#	numba's inlining isn't quite mature enough to not take a slight performance hit.
 @njit(cache=True,locals={"NODE":i4,"LEAF":i4,'node':i4},inline='always')
 def new_node(locs,split,new_inds, impurities,countsPS,ind):
 	node_dict,nodes,new_contexts,cache_nodes = locs
@@ -423,10 +287,8 @@ def new_node(locs,split,new_inds, impurities,countsPS,ind):
 @njit(cache=True, locals={"ZERO":i4,"NODE":i4,"LEAF":i4,"n_nodes":i4,"node_l":i4,"node_r":i4,"node_n":i4,"split":i4})
 def fit_tree(x,y,criterion_enum,split_enum,sep_nan=False, cache_nodes=False):
 	'''Fits a decision/ambiguity tree'''
-	# _criterion_func, _split_chooser = _resolve_criterion(criterion_func), _resolve_split_chooser(split_chooser)
-	#ENUMS
+	#ENUMS--necessary if want to use 32bit integers since literals default to 64bit
 	ZERO,NODE, LEAF = 0,1, 2
-	# criterion_func = gini#get_criterion_func(criterion)
 	sorted_inds = np.argsort(y)
 	x_sorted = x[sorted_inds]
 	counts, u_ys, y_inds = unique_counts(y[sorted_inds]);
@@ -438,7 +300,6 @@ def fit_tree(x,y,criterion_enum,split_enum,sep_nan=False, cache_nodes=False):
 	node_dict = Dict.empty(u4,BE_List)
 	nodes = List.empty_list(TN)
 	nodes.append(TreeNode(NODE,ZERO,List.empty_list(i4_arr),counts))
-	# n_nodes = 1
 	
 
 	while len(contexts) > 0:
@@ -521,6 +382,11 @@ def fit_tree(x,y,criterion_enum,split_enum,sep_nan=False, cache_nodes=False):
 
 @njit(nogil=True,fastmath=True)
 def encode_tree(nodes):
+	'''Takes a list of nodes and encodes them into a 1d-int32 numpy array. 
+		Note: This is done because (at least at numba 0.50.1) there is a significant perfomance 
+		cost associate with unboxing Lists of NamedTuples, this seems to not be the case if
+		the list is contained inside a jitclass, but jitclasses are not cacheable or AOT compilable
+	'''
 	n_classes = len(nodes[0].counts)
 	out_node_slices = np.empty((len(nodes)+1,),dtype=np.int32)
 	out_node_slices[0] = 0
@@ -529,11 +395,8 @@ def encode_tree(nodes):
 		l = 4 + len(node.split_data)*4 + n_classes
 		offset += l 
 		out_node_slices[i+1] = offset
-		# out_node_slices[i,1] = offset+l
-	# print(n_classes,out_node_slices)
 	out = np.empty((offset,),dtype=np.int32)
 	for i,node in enumerate(nodes):
-		# print(i,":",node.ttype,node.index,node.split_data,node.counts)
 		ind = out_node_slices[i]
 
 		out[ind+0] = out_node_slices[i+1]-out_node_slices[i]
@@ -541,33 +404,30 @@ def encode_tree(nodes):
 		out[ind+2] = node.index
 		out[ind+3] = len(node.split_data)
 		ind += 4
-		# print(node.split_data)
 		for sd in node.split_data:
 
 			out[ind+0] = sd[0]; 
 			out[ind+1] = out_node_slices[sd[1]] if sd[1] != -1 else -1; 
 			out[ind+2] = out_node_slices[sd[2]] if sd[2] != -1 else -1; 
 			out[ind+3] = out_node_slices[sd[3]] if sd[3] != -1 else -1; 
-			# print(sd,out[ind:ind+4])
 			ind += 4
-		# print(ind,out_node_slices[i+1])
 		out[ind:out_node_slices[i+1]] = node.counts
 
 	return out
 
+
+
+######### Predict #########
 @njit(cache=True,inline='always')
 def _unpack_node(tree,node_offset):
+	'''Takes a tree encoded with encode_tree and the offset where a nodes is located in it
+		and returns the ttype, index, splits, counts of that node. '''
 	l  = tree[node_offset]
 	slc = tree[node_offset:node_offset+l]
-	# print(slc)
 	ttype = slc[1]
 	index = slc[2]
 	if(ttype == TreeTypes.NODE):
-		# print(ttype,slc[3],slc[4:4+slc[3]*4].shape,(slc[3],4))
 		splits = slc[4:4+slc[3]*4].reshape(slc[3],4)
-		# for i, split in enumerate(splits):
-		# 	for j in (1,2,3):
-		# 		splits[i,j] = _indexOf(splits[i,j])
 	else:
 		splits = None
 	counts = slc[4+slc[3]*4:]
@@ -576,20 +436,11 @@ def _unpack_node(tree,node_offset):
 
 @njit(cache=True,inline='always')
 def _indexOf(tree,node_offset):
+	'''Takes a tree encoded with encode_tree and the offset where a nodes is and returns
+	   just the index of the node.'''
 	return tree[node_offset+2]
 
 		
-# def decode_tree(tree):
-
-
-		
-	# tree = Tree(nodes)
-	# return tree
-	# return nodes
-  
-
-######### Predict #########
-
 @njit(nogil=True,fastmath=True, cache=True, locals={"ZERO":i4})
 def predict_tree(tree,X,pred_choice_enum,positive_class=0):
 	'''Predicts the class associated with an unlabelled sample using a fitted 
@@ -627,6 +478,7 @@ def predict_tree(tree,X,pred_choice_enum,positive_class=0):
 ######### Repr/Visualtization #########
 
 def str_tree(tree):
+	'''A string representation of a tree usable for the purposes of debugging'''
 	node_offset = 0
 	print(tree)
 	l = []
@@ -645,29 +497,7 @@ def str_tree(tree):
 		print(tree[node_offset:node_offset+node_width])
 		node_offset += node_width
 	return "\n".join(l)
-	# for i in range(len(tree.nodes)):
-	# 	tn = tree.nodes[i]
-	# 	if(tn.ttype == TreeTypes.NODE):
-	# 		if(len(tn.nan) == 0):
-	# 			l.append("%s : %s %s %s" % (tn.index, tn.split_on, tn.left, tn.right))
-	# 		else:
-	# 			l.append("%s : %s %s %s %s" % (tn.index, tn.split_on, tn.left, tn.right, tn.nan))
-	# 	else:
-	# 		l.append("%s : %s" % (tn.index, tn.counts))
-	# return "\n".join(l)
 
-# def str_tree(tree):
-# 	l = []
-# 	for i in range(len(tree.nodes)):
-# 		tn = tree.nodes[i]
-# 		if(tn.ttype == TreeTypes.NODE):
-# 			if(len(tn.nan) == 0):
-# 				l.append("%s : %s %s %s" % (tn.index, tn.split_on, tn.left, tn.right))
-# 			else:
-# 				l.append("%s : %s %s %s %s" % (tn.index, tn.split_on, tn.left, tn.right, tn.nan))
-# 		else:
-# 			l.append("%s : %s" % (tn.index, tn.counts))
-# 	return "\n".join(l)
 
 def print_tree(tree):
 	print(str_tree(tree))
@@ -712,7 +542,7 @@ class TreeClassifier(object):
 def test_fit(x,y):	
 	out =fit_tree(x,y,
 			criterion_enum=CRITERION.gini,
-			split_enum=SPLIT_CHOICE.choose_single_max, #choose_single_max,
+			split_enum=SPLIT_CHOICE.single_max, #choose_single_max,
 			sep_nan=True
 		 )
 	return out
@@ -723,7 +553,7 @@ def test_fit(x,y):
 def test_Afit(x,y):	
 	out =fit_tree(x,y,
 			criterion_enum=CRITERION.gini,
-			split_enum=SPLIT_CHOICE.choose_all_max,#choose_all_max,
+			split_enum=SPLIT_CHOICE.all_max,#choose_all_max,
 			cache_nodes=True,
 		 )
 	return out
@@ -838,10 +668,10 @@ if(__name__ == "__main__"):
 	treeA = test_Afit(data,labels)
 	print("___")
 	print_tree(tree)
-	print("PREDICT DT",predict_tree(tree,data,PRED_CHOICE.choose_pure_majority_general,positive_class=1))
+	print("PREDICT DT",predict_tree(tree,data,PRED_CHOICE.pure_majority_general,positive_class=1))
 	print("___")
 	print_tree(treeA)
-	print("PREDICT AT",predict_tree(treeA,data,PRED_CHOICE.choose_pure_majority_general,positive_class=1))
+	print("PREDICT AT",predict_tree(treeA,data,PRED_CHOICE.pure_majority_general,positive_class=1))
 	# my_AT.fit(data,labels)
 	# print("MY_AT",my_AT.predict(data))
 	# print("MY_AT",my_AT)
@@ -860,11 +690,11 @@ if(__name__ == "__main__"):
 	treeA = test_Afit(data,labels)
 	print("___")
 	print_tree(tree)
-	print("PREDICT DT",predict_tree(tree,data,PRED_CHOICE.choose_pure_majority_general,positive_class=1))
+	print("PREDICT DT",predict_tree(tree,data,PRED_CHOICE.pure_majority_general,positive_class=1))
 
 	print("___")
 	print_tree(treeA)
-	print("PREDICT AT",predict_tree(treeA,data,PRED_CHOICE.choose_pure_majority_general,positive_class=1))
+	print("PREDICT AT",predict_tree(treeA,data,PRED_CHOICE.pure_majority_general,positive_class=1))
 
 
 	# clf = SKTree.DecisionTreeClassifier()

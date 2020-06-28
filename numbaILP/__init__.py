@@ -1,1 +1,1 @@
-from .d_tree import TreeClassifier
+from .tree_classifiers import TreeClassifier
