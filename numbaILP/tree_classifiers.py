@@ -14,7 +14,31 @@ from sklearn import tree as SKTree
 from numbaILP.compile_template import compile_template
 from enum import IntEnum
 from numba.pycc import CC
-from fnvhash import hasharray, AKD#, akd_insert,akd_get
+from numbaILP.fnvhash import hasharray#, AKD#, akd_insert,akd_get
+
+@njit(nogil=True,fastmath=True,cache=False)
+def unique_counts(inp):
+	''' 
+		Finds the unique classes in an input array of class labels
+	'''
+	counts = [];
+	uniques = [];
+	inds = np.zeros(len(inp),dtype=np.uint32);
+	ind=0;
+	last = 0;
+	for i in range(1,len(inp)):
+		if(inp[i-1] != inp[i]):
+			counts.append(i-last);
+			uniques.append(inp[i-1]);
+			last = i;
+			ind += 1;
+		inds[i] = ind;
+	counts.append((i+1)-last);
+	uniques.append(inp[i]);
+
+	c = np.asarray(counts,dtype=np.uint32)
+	u = np.asarray(uniques,dtype=np.int32)
+	return c, u, inds
 
 
 
@@ -56,8 +80,8 @@ def criterion_func(func_enum,counts):
 
 ######### Split Choosers ##########
 class SPLIT_CHOICE(IntEnum):
-	choose_single_max = 1
-	choose_all_max = 2
+	single_max = 1
+	all_max = 2
 
 # @njit(i4[::1](f8[:]),nogil=True,fastmath=True,cache=True)
 @njit(nogil=True,fastmath=True,cache=True,inline='always')
@@ -85,38 +109,65 @@ def split_chooser(func_enum,impurity_decrease):
 
 ######### Prediction Choice Functions #########
 class PRED_CHOICE(IntEnum):
-	majority_general = 1
-	pure_majority_general = 2
+	majority = 1
+	pure_majority = 2
+	majority_general = 3
+	pure_majority_general = 4
 
-
-@njit(nogil=True,fastmath=True,cache=True)
-def choose_majority_general(leaf_counts,positive_class):
-	''' If multiple leaves on predict (i.e. ambiguity tree), choose 
-		the class predicted by the majority of leaves.''' 
-	for i,count in enumerate(leaf_counts):
-		pred = np.argmax(count)
-		if(pred == positive_class):
-			return True
-	return False
-
-@njit(nogil=True,fastmath=True,cache=True)
-def choose_pure_majority_general(leaf_counts,positive_class):
-	''' If multiple leaves on predict (i.e. ambiguity tree), choose 
-		the class predicted by the majority pure of leaves.''' 
+@njit(nogil=True,fastmath=True,cache=True,inline='always')
+def get_pure_counts(leaf_counts):
 	pure_counts = List()
 	for count in leaf_counts:
 		if(np.count_nonzero(count) == 1):
 			pure_counts.append(count)
+	return leaf_counts
+
+@njit(nogil=True,fastmath=True,cache=True,inline='always')
+def choose_majority(leaf_counts,positive_class):
+	''' If multiple leaves on predict (i.e. ambiguity tree), choose 
+		the class predicted by the majority of leaves.''' 
+	predictions = np.array((len(leaf_counts),),dtype=np.int64)
+	for i,count in enumerate(leaf_counts):
+		predictions[i] = np.argmax(count)
+	c,u, inds = unique_counts(predictions)
+	_i = np.argmax(c)
+	return u[_i]
+
+@njit(nogil=True,fastmath=True,cache=True,inline='always')
+def choose_pure_majority(leaf_counts,positive_class):
+	''' If multiple leaves on predict (i.e. ambiguity tree), choose 
+		the class predicted by the majority pure of leaves.'''
+	pure_counts = get_pure_counts(leaf_counts)
+	leaf_counts = pure_counts if len(pure_counts) > 0 else leaf_counts
+	return choose_majority(leaf_counts,positive_class)
+
+@njit(nogil=True,fastmath=True,cache=True,inline='always')
+def choose_majority_general(leaf_counts,positive_class):
+	for i,count in enumerate(leaf_counts):
+		pred = np.argmax(count)
+		if(pred == positive_class):
+			return 1
+	return 0
+
+@njit(nogil=True,fastmath=True,cache=True,inline='always')
+def choose_pure_majority_general(leaf_counts,positive_class):	
+	pure_counts = get_pure_counts(leaf_counts)
 	leaf_counts = pure_counts if len(pure_counts) > 0 else leaf_counts
 	for i,count in enumerate(leaf_counts):
 		pred = np.argmax(count)
 		if(pred == positive_class):
-			return True
-	return False
+			return 1
+	return 0
 
-@njit(nogil=True,fastmath=True,cache=True)
+
+
+@njit(nogil=True,fastmath=True,cache=True,inline='always')
 def pred_choice_func(func_enum,leaf_counts,positive_class):
-	if(func_enum == PRED_CHOICE.majority_general):
+	if(func_enum == PRED_CHOICE.majority):
+		return choose_majority(leaf_counts,positive_class)
+	elif(func_enum == PRED_CHOICE.pure_majority):
+		return choose_pure_majority(leaf_counts,positive_class)
+	elif(func_enum == PRED_CHOICE.majority_general):
 		return choose_majority_general(leaf_counts,positive_class)
 	elif(func_enum == PRED_CHOICE.pure_majority_general):
 		return choose_pure_majority_general(leaf_counts,positive_class)
@@ -149,36 +200,14 @@ def counts_per_split(start_counts, x, y_inds, sep_nan=False):
 	return counts;
 
 
-@njit(nogil=True,fastmath=True,cache=False)
-def unique_counts(inp):
-	''' 
-		Finds the unique classes in an input array of class labels
-	'''
-	counts = [];
-	uniques = [];
-	inds = np.zeros(len(inp),dtype=np.uint32);
-	ind=0;
-	last = 0;
-	for i in range(1,len(inp)):
-		if(inp[i-1] != inp[i]):
-			counts.append(i-last);
-			uniques.append(inp[i-1]);
-			last = i;
-			ind += 1;
-		inds[i] = ind;
-	counts.append((i+1)-last);
-	uniques.append(inp[i]);
 
-	c = np.asarray(counts,dtype=np.uint32)
-	u = np.asarray(uniques,dtype=np.int32)
-	return c, u, inds
 
 
 
 @njit(nogil=True,fastmath=True,cache=True)
 def r_l_n_split(x,sep_nan=False):
 	'''Similar to argwhere applied 3 times each for 0,1 and nan, but does all
-	    three at once.'''
+		three at once.'''
 	nl,nr,nn = 0,0,0
 	l = np.empty(x.shape,np.uint32)
 	r = np.empty(x.shape,np.uint32)
@@ -207,30 +236,30 @@ BE_List = ListType(BE)
 @njit(nogil=True,fastmath=True)
 def akd_insert(akd,_arr,item,h=None):
 	'''Inserts an i4 item into the dictionary keyed by an array _arr'''
-    arr = _arr.view(np.uint8)
-    if(h is None): h = hasharray(arr)
-    elems = akd.get(h,List.empty_list(BE))
-    is_in = False
-    for elem in elems:
-        if(len(elem[0]) == len(arr) and
-            (elem[0] == arr).all()): 
-            is_in = True
-            break
-    if(not is_in):
-        elems.append((arr,item))
-        akd[h] = elems
+	arr = _arr.view(np.uint8)
+	if(h is None): h = hasharray(arr)
+	elems = akd.get(h,List.empty_list(BE))
+	is_in = False
+	for elem in elems:
+		if(len(elem[0]) == len(arr) and
+			(elem[0] == arr).all()): 
+			is_in = True
+			break
+	if(not is_in):
+		elems.append((arr,item))
+		akd[h] = elems
 
 @njit(nogil=True,fastmath=True)
 def akd_get(akd,_arr,h=None):
 	'''Gets an i4 from a dictionary keyed by an array _arr'''
-    arr = _arr.view(np.uint8)
-    if(h is None): h = hasharray(arr) 
-    if(h in akd):
-	    for elem in akd[h]:
-	        if(len(elem[0]) == len(arr) and
-	            (elem[0] == arr).all()): 
-	            return elem[1]
-    return -1
+	arr = _arr.view(np.uint8)
+	if(h is None): h = hasharray(arr) 
+	if(h in akd):
+		for elem in akd[h]:
+			if(len(elem[0]) == len(arr) and
+				(elem[0] == arr).all()): 
+				return elem[1]
+	return -1
 
 '''
 TreeNode: A particular node in the tree
@@ -377,11 +406,11 @@ def fit_tree(x,y,criterion_enum,split_enum,sep_nan=False, cache_nodes=False):
 
 		contexts = new_contexts
 
-	out = encode_tree(nodes)
+	out = encode_tree(nodes,u_ys)
 	return out
 
 @njit(nogil=True,fastmath=True)
-def encode_tree(nodes):
+def encode_tree(nodes,u_ys):
 	'''Takes a list of nodes and encodes them into a 1d-int32 numpy array. 
 		Note: This is done because (at least at numba 0.50.1) there is a significant perfomance 
 		cost associate with unboxing Lists of NamedTuples, this seems to not be the case if
@@ -389,13 +418,15 @@ def encode_tree(nodes):
 	'''
 	n_classes = len(nodes[0].counts)
 	out_node_slices = np.empty((len(nodes)+1,),dtype=np.int32)
-	out_node_slices[0] = 0
-	offset = 0 
+	
+	offset = 1 
+	out_node_slices[0] = offset
 	for i,node in enumerate(nodes):
 		l = 4 + len(node.split_data)*4 + n_classes
 		offset += l 
 		out_node_slices[i+1] = offset
-	out = np.empty((offset,),dtype=np.int32)
+	out = np.empty((offset+len(u_ys)),dtype=np.int32)
+	out[0] = np.array(offset,dtype=np.int32).item()
 	for i,node in enumerate(nodes):
 		ind = out_node_slices[i]
 
@@ -412,6 +443,7 @@ def encode_tree(nodes):
 			out[ind+3] = out_node_slices[sd[3]] if sd[3] != -1 else -1; 
 			ind += 4
 		out[ind:out_node_slices[i+1]] = node.counts
+	out[out_node_slices[-1]:] = u_ys.astype(np.int32)
 
 	return out
 
@@ -440,17 +472,24 @@ def _indexOf(tree,node_offset):
 	   just the index of the node.'''
 	return tree[node_offset+2]
 
+
+@njit(cache=True,inline='always')
+def _get_y_order(tree):
+	'''Takes a tree encoded with encode_tree and the offset where a nodes is and returns
+	   just the index of the node.'''
+	return tree[tree[0]:]
 		
 @njit(nogil=True,fastmath=True, cache=True, locals={"ZERO":i4})
-def predict_tree(tree,X,pred_choice_enum,positive_class=0):
+def predict_tree(tree,X,pred_choice_enum,positive_class=0,decode_classes=True):
 	'''Predicts the class associated with an unlabelled sample using a fitted 
 		decision/ambiguity tree'''
-	ZERO = 0 
+	ONE = 1 
 	out = np.empty((X.shape[0]))
-	
+	y_uvs = _get_y_order(tree)
+	print()
 	for i in range(len(X)):
 		x = X[i]
-		nodes = List.empty_list(i4); nodes.append(ZERO)
+		nodes = List.empty_list(i4); nodes.append(ONE)
 		leafs = List()
 		while len(nodes) > 0:
 			new_nodes = List()
@@ -470,8 +509,10 @@ def predict_tree(tree,X,pred_choice_enum,positive_class=0):
 					### TODO: Need to copy to unoptionalize the type: remove [:] if #4382 ever fixed
 					leafs.append(counts)
 			nodes = new_nodes
-		out[i] = pred_choice_func(pred_choice_enum,leafs,positive_class)
-		
+
+		out_i = pred_choice_func(pred_choice_enum,leafs,positive_class)
+		if(decode_classes):out_i = y_uvs[out_i]
+		out[i] = out_i
 	return out
 
 
@@ -479,10 +520,11 @@ def predict_tree(tree,X,pred_choice_enum,positive_class=0):
 
 def str_tree(tree):
 	'''A string representation of a tree usable for the purposes of debugging'''
-	node_offset = 0
+	
 	print(tree)
-	l = []
-	while node_offset < len(tree):
+	l = ["TREE w/ classes: %s"%_get_y_order(tree)]
+	node_offset = 1
+	while node_offset < tree[0]:
 		node_width = tree[node_offset]
 		ttype, index, splits, counts = _unpack_node(tree,node_offset)
 		if(ttype == TreeTypes.NODE):
@@ -494,7 +536,6 @@ def str_tree(tree):
 		else:
 			s  = "LEAF(%s) : %s" % (index,counts)
 			l.append(s)
-		print(tree[node_offset:node_offset+node_width])
 		node_offset += node_width
 	return "\n".join(l)
 
@@ -542,7 +583,7 @@ class TreeClassifier(object):
 def test_fit(x,y):	
 	out =fit_tree(x,y,
 			criterion_enum=CRITERION.gini,
-			split_enum=SPLIT_CHOICE.single_max, #choose_single_max,
+			split_enum=SPLIT_CHOICE.single_max,
 			sep_nan=True
 		 )
 	return out
@@ -553,7 +594,7 @@ def test_fit(x,y):
 def test_Afit(x,y):	
 	out =fit_tree(x,y,
 			criterion_enum=CRITERION.gini,
-			split_enum=SPLIT_CHOICE.all_max,#choose_all_max,
+			split_enum=SPLIT_CHOICE.all_max,
 			cache_nodes=True,
 		 )
 	return out
@@ -668,10 +709,10 @@ if(__name__ == "__main__"):
 	treeA = test_Afit(data,labels)
 	print("___")
 	print_tree(tree)
-	print("PREDICT DT",predict_tree(tree,data,PRED_CHOICE.pure_majority_general,positive_class=1))
+	print("PREDICT DT",predict_tree(tree,data,PRED_CHOICE.pure_majority,positive_class=1))
 	print("___")
 	print_tree(treeA)
-	print("PREDICT AT",predict_tree(treeA,data,PRED_CHOICE.pure_majority_general,positive_class=1))
+	print("PREDICT AT",predict_tree(treeA,data,PRED_CHOICE.pure_majority,positive_class=1))
 	# my_AT.fit(data,labels)
 	# print("MY_AT",my_AT.predict(data))
 	# print("MY_AT",my_AT)
@@ -690,11 +731,11 @@ if(__name__ == "__main__"):
 	treeA = test_Afit(data,labels)
 	print("___")
 	print_tree(tree)
-	print("PREDICT DT",predict_tree(tree,data,PRED_CHOICE.pure_majority_general,positive_class=1))
+	print("PREDICT DT",predict_tree(tree,data,PRED_CHOICE.pure_majority,positive_class=1))
 
 	print("___")
 	print_tree(treeA)
-	print("PREDICT AT",predict_tree(treeA,data,PRED_CHOICE.pure_majority_general,positive_class=1))
+	print("PREDICT AT",predict_tree(treeA,data,PRED_CHOICE.pure_majority,positive_class=1))
 
 
 	# clf = SKTree.DecisionTreeClassifier()
