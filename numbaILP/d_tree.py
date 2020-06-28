@@ -2,7 +2,7 @@
 # define NPY_NO_DEPRECATED_API NPY_1_7_API_VERSION
 import numpy as np
 import numba
-from numba import types, njit, guvectorize,vectorize,prange
+from numba import types, njit, guvectorize,vectorize,prange, jit
 from numba.experimental import jitclass
 from numba import deferred_type, optional
 from numba import void,b1,u1,u2,u4,u8,i1,i2,i4,i8,f4,f8,c8,c16
@@ -21,8 +21,11 @@ from fnvhash import hasharray, AKD#, akd_insert,akd_get
 
 
 #########  Impurity Functions #######
+class CRITERION(IntEnum):
+	gini = 1
+	return_zero = 2
 
-@njit(f8[::1](u4[:,:]),nogil=True,fastmath=True,cache=True)
+@njit(f8[::1](u4[:,:]),nogil=True,fastmath=True,cache=True,inline='always')
 def gini(counts):
 	out = np.empty(counts.shape[0], dtype=np.double)
 	for j in range(counts.shape[0]):
@@ -39,29 +42,54 @@ def gini(counts):
 		out[j] = s;
 	return out
 
-@njit(f8[::1](u4[:,:]),nogil=True,fastmath=True,cache=True)
+@njit(f8[::1](u4[:,:]),nogil=True,fastmath=True,cache=True,inline='always')
 def return_zero(counts):
 	return np.zeros(counts.shape[0],dtype=np.double)
 
 
+@njit(cache=True, inline='always')
+def criterion_func(func_enum,counts):
+	if(func_enum == CRITERION.gini):
+		return gini(counts)
+	elif(func_enum == CRITERION.return_zero):
+		return return_zero(counts)
+	return gini(counts)
+
+
 ######### Split Choosers ##########
+class SPLIT_CHOICE(IntEnum):
+	choose_single_max = 1
+	choose_all_max = 2
 
 # @njit(i4[::1](f8[:]),nogil=True,fastmath=True,cache=True)
-@njit(nogil=True,fastmath=True,cache=True)
+@njit(nogil=True,fastmath=True,cache=True,inline='always')
 def choose_single_max(impurity_decrease):
 	'''A split chooser that expands greedily by max impurity 
 		(i.e. this is the chooser for typical decision trees)'''
 	return np.asarray([np.argmax(impurity_decrease)])
 
 # @njit(i4[::1](f8[:]),nogil=True,fastmath=True,cache=True)
-@njit(nogil=True,fastmath=True,cache=True)
+@njit(nogil=True,fastmath=True,cache=True,inline='always')
 def choose_all_max(impurity_decrease):
 	'''A split chooser that expands every decision tree 
 		(i.e. this chooser forces to build whole ambiguity tree)'''
 	m = np.max(impurity_decrease)
 	return np.where(impurity_decrease==m)[0]
 
+
+@njit(cache=True,inline='always')
+def split_chooser(func_enum,impurity_decrease):
+	if(func_enum == SPLIT_CHOICE.choose_single_max):
+		return choose_single_max(impurity_decrease)
+	elif(func_enum == SPLIT_CHOICE.choose_all_max):
+		return choose_all_max(impurity_decrease)
+	return choose_single_max(impurity_decrease)
+
 ######### Prediction Choice Functions #########
+class PRED_CHOICE(IntEnum):
+	choose_majority_general = 1
+	choose_pure_majority_general = 2
+
 
 @njit(nogil=True,fastmath=True,cache=True)
 def choose_majority_general(leaf_counts,positive_class):
@@ -87,6 +115,17 @@ def choose_pure_majority_general(leaf_counts,positive_class):
 		if(pred == positive_class):
 			return True
 	return False
+
+@njit(nogil=True,fastmath=True,cache=True)
+def pred_choice_func(func_enum,leaf_counts,positive_class):
+	if(func_enum == PRED_CHOICE.choose_majority_general):
+		return choose_majority_general(leaf_counts,positive_class)
+	elif(func_enum == PRED_CHOICE.choose_pure_majority_general):
+		return choose_pure_majority_general(leaf_counts,positive_class)
+	return choose_majority_general(leaf_counts,positive_class)
+
+
+
 
 
 NUMBA_FUNCS = {
@@ -344,41 +383,80 @@ def new_leaf(indx,counts):
 i4_arr = i4[:]
 BE_List = ListType(BE)
 
+# @njit
+# def _resolve_criterion(f_name):
+# 	if(f_name == "gini"):
+# 		return gini
+# 	return gini
+
+# @njit
+# def _resolve_split_chooser(f_name):
+# 	if(f_name == "choose_all_max"):
+# 		return choose_all_max
+# 	elif(f_name == "choose_single_max"):
+# 		return choose_single_max
+# 	return choose_single_max
+
+
+
+
+
+
+@njit(cache=True,locals={"NODE":i4,"LEAF":i4,'node':i4},inline='always')
+def new_node(locs,split,new_inds, impurities,countsPS,ind):
+	node_dict,nodes,new_contexts,cache_nodes = locs
+	NODE, LEAF = np.array(1,dtype=np.int32).item(), np.array(2,dtype=np.int32).item()
+	node = -1
+	if (cache_nodes): node= akd_get(node_dict,new_inds)
+	if(node == -1):
+		node = np.array(len(nodes),dtype=np.int32).item()
+		if(cache_nodes): akd_insert(node_dict,new_inds,node)
+		ms_impurity = impurities[split,ind].item()
+		if(ms_impurity > 0.0):
+			nodes.append(TreeNode(NODE,node,List.empty_list(i4_arr),countsPS[split,ind]))
+			new_contexts.append(SplitContext(new_inds,
+				ms_impurity,countsPS[split,ind], node))
+		else:
+			nodes.append(TreeNode(LEAF,node,List.empty_list(i4_arr),countsPS[split,ind]))
+	return node
+
 @njit(cache=True, locals={"ZERO":i4,"NODE":i4,"LEAF":i4,"n_nodes":i4,"node_l":i4,"node_r":i4,"node_n":i4,"split":i4})
-def fit_Atree(x,y,criterion_func,split_chooser,sep_nan=False, cache_nodes=False):
+def fit_tree(x,y,criterion_enum,split_enum,sep_nan=False, cache_nodes=False):
 	'''Fits a decision/ambiguity tree'''
+	# _criterion_func, _split_chooser = _resolve_criterion(criterion_func), _resolve_split_chooser(split_chooser)
 	#ENUMS
 	ZERO,NODE, LEAF = 0,1, 2
 	# criterion_func = gini#get_criterion_func(criterion)
 	sorted_inds = np.argsort(y)
 	x_sorted = x[sorted_inds]
 	counts, u_ys, y_inds = unique_counts(y[sorted_inds]);
-	impurity = criterion_func(np.expand_dims(counts,0))[0]
-	contexts = List.empty_list(SC)
+	impurity = criterion_func(criterion_enum,np.expand_dims(counts,0))[0]
 
+	contexts = List.empty_list(SC)
 	contexts.append(SplitContext(np.arange(0,len(x),dtype=np.uint32),impurity,counts,ZERO))
 
 	node_dict = Dict.empty(u4,BE_List)
-	n_classes = len(counts)
 	nodes = List.empty_list(TN)
 	nodes.append(TreeNode(NODE,ZERO,List.empty_list(i4_arr),counts))
-	n_nodes = 1
+	# n_nodes = 1
+	
 
 	while len(contexts) > 0:
-		new_contexts = List()
+		new_contexts = List.empty_list(SC)
+		# locs = (node_dict,nodes,new_contexts,cache_nodes)
 		for i in range(len(contexts)):
 			c = contexts[i]
 			c_x, c_y = x_sorted[c.inds], y_inds[c.inds]
 
 			countsPS = counts_per_split(c.counts,c_x,c_y,sep_nan)
-			flat_impurities = criterion_func(countsPS.reshape((-1,countsPS.shape[2])))
+			flat_impurities = criterion_func(criterion_enum,countsPS.reshape((-1,countsPS.shape[2])))
 			impurities = flat_impurities.reshape((countsPS.shape[0],countsPS.shape[1]))
 
 			#Sum of new impurities of left and right side of split
 			total_split_impurity = impurities[:,0] + impurities[:,1];
 			if(sep_nan): total_split_impurity += impurities[:,2]
 			impurity_decrease = c.impurity - (total_split_impurity);
-			splits = split_chooser(impurity_decrease)
+			splits = split_chooser(split_enum,impurity_decrease)
 
 			for j in range(len(splits)):
 				split = splits[j]
@@ -391,9 +469,10 @@ def fit_Atree(x,y,criterion_func,split_chooser,sep_nan=False, cache_nodes=False)
 					new_inds_l, new_inds_r, new_inds_n = r_l_n_split(mask)
 					
 					#New node for left.
+					# node_l = new_node(locs,split,new_inds_l, impurities,countsPS,0)
 					if (cache_nodes): node_l= akd_get(node_dict,new_inds_l)
 					if(node_l == -1):
-						node_l = n_nodes
+						node_l = len(nodes)
 						if(cache_nodes): akd_insert(node_dict,new_inds_l,node_l)
 						ms_impurity_l = impurities[split,0].item()
 						if(ms_impurity_l > 0):
@@ -402,13 +481,13 @@ def fit_Atree(x,y,criterion_func,split_chooser,sep_nan=False, cache_nodes=False)
 								ms_impurity_l,countsPS[split,0], node_l))
 						else:
 							nodes.append(TreeNode(LEAF,node_l,List.empty_list(i4_arr),countsPS[split,0]))
-						n_nodes += 1
 						
 
 					#New node for right.
+					# node_r = new_node(locs,split,new_inds_r, impurities,countsPS,1)
 					if (cache_nodes): node_r = akd_get(node_dict,new_inds_r)
 					if(node_r == -1):
-						node_r = n_nodes
+						node_r = len(nodes)
 						if(cache_nodes): akd_insert(node_dict,new_inds_r,node_r)
 						ms_impurity_r = impurities[split,1].item()
 						if(ms_impurity_r > 0):
@@ -417,14 +496,14 @@ def fit_Atree(x,y,criterion_func,split_chooser,sep_nan=False, cache_nodes=False)
 								ms_impurity_r,countsPS[split,1], node_r))
 						else:
 							nodes.append(TreeNode(LEAF,node_r,List.empty_list(i4_arr),countsPS[split,1]))
-						n_nodes += 1
 						
 
 					#New node for NaN values.
-					if(sep_nan):
+					if(sep_nan and len(new_inds_n) > 0):
+						# node_n = new_node(locs,split,new_inds_n, impurities,countsPS,2)
 						if (cache_nodes): node_n = akd_get(node_dict,new_inds_n)
 						if(node_n == -1):
-							node_n = n_nodes
+							node_n = len(nodes)
 							if(cache_nodes): akd_insert(node_dict,new_inds_n,node_n)
 							ms_impurity_n = impurities[split,2].item()
 							if(ms_impurity_n > 0):
@@ -433,7 +512,6 @@ def fit_Atree(x,y,criterion_func,split_chooser,sep_nan=False, cache_nodes=False)
 									ms_impurity_n,countsPS[split,2], node_n))
 							else:
 								nodes.append(TreeNode(LEAF,node_n,List.empty_list(i4_arr),countsPS[split,2]))
-							n_nodes += 1
 					nodes[c.parent_node].split_data.append(np.array([split, node_l, node_r, node_n],dtype=np.int32))
 
 		contexts = new_contexts
@@ -477,18 +555,26 @@ def encode_tree(nodes):
 
 	return out
 
-@njit
+@njit(cache=True,inline='always')
 def _unpack_node(tree,node_offset):
 	l  = tree[node_offset]
-	slc = tree[node_offset:tree[node_offset]+l]
+	slc = tree[node_offset:node_offset+l]
+	# print(slc)
 	ttype = slc[1]
 	index = slc[2]
-	splits = slc[4:4+slc[3]*4].reshape(slc[3],4)
+	if(ttype == TreeTypes.NODE):
+		# print(ttype,slc[3],slc[4:4+slc[3]*4].shape,(slc[3],4))
+		splits = slc[4:4+slc[3]*4].reshape(slc[3],4)
+		# for i, split in enumerate(splits):
+		# 	for j in (1,2,3):
+		# 		splits[i,j] = _indexOf(splits[i,j])
+	else:
+		splits = None
 	counts = slc[4+slc[3]*4:]
 	
 	return ttype, index, splits, counts
 
-@njit
+@njit(cache=True,inline='always')
 def _indexOf(tree,node_offset):
 	return tree[node_offset+2]
 
@@ -504,35 +590,36 @@ def _indexOf(tree,node_offset):
 
 ######### Predict #########
 
-@njit(nogil=True,fastmath=True)
-def predict_tree(tree,X,pred_choice_func,positive_class=0):
+@njit(nogil=True,fastmath=True, cache=True, locals={"ZERO":i4})
+def predict_tree(tree,X,pred_choice_enum,positive_class=0):
 	'''Predicts the class associated with an unlabelled sample using a fitted 
 		decision/ambiguity tree'''
+	ZERO = 0 
 	out = np.empty((X.shape[0]))
 	
 	for i in range(len(X)):
 		x = X[i]
-		nodes = List(); nodes.append(tree.nodes[0])
+		nodes = List.empty_list(i4); nodes.append(ZERO)
 		leafs = List()
 		while len(nodes) > 0:
 			new_nodes = List()
 			for node in nodes:
-				if(node.ttype == TreeTypes.NODE):
-					for j,s in enumerate(node.split_on):
-						_n = node.right[j] if x[s] else node.left[j]
-						# for _n in sub_nodes:
-						# if(tree.nodes[_n].ttype == TreeTypes.LEAF):
-						# 	print(s,_n, "["+",".join([str(_x) for _x in tree.nodes[_n].counts])+"]" )
-						# else:
-						# 	print(s,_n,)
-						new_nodes.append(tree.nodes[_n])
+				ttype, index, splits, counts = _unpack_node(tree,node)
+				if(ttype == TreeTypes.NODE):
+					for j,s in enumerate(splits):
+						split_on, left, right, nan  = s[0],s[1],s[2],s[3]
+						if(np.isnan(x[split_on])):
+							_n = nan
+						elif(x[split_on]):
+							_n = right
+						else:
+							_n = left
+						new_nodes.append(_n)
 				else:
-					# out[i] = np.argmax(node.counts)
 					### TODO: Need to copy to unoptionalize the type: remove [:] if #4382 ever fixed
-					leafs.append(node.counts[:])
+					leafs.append(counts)
 			nodes = new_nodes
-		# print(str(i)+":",["["+",".join([str(_x) for _x in l])+"]" for l in leafs])
-		out[i] = pred_choice_func(leafs,positive_class)
+		out[i] = pred_choice_func(pred_choice_enum,leafs,positive_class)
 		
 	return out
 
@@ -542,15 +629,22 @@ def predict_tree(tree,X,pred_choice_func,positive_class=0):
 def str_tree(tree):
 	node_offset = 0
 	print(tree)
+	l = []
 	while node_offset < len(tree):
 		node_width = tree[node_offset]
-		# ttype, index, splits, counts = _unpack_node(tree,node_offset)
-		# print()
-		# if(ttype == TreeTypes.NODE):
-
-		# else:
+		ttype, index, splits, counts = _unpack_node(tree,node_offset)
+		if(ttype == TreeTypes.NODE):
+			s  = "NODE(%s) : " % (index)
+			for split in splits:
+				s += "(%s)[L:%s R:%s" % (_indexOf(tree,split[0]),_indexOf(tree,split[1]),_indexOf(tree,split[2]))
+				s += "] " if(split[3] == -1) else ("NaN:" + split[3] + "] ")
+			l.append(s)
+		else:
+			s  = "LEAF(%s) : %s" % (index,counts)
+			l.append(s)
 		print(tree[node_offset:node_offset+node_width])
 		node_offset += node_width
+	return "\n".join(l)
 	# for i in range(len(tree.nodes)):
 	# 	tn = tree.nodes[i]
 	# 	if(tn.ttype == TreeTypes.NODE):
@@ -591,7 +685,7 @@ class TreeClassifier(object):
 		pred_choice_func = l[pred_choice_func]
 		positive_class = positive_class
 		
-		ft = fit_Atree
+		ft = fit_tree
 		@njit(nogil=True,fastmath=True)
 		def _fit(X,y):
 			return ft(X,y,criterion_func,split_chooser)
@@ -614,22 +708,22 @@ class TreeClassifier(object):
 		return str_tree(self.tree)
 
 
-@njit(nogil=True,fastmath=True,cache=True)
+@jit(cache=True)
 def test_fit(x,y):	
-	out =fit_Atree(x,y,
-			criterion_func=gini,
-			split_chooser=choose_single_max,
+	out =fit_tree(x,y,
+			criterion_enum=CRITERION.gini,
+			split_enum=SPLIT_CHOICE.choose_single_max, #choose_single_max,
 			sep_nan=True
 		 )
 	return out
 
 
 
-@njit(nogil=True,fastmath=True,cache=True)
+@jit(cache=True)
 def test_Afit(x,y):	
-	out =fit_Atree(x,y,
-			criterion_func=gini,
-			split_chooser=choose_all_max,
+	out =fit_tree(x,y,
+			criterion_enum=CRITERION.gini,
+			split_enum=SPLIT_CHOICE.choose_all_max,#choose_all_max,
 			cache_nodes=True,
 		 )
 	return out
@@ -654,12 +748,19 @@ if(__name__ == "__main__"):
 
 
 	# nb_fit = my_bdt.nb_ilp_tree.fit
+	# cc = CC("my_module")
+	# # compile_template(fit_tree,{'criterion_func': gini,'split_chooser': choose_single_max,
+	# # 	'sep_nan':False, 'cache_nodes':False,},cc,'TR(b1[:,:],u4[:])',globals())
+	# compile_template(fit_tree,{'criterion_func': gini,'split_chooser': choose_all_max,
+	# 	'sep_nan':False, 'cache_nodes':True,},cc,'i4[:](b1[:,:],u4[:])',globals())
+	# cc.compile()
+	# from my_module import fit_tree_gini_choose_all_max_False_True
 
 	##Compiled 
-	cc = CC("my_module")
-	compile_template(fit_Atree,{'criterion_func': gini,"split_chooser":choose_single_max},cc,'i4[:](b1[:,:],u8[:])',globals())
-	cc.compile()
-	from my_module import fit_tree_gini	
+	# cc = CC("my_module")
+	# compile_template(fit_tree,{'criterion_func': gini,"split_chooser":choose_single_max},cc,'i4[:](b1[:,:],u8[:])',globals())
+	# cc.compile()
+	# from my_module import fit_tree_gini	
 	# def c_bdt():
 	# 	fit_tree_gini(data,labels)
 	###
@@ -669,7 +770,7 @@ if(__name__ == "__main__"):
 		return " %0.6f ms" % (1000.0*(timeit.timeit(f, number=N)/float(N)))
 
 	def bdt():
-		fit_tree_gini(data,labels)
+		test_fit(data,labels)
 
 	def At():
 		test_Afit(data,labels)
@@ -737,10 +838,10 @@ if(__name__ == "__main__"):
 	treeA = test_Afit(data,labels)
 	print("___")
 	print_tree(tree)
-	# print("PREDICT DT",predict_tree(tree,data,choose_pure_majority_general,positive_class=1))
+	print("PREDICT DT",predict_tree(tree,data,PRED_CHOICE.choose_pure_majority_general,positive_class=1))
 	print("___")
 	print_tree(treeA)
-	# print("PREDICT AT",predict_tree(treeA,data,choose_pure_majority_general,positive_class=1))
+	print("PREDICT AT",predict_tree(treeA,data,PRED_CHOICE.choose_pure_majority_general,positive_class=1))
 	# my_AT.fit(data,labels)
 	# print("MY_AT",my_AT.predict(data))
 	# print("MY_AT",my_AT)
@@ -758,17 +859,17 @@ if(__name__ == "__main__"):
 	tree = test_fit(data,labels)
 	treeA = test_Afit(data,labels)
 	print("___")
-	# print_tree(tree)
-	# print("PREDICT DT",predict_tree(tree,data,choose_pure_majority_general,positive_class=1))
+	print_tree(tree)
+	print("PREDICT DT",predict_tree(tree,data,PRED_CHOICE.choose_pure_majority_general,positive_class=1))
 
 	print("___")
-	# print_tree(treeA)
-	# print("PREDICT AT",predict_tree(treeA,data,choose_pure_majority_general,positive_class=1))
+	print_tree(treeA)
+	print("PREDICT AT",predict_tree(treeA,data,PRED_CHOICE.choose_pure_majority_general,positive_class=1))
 
 
-	clf = SKTree.DecisionTreeClassifier()
-	clf.fit(data,labels)
-	print(clf.predict(data[[-1]])	)
+	# clf = SKTree.DecisionTreeClassifier()
+	# clf.fit(data,labels)
+	# print(clf.predict(data[[-1]])	)
 
 
 	# tree = ILPTree('zero')
