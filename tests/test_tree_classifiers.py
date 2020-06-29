@@ -26,7 +26,7 @@ def fit_ambiguity_tree(x,y):
 		 )
 	return out
 
-def predict_pmg(tree,x):
+def predict_pm(tree,x):
 	return predict_tree(tree,x,PRED_CHOICE_pure_majority,positive_class=1)
 
 class TestTreeClassifiers(unittest.TestCase):
@@ -73,20 +73,20 @@ class TestTreeClassifiers(unittest.TestCase):
 		tree1 = fit_decision_tree(self.data1,self.labels1)
 		treeA1 = fit_ambiguity_tree(self.data1,self.labels1)
 
-		self.assertGreaterEqual(np.sum(predict_pmg(tree1,self.data1) == self.labels1),6)
-		self.assertGreaterEqual(np.sum(predict_pmg(treeA1,self.data1) == self.labels1),7)
+		self.assertGreaterEqual(np.sum(predict_pm(tree1,self.data1) == self.labels1),6)
+		self.assertGreaterEqual(np.sum(predict_pm(treeA1,self.data1) == self.labels1),7)
 
 		tree2 = fit_decision_tree(self.data2,self.labels2)
 		treeA2 = fit_ambiguity_tree(self.data2,self.labels2)
 
-		self.assertGreaterEqual(np.sum(predict_pmg(tree2,self.data2) == self.labels2),5)
-		self.assertGreaterEqual(np.sum(predict_pmg(treeA2,self.data2) == self.labels2),6)
+		self.assertGreaterEqual(np.sum(predict_pm(tree2,self.data2) == self.labels2),5)
+		self.assertGreaterEqual(np.sum(predict_pm(treeA2,self.data2) == self.labels2),6)
 
 		tree3 = fit_decision_tree(self.data3,self.labels3)
 		treeA3 = fit_ambiguity_tree(self.data3,self.labels3)
 
-		self.assertGreaterEqual(np.sum(predict_pmg(tree3,self.data3) == self.labels3),3)
-		self.assertGreaterEqual(np.sum(predict_pmg(treeA3,self.data3) == self.labels3),3)
+		self.assertGreaterEqual(np.sum(predict_pm(tree3,self.data3) == self.labels3),3)
+		self.assertGreaterEqual(np.sum(predict_pm(treeA3,self.data3) == self.labels3),3)
 
 		
 
