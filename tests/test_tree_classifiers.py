@@ -69,6 +69,17 @@ class TestTreeClassifiers(unittest.TestCase):
 
 		self.labels3 = np.asarray([1,1,1,2],np.int64);
 
+	def test_to_condtions(self):
+		tree2 = fit_decision_tree(self.data2,self.labels2)
+		treeA2 = fit_ambiguity_tree(self.data2,self.labels2)
+		print_tree(treeA2)
+
+		# compute_effective_purities(treeA2)
+		conds = tree_to_conditions(tree2,1,only_pure_leaves=False)
+		print(conds)
+		conds = tree_to_conditions(treeA2,1,only_pure_leaves=True)
+		print(conds)
+	
 	def test_simple(self):
 		tree1 = fit_decision_tree(self.data1,self.labels1)
 		treeA1 = fit_ambiguity_tree(self.data1,self.labels1)
@@ -87,6 +98,8 @@ class TestTreeClassifiers(unittest.TestCase):
 
 		self.assertGreaterEqual(np.sum(predict_pm(tree3,self.data3) == self.labels3),3)
 		self.assertGreaterEqual(np.sum(predict_pm(treeA3,self.data3) == self.labels3),3)
+
+	
 
 		
 

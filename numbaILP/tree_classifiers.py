@@ -497,8 +497,213 @@ def _get_y_order(tree):
 	'''Takes a tree encoded with encode_tree and the offset where a nodes is and returns
 	   just the index of the node.'''
 	return tree[tree[0]:]
+
+condition_dtype = np.dtype([('feature', np.int32),#])
+		                     ('nominal', np.uint8),
+		                     ('pos_or_gt', np.uint8),
+		                     ('thresh', np.float32)])
+
+@njit(cache=True)
+def _new_cond(feature,nominal,pos_or_gt,thresh):
+	c = np.empty((1,),dtype=condition_dtype)
+	c[0].feature = feature
+	c[0].nominal = nominal
+	c[0].pos_or_gt = pos_or_gt
+	c[0].thresh = thresh
+	return c
+
+
+@njit(cache=True)
+def _remove_over_constrained(conds):
+	over_constrained_pairs = List()
+	for i in range(len(conds)):
+		cond = conds[i]
+		for j in range(i-1,-1,-1):
+			if( len(conds[j]) == len(cond) and
+				((conds[j].feature == cond.feature) &
+				 (conds[j].nominal == cond.nominal) &
+				 (conds[j].thresh == cond.thresh)).all()
+				):
+				diff_conditions = (conds[j].pos_or_gt != cond.pos_or_gt)
+				if(np.sum(diff_conditions) == 1):
+					loc = np.argmax(diff_conditions)
+					over_constrained_pairs.append((i,j,loc))
+	replaced = Dict()
+	out = List()
+	for i,j,loc in over_constrained_pairs:
+		replaced[i] = 1; replaced[j] = 1;
+		out.append(np.delete(conds[i],loc))
+	for i in range(len(conds)):
+		if(i not in replaced):
+			out.append(conds[i])
+	return out
+
+
+
+@njit(cache=True)
+def _remove_duplicates(conds):
+	new_conds = List()
+	for i in range(len(conds)):
+		cond = conds[i]
+		is_dup = False
+		for j in range(i-1,-1,-1):
+			if( len(conds[j]) == len(cond) and
+				((conds[j].feature == cond.feature) &
+				 (conds[j].nominal == cond.nominal) &
+			 	 (conds[j].pos_or_gt == cond.pos_or_gt) &
+				 (conds[j].thresh == cond.thresh)).all()
+				):
+				is_dup = True
+		if(not is_dup): new_conds.append(cond)
+	return new_conds
+
+purity_count = np.dtype([('parent', np.int32),#])
+	                     ('is_pure', np.uint8)])
+
+NodePurity = namedtuple("NodePurity",['parents','is_pure'])
+NP = NamedTuple([ListType(i4),u1],NodePurity)
+
+# @njit(cache=True)
+# def _new_purity_count(parent,is_pure):
+# 	c = np.empty((1,),dtype=condition_dtype)
+# 	c[0].parent = parent
+# 	c[0].is_pure = is_pure
+# 	return c
+
+
+@njit(cache=True,locals={"ZERO":i4,"ONE":i4,"UND":u1, "is_pure":u1})
+def compute_effective_purities(tree):
+	ZERO, ONE, UND = 0, 1,-1
+	nodes = List.empty_list(i4); nodes.append(ONE)
+	purities = Dict.empty(i4,NP)
+	purities[ONE] = NodePurity(List.empty_list(i4),UND)
+	to_resolve = List()
+	while len(nodes) > 0:
+		new_nodes = List()
+		for node in nodes:
+			print("NODE", node)
+			ttype, index, splits, counts = _unpack_node(tree,node)
+			if(ttype == TreeTypes_NODE):
+				for j,s in enumerate(splits):
+					split_on, left, right, nan  = s[0],s[1],s[2],s[3]
+					if(left != -1): 
+						new_nodes.append(left)
+						# l_i = _indexOf(tree,left)
+						l_purity = purities[left] = purities.get(left,NodePurity(List.empty_list(i4),UND))
+						l_purity.parents.append(node)
+					if(right != -1):
+						new_nodes.append(right)
+						# r_i = _indexOf(tree,right)
+						r_purity = purities[right] = purities.get(right,NodePurity(List.empty_list(i4),UND))
+						r_purity.parents.append(node)
+					if(nan != -1):
+						new_nodes.append(nan)
+						# n_i = _indexOf(tree,nan)
+						n_purity = purities[nan] = purities.get(nan,NodePurity(List.empty_list(i4),UND))
+						n_purity.parents.append(node)
+					
+			else:
+				is_pure = (np.count_nonzero(counts) == 1)
+				leaf_purity = purities[node]
+				purities[node] = NodePurity(leaf_purity.parents,is_pure)
+				to_resolve.append(node)
+		nodes = new_nodes
+	# print("MID")				
+	is_leaf_level = True
+	while len(to_resolve) > 0:
+		new_to_resolve = List()
+		for node in to_resolve:
+			purity = purities[node]
+			for parent in purity.parents:
+				if(parent == -1): continue
+				# print("PAR",parent)
+				parent_purity = purities[parent]
+				if(parent_purity.is_pure == UND or (is_leaf_level and parent_purity.is_pure == 1)):
+					purities[parent] = NodePurity(parent_purity.parents,purity.is_pure)
+					# print("P",parent,purity.is_pure)
+				new_to_resolve.append(parent)
+		is_leaf_level = False
+		to_resolve = new_to_resolve
+	for _p, purity in purities.items():
+		print("ISPURE:",_indexOf(tree,_p),purity.is_pure)
+
+						
+					# pur
+					# parents = purities[index].parents
 		
-@njit(nogil=True,fastmath=True, cache=True,boundscheck=True, locals={"ONE":i4})
+
+		
+
+@njit(nogil=True,cache=True,locals={"ONE":i4,"is_nom":u1,"POS":u1,"NEG":u1,"NAN":u1,"FZERO":f4})
+def tree_to_conditions(tree,target_class,only_pure_leaves=False):
+	ONE = 1 
+	POS,NEG,NAN = 1,0,-1
+	FZERO = 0.0
+	y_uvs = _get_y_order(tree)
+	target = -1
+	for i,y_uv in enumerate(y_uvs):
+		if(y_uv == target_class): target = i; break;
+	if(target == -1): raise ValueError("target_class not found in tree.")
+	print('target',target)
+	# assert target != -1, ("Tree does not contain class " + str(positive_class))
+	nodes = List.empty_list(i4); nodes.append(ONE)
+	conds = List(); conds.append(np.empty((0,),dtype=condition_dtype))
+	leafs = List()
+	out_conds = List()
+	while len(nodes) > 0:
+		new_nodes = List()
+		new_conds = List()
+		for cond,node in zip(conds,nodes):
+			print('cond',cond)
+			ttype, index, splits, counts = _unpack_node(tree,node)
+			if(ttype == TreeTypes_NODE):
+				is_nom = 1
+				for j,s in enumerate(splits):
+					split_on, left, right, nan  = s[0],s[1],s[2],s[3]
+					if(only_pure_leaves):
+						l_ttype, _, _, l_counts = _unpack_node(tree,left)
+						r_ttype, _, _, r_counts = _unpack_node(tree,right)
+						n_ttype, _, _, n_counts = _unpack_node(tree,nan)
+						if(l_ttype == TreeTypes_LEAF and (np.count_nonzero(l_counts) != 1)): continue
+						if(r_ttype == TreeTypes_LEAF and (np.count_nonzero(r_counts) != 1)): continue
+						if(n_ttype == TreeTypes_LEAF and (np.count_nonzero(n_counts) != 1)): continue
+					if(left != -1): 
+						new_nodes.append(left)
+						new_conds.append(np.append(cond,_new_cond(split_on,is_nom,NEG,FZERO)))
+					if(right != -1):
+					 	new_nodes.append(right)
+					 	new_conds.append(np.append(cond,_new_cond(split_on,is_nom,POS,FZERO)))
+					if(nan != -1):
+						new_nodes.append(nan)
+						new_conds.append(np.append(cond,_new_cond(split_on,is_nom,NAN,FZERO)))
+			else:
+
+				# is_target_leaf = np.argmax(counts) == target
+				# print(index, counts,is_target_leaf,(not only_pure_leaves or (np.count_nonzero(counts) == 1)))
+				#if(is_target_leaf):# and (not only_pure_leaves or (np.count_nonzero(counts) == 1))):
+				if(np.argmax(counts) == target):
+					leafs.append(counts)
+					out_conds.append(cond)
+					
+		nodes = new_nodes
+		conds = new_conds
+	conds = out_conds
+	out = np.empty((len(conds),))
+	for i in range(len(conds)):
+		sort_inds = np.argsort(conds[i].feature) 
+		conds[i] = conds[i][sort_inds]
+		print(conds[i])
+	conds = _remove_over_constrained(conds)
+	conds = _remove_duplicates(conds)
+	print("----")
+	for i in range(len(conds)):
+		print(conds[i])
+	return conds
+
+
+
+		
+@njit(nogil=True,fastmath=True, cache=True, locals={"ONE":i4})
 def predict_tree(tree,X,pred_choice_enum,positive_class=0,decode_classes=True):
 	'''Predicts the class associated with an unlabelled sample using a fitted 
 		decision/ambiguity tree'''
@@ -524,7 +729,6 @@ def predict_tree(tree,X,pred_choice_enum,positive_class=0,decode_classes=True):
 							_n = left
 						new_nodes.append(_n)
 				else:
-					### TODO: Need to copy to unoptionalize the type: remove [:] if #4382 ever fixed
 					leafs.append(counts)
 			nodes = new_nodes
 		out_i = pred_choice_func(pred_choice_enum,leafs,positive_class)
