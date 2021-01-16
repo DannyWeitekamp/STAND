@@ -3,7 +3,7 @@
 import numpy as np
 import numba
 from numba import types, njit, guvectorize,vectorize,prange, jit
-from numba.experimental import jitclass
+# from numba.experimental import jitclass
 from numba import deferred_type, optional
 from numba import void,b1,u1,u2,u4,u8,i1,i2,i4,i8,f4,f8,c8,c16
 from numba.typed import List, Dict
@@ -198,15 +198,25 @@ TreeTypes_LEAF = 2
 ######### Utility Functions for Fit/Predict  #########
 
 @njit(nogil=True,fastmath=True,cache=True)
-def counts_per_split(start_counts, x, y_inds, sep_nan=False):
+def counts_per_split(start_counts, x, y_inds, missing_values, sep_nan=False):
 	''' 
 		Determines the number of elements of each class that would be in the resulting
 		left, right and nan nodes if a split was made at each possible feature.
 	'''
+	miss_i, miss_j = -1, -1
+	if (len(missing_values) > 0):
+		miss_i, miss_j = missing_values[0]
+	miss_index = 1
+
 	counts = np.zeros((x.shape[1],2+sep_nan,len(start_counts)),dtype=np.uint32);
 	for i in range(x.shape[0]):
 		for j in range(x.shape[1]):
-			if(sep_nan and np.isnan(x[i,j])):
+			if(i == miss_i and j == miss_j):
+				# counts[j,0,y_inds[i]] += 1;	
+				# counts[j,1,y_inds[i]] += 1;	
+				miss_i, miss_j = missing_values[miss_index]
+				miss_index += 1
+			elif(sep_nan and np.isnan(x[i,j])):
 				counts[j,2,y_inds[i]] += 1;	
 			else:
 				if(x[i,j]):
@@ -221,17 +231,31 @@ def counts_per_split(start_counts, x, y_inds, sep_nan=False):
 
 
 @njit(nogil=True,fastmath=True,cache=True)
-def r_l_n_split(x,sep_nan=False):
+def r_l_n_split(x, missing, sep_nan=False):
 	'''Similar to argwhere applied 3 times each for 0,1 and nan, but does all
 		three at once.'''
 	nl,nr,nn = 0,0,0
 	l = np.empty(x.shape,np.uint32)
 	r = np.empty(x.shape,np.uint32)
 	n = np.empty(x.shape,np.uint32)
+
+	next_missing = missing[0] if len(missing) > 0 else -1
+	m_ind = 1
 	
 	for i in range(len(x)):
 		x_i = x[i]
-		if(sep_nan and x_i == 255):
+
+		if(i == next_missing):
+			# n[nn] = i
+			# nn += 1
+			# r[nr] = i
+			# nr += 1
+			# l[nl] = i
+			# nl += 1
+
+			next_missing = missing[m_ind]
+			m_ind += 1
+		elif(sep_nan and x_i == 255):
 			n[nn] = i
 			nn += 1
 		else:
@@ -330,10 +354,15 @@ def new_node(locs,split,new_inds, impurities,countsPS,ind):
 	return node
 
 @njit(cache=True, locals={"ZERO":i4,"NODE":i4,"LEAF":i4,"n_nodes":i4,"node_l":i4,"node_r":i4,"node_n":i4,"split":i4})
-def fit_tree(x,y,criterion_enum,split_enum,sep_nan=False, cache_nodes=False):
+def fit_tree(x, y, criterion_enum, split_enum, missing_values, sep_nan=False, cache_nodes=False):
 	'''Fits a decision/ambiguity tree'''
 	#ENUMS--necessary if want to use 32bit integers since literals default to 64bit
-	ZERO,NODE, LEAF = 0,1, 2
+	# if(_missing_values is None):
+	# 	missing_values = np.empty((0,2), dtype=np.int64)
+	# else:
+	# 	missing_values = _missing_values
+
+	ZERO, NODE, LEAF = 0, 1, 2
 	sorted_inds = np.argsort(y)
 	x_sorted = x[sorted_inds]
 	counts, u_ys, y_inds = unique_counts(y[sorted_inds]);
@@ -354,9 +383,11 @@ def fit_tree(x,y,criterion_enum,split_enum,sep_nan=False, cache_nodes=False):
 			c = contexts[i]
 			c_x, c_y = x_sorted[c.inds], y_inds[c.inds]
 
-			countsPS = counts_per_split(c.counts,c_x,c_y,sep_nan)
+			countsPS = counts_per_split(c.counts, c_x, c_y, missing_values, sep_nan)
+			print("M PS:", missing_values, "\n", countsPS)
 			flat_impurities = criterion_func(criterion_enum,countsPS.reshape((-1,countsPS.shape[2])))
 			impurities = flat_impurities.reshape((countsPS.shape[0],countsPS.shape[1]))
+			print("IMP:", impurities)
 
 			#Sum of new impurities of left and right side of split
 			total_split_impurity = impurities[:,0] + impurities[:,1];
@@ -371,8 +402,10 @@ def fit_tree(x,y,criterion_enum,split_enum,sep_nan=False, cache_nodes=False):
 					nodes[c.parent_node]=TreeNode(LEAF,c.parent_node,List.empty_list(i4_arr),c.counts)
 				else:
 					mask = c_x[:,split];
+					missing = np.argwhere(missing_values[:,1] == split)[:,0]
+					print("missing", split, missing)
 					node_l, node_r, node_n = -1, -1, -1
-					new_inds_l, new_inds_r, new_inds_n = r_l_n_split(mask)
+					new_inds_l, new_inds_r, new_inds_n = r_l_n_split(mask,missing)
 					
 					#New node for left.
 					# node_l = new_node(locs,split,new_inds_l, impurities,countsPS,0)
@@ -801,10 +834,12 @@ class TreeClassifier(object):
 
 
 @jit(cache=True)
-def test_fit(x,y):	
+def test_fit(x,y,missing_values=None):	
+	if(missing_values is None): missing_values = np.empty((0,2), dtype=np.int64)
 	out =fit_tree(x,y,
 			criterion_enum=1,
 			split_enum=1,
+			missing_values=missing_values,
 			sep_nan=True
 		 )
 	return out
@@ -812,16 +847,19 @@ def test_fit(x,y):
 
 
 @jit(cache=True)
-def test_Afit(x,y):	
+def test_Afit(x,y,missing_values=None):	
+	if(missing_values is None): missing_values = np.empty((0,2), dtype=np.int64)
 	out =fit_tree(x,y,
 			criterion_enum=1,
 			split_enum=2,
+			missing_values=missing_values,
 			cache_nodes=True,
 		 )
 	return out
 
 
 if(__name__ == "__main__"):
+	'''
 	data = np.asarray([
 #	 0 1 2 3 4 5 6 7 8 9 10111213141516
 	[0,0,1,0,1,1,1,1,1,1,1,0,0,1,1,1,1], #3
@@ -891,8 +929,8 @@ if(__name__ == "__main__"):
 	# print("t5:", time_ms(t5))
 	# print("t6:", time_ms(t6))
 
-	print("d_tree:   ", time_ms(bdt))
-	print("a_tree:   ", time_ms(At))
+	# print("d_tree:   ", time_ms(bdt))
+	# print("a_tree:   ", time_ms(At))
 	# print("numba_c  ", time_ms(c_bdt))
 	# print("sklearn: ", time_ms(skldt))
 
@@ -954,9 +992,71 @@ if(__name__ == "__main__"):
 	print_tree(tree)
 	print("PREDICT DT",predict_tree(tree,data,PRED_CHOICE_pure_majority,positive_class=1))
 
+	# print("___")
+	# print_tree(treeA)
+	# print("PREDICT AT",predict_tree(treeA,data,PRED_CHOICE_pure_majority,positive_class=1))
+
+
+	data = np.asarray([
+#	 0 1 2 3 4 5 6 7 8 9 10111213141516
+	[0,0], #1
+	[1,0], #1
+	[0,1], #1
+	[1,1], #2
+	],np.bool);
+
+	labels = np.asarray([1,1,1,2],np.int64);
+	missing_values = np.asarray([[1,0]],np.int64)
+
+	tree = test_fit(data,labels,missing_values)
+	treeA = test_Afit(data,labels,missing_values)
 	print("___")
-	print_tree(treeA)
-	print("PREDICT AT",predict_tree(treeA,data,PRED_CHOICE_pure_majority,positive_class=1))
+	print_tree(tree)
+	print("PREDICT DT",predict_tree(tree,data,PRED_CHOICE_pure_majority,positive_class=1))
+
+	# print("___")
+	# print_tree(treeA)
+	# print("PREDICT AT",predict_tree(treeA,data,PRED_CHOICE_pure_majority,positive_class=1))
+
+	'''
+
+	data = np.asarray([
+#	 0 1 2 3 4 5 6 7 8 9 10111213141516
+	[1,1], #1
+	[1,1], #1
+	[1,0], #1
+	[1,0], #2
+	],np.bool);
+
+	labels = np.asarray([1,1,1,2],np.int64);
+
+	tree = test_fit(data,labels)
+	treeA = test_Afit(data,labels)
+	print("___")
+	print_tree(tree)
+	print("PREDICT DT",predict_tree(tree,data,PRED_CHOICE_pure_majority,positive_class=1))
+
+	# print("___")
+	# print_tree(treeA)
+	# print("PREDICT AT",predict_tree(treeA,data,PRED_CHOICE_pure_majority,positive_class=1))
+
+
+	data = np.asarray([
+#	 0 1 2 3 4 5 6 7 8 9 10111213141516
+	[1,1], #1
+	[1,1], #1
+	[1,0], #1
+	[1,0], #2
+	],np.bool);
+
+	labels = np.asarray([1,1,1,2],np.int64);
+	missing_values = np.asarray([[2,1]],np.int64)
+
+	tree = test_fit(data,labels,missing_values)
+	treeA = test_Afit(data,labels,missing_values)
+	print("___")
+	print_tree(tree)
+	print("PREDICT DT",predict_tree(tree,data,PRED_CHOICE_pure_majority,positive_class=1))
 
 
 	# clf = SKTree.DecisionTreeClassifier()

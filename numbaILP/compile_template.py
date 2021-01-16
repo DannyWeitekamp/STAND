@@ -1,5 +1,5 @@
 import numba
-from numba import njit, jitclass
+from numba import njit#, jitclass
 from numba import b1,u1,u2,u4,u8,i1,i2,i4,i8,f4,f8,c8,c16
 from numba.pycc import CC
 from numba.core.dispatcher import Dispatcher
