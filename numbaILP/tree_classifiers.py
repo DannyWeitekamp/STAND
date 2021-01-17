@@ -915,7 +915,7 @@ def test_Afit(x,y,missing_values=None):
 
 
 if(__name__ == "__main__"):
-	'''
+	
 	data = np.asarray([
 #	 0 1 2 3 4 5 6 7 8 9 10111213141516
 	[0,0,1,0,1,1,1,1,1,1,1,0,0,1,1,1,1], #3
@@ -1074,7 +1074,7 @@ if(__name__ == "__main__"):
 	# print_tree(treeA)
 	# print("PREDICT AT",predict_tree(treeA,data,PRED_CHOICE_pure_majority,positive_class=1))
 
-	'''
+	
 
 	data = np.asarray([
 #	 0 1 2 3 4 5 6 7 8 9 10111213141516
