@@ -15,7 +15,7 @@ from numbaILP.compile_template import compile_template
 from enum import IntEnum
 from numba.pycc import CC
 from numbaILP.fnvhash import hasharray#, AKD#, akd_insert,akd_get
-
+from operator import itemgetter
 
 @njit(nogil=True,fastmath=True,cache=False)
 def unique_counts(inp):
@@ -384,10 +384,10 @@ def fit_tree(x, y, missing_values, criterion_enum, split_enum, sep_nan=False, ca
 			c_x, c_y = x_sorted[c.inds], y_inds[c.inds]
 
 			countsPS = counts_per_split(c.counts, c_x, c_y, missing_values, sep_nan)
-			print("M PS:", missing_values, "\n", countsPS)
+			# print("M PS:", missing_values, "\n", countsPS)
 			flat_impurities = criterion_func(criterion_enum,countsPS.reshape((-1,countsPS.shape[2])))
 			impurities = flat_impurities.reshape((countsPS.shape[0],countsPS.shape[1]))
-			print("IMP:", impurities)
+			# print("IMP:", impurities)
 
 			#Sum of new impurities of left and right side of split
 			total_split_impurity = impurities[:,0] + impurities[:,1];
@@ -403,7 +403,7 @@ def fit_tree(x, y, missing_values, criterion_enum, split_enum, sep_nan=False, ca
 				else:
 					mask = c_x[:,split];
 					missing = np.argwhere(missing_values[:,1] == split)[:,0]
-					print("missing", split, missing)
+					# print("missing", split, missing)
 					node_l, node_r, node_n = -1, -1, -1
 					new_inds_l, new_inds_r, new_inds_n = r_l_n_split(mask,missing)
 					
@@ -797,23 +797,56 @@ def str_tree(tree):
 def print_tree(tree):
 	print(str_tree(tree))
 
+
+tree_classifier_presets = {
+	'decision_tree' : {
+		'criterion' : 'gini',
+		'split_choice' : 'single_max',
+		'pred_choice' : 'majority',
+		'positive_class' : 1,
+		'sep_nan' : True,
+		'cache_nodes' : False
+	},
+	'ambiguity_tree' : {
+		'criterion' : 'gini',
+		'split_choice' : 'all_max',
+		'pred_choice' : 'pure_majority',
+		'positive_class' : 1,
+		'sep_nan' : True,
+		'cache_nodes' : True
+	}
+
+}
 		
 class TreeClassifier(object):
-	def __init__(self, 
-					  criterion='gini',
-					  split_choice='all_max',
-					  pred_choice='pure_majority_general',
-					  positive_class=1,
-					  sep_nan=False):
+	def __init__(self,preset_type='decision_tree', 
+					  **kwargs):
+		'''
+		TODO: Finish docs
+		kwargs:
+			preset_type: Specifies the values of the other kwargs
+
+			criterion: The name of the criterion function used 'entropy', 'gini', etc.
+			split_choice: The name of the split choice policy 'all_max', etc.
+			pred_choice: The prediction choice policy 'pure_majority_general' etc.
+			positive_class: The integer id for the positive class (used in prediction)
+			sep_nan: If set to True then use a ternary tree that treats nan's seperately 
+		'''
+		kwargs = {**tree_classifier_presets[preset_type], **kwargs}
+
+		criterion, split_choice, pred_choice, positive_class, sep_nan, cache_nodes = \
+			itemgetter('criterion','split_choice', 'pred_choice', 'positive_class',
+			 'sep_nan', 'cache_nodes')(kwargs)
 
 		g = globals()
-		criterion_enum = getattr(g,f"CRITERION_{criterion}",None)
-		split_enum = getattr(g,f"SPLIT_CHOICE_{split_choice}",None)
-		pred_choice_enum = getattr(g,f"PRED_CHOICE_{pred_choice}",None)
+		criterion_enum = g.get(f"CRITERION_{criterion}",None)
+		split_enum = g.get(f"SPLIT_CHOICE_{split_choice}",None)
+		pred_choice_enum = g.get(f"PRED_CHOICE_{pred_choice}",None)
 
 		if(criterion_enum is None): raise ValueError(f"Invalid criterion {criterion}")
 		if(split_enum is None): raise ValueError(f"Invalid split_choice {split_choice}")
 		if(pred_choice_enum is None): raise ValueError(f"Invalid pred_choice {pred_choice}")
+		self.positive_class = positive_class
 
 		@njit(cache=True)
 		def _fit(x,y,missing_values=None):	
@@ -822,17 +855,18 @@ class TreeClassifier(object):
 					missing_values=missing_values,
 					criterion_enum=literally(criterion_enum),
 					split_enum=literally(split_enum),
-					sep_nan=literally(sep_nan)
+					sep_nan=literally(sep_nan),
+					cache_nodes=literally(cache_nodes)
 				 )
 			return out
 		self._fit = _fit
 
 		@njit(cache=True)
-		def _predict(tree, X, missing_values=None):	
+		def _predict(tree, X, missing_values=None, positive_class=1):	
 			if(missing_values is None): missing_values = np.empty((0,2), dtype=np.int64)
 			out =predict_tree(tree,X,
 					pred_choice_enum=literally(pred_choice_enum),
-					positive_class=literally(positive_class),
+					positive_class=positive_class,
 					decode_classes=True
 				 )
 			return out
@@ -842,12 +876,17 @@ class TreeClassifier(object):
 	def fit(self,X,y,missing_values=None):
 		self.tree = self._fit(X, y, missing_values)
 
-	def predict(self,X):
+	def predict(self,X,positive_class=None):
 		if(self.tree is None): raise RuntimeError("TreeClassifier must be fit before predict() is called.")
-		return self._predict(self.tree,X)
+		if(positive_class is None): positive_class = self.positive_class
+		return self._predict(self.tree, X, positive_class)
 
 	def __str__(self):
 		return str_tree(self.tree)
+
+	def as_conditions(self,positive_class=None, only_pure_leaves=False):
+		if(positive_class is None): positive_class = self.positive_class
+		return tree_to_conditions(self.tree, positive_class, only_pure_leaves)
 
 
 @jit(cache=True)
