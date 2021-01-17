@@ -4,35 +4,6 @@ from numba.typed import List, Dict
 import numpy as np
 import re
 
-# CRITERION = CRITERION
-# SPLIT_CHOICE = SPLIT_CHOICE
-# PRED_CHOICE = PRED_CHOICE
-
-# _PRED_CHOICE_pure_majority = PRED_CHOICE_pure_majority
-
-# def fit_decision_tree(x,y,missing_values=None):
-# 	if(missing_values is None): missing_values = np.empty((0,2), dtype=np.int64)
-# 	out =fit_tree(x,y,
-# 			missing_values=missing_values,
-# 			criterion_enum=CRITERION_gini,
-# 			split_enum=SPLIT_CHOICE_single_max,
-# 			sep_nan=True
-# 		 )
-# 	return out
-
-# def fit_ambiguity_tree(x,y,missing_values=None):
-# 	if(missing_values is None): missing_values = np.empty((0,2), dtype=np.int64)
-# 	out =fit_tree(x,y,
-# 			missing_values=missing_values,
-# 			criterion_enum=CRITERION_gini,
-# 			split_enum=SPLIT_CHOICE_all_max,
-# 			cache_nodes=True,
-# 		 )
-# 	return out
-
-# def predict_pm(tree,x):
-# 	return predict_tree(tree,x,PRED_CHOICE_pure_majority,positive_class=1)
-
 #### test_basics ####
 
 def setup1():
@@ -116,7 +87,6 @@ def test_basics3():
 
 #### test_missing ####
 
-
 def tree_is_pure(tree_classifier):
 	'''Determine if a tree classifier has only pure leaves by parsing it's __str__  
 	 representation'''
@@ -154,8 +124,6 @@ def test_missing():
 	assert tree_is_pure(dt)
 
 	
-	
-
 #### test_as_conditions ####
 
 def test_as_conditions():
@@ -209,28 +177,15 @@ def test_b_sklearn_tree_fit(benchmark):
 	benchmark.pedantic(f, warmup_rounds=1, iterations=100)
 
 
-# def test_to_condtions():
-# 	data2, labels2 = setup2()
-# 	tree2 = fit_decision_tree(data2,labels2)
-# 	treeA2 = fit_ambiguity_tree(data2,labels2)
-# 	print_tree(treeA2)
-
-# 	# compute_effective_purities(treeA2)
-# 	conds = tree_to_conditions(tree2,1,only_pure_leaves=False)
-# 	print(conds)
-# 	conds = tree_to_conditions(treeA2,1,only_pure_leaves=True)
-# 	print(conds)
-
-
 	
 if(__name__ == "__main__"):
-	# test_simple()
-	# test_bloop()
-	# test_basics1()
-	# test_basics2()
-	# test_basics3()
+	test_simple()
+	test_bloop()
+	test_basics1()
+	test_basics2()
+	test_basics3()
 	test_missing()
-	# test_as_conditions()
+	test_as_conditions()
 		
 
 
