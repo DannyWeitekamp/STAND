@@ -179,8 +179,6 @@ def test_b_sklearn_tree_fit(benchmark):
 
 	
 if(__name__ == "__main__"):
-	test_simple()
-	test_bloop()
 	test_basics1()
 	test_basics2()
 	test_basics3()

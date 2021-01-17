@@ -16,6 +16,9 @@ from enum import IntEnum
 from numba.pycc import CC
 from numbaILP.fnvhash import hasharray#, AKD#, akd_insert,akd_get
 from operator import itemgetter
+from .structref import define_structref
+from .vector import new_vector
+from .utils import _pointer_from_struct_incref, _decref_pointer, _struct_from_pointer, _incref_structref
 
 @njit(nogil=True,fastmath=True,cache=False)
 def unique_counts(inp):
@@ -201,7 +204,7 @@ TreeTypes_LEAF = 2
 ######### Utility Functions for Fit/Predict  #########
 
 @njit(nogil=True,fastmath=True,cache=True)
-def counts_per_split(start_counts, x, y_inds, missing_values, sep_nan=False):
+def counts_per_split(x, y_inds, n_classes, missing_values, sep_nan=False):
 	''' 
 		Determines the number of elements of each class that would be in the resulting
 		left, right and nan nodes if a split was made at each possible feature.
@@ -211,7 +214,7 @@ def counts_per_split(start_counts, x, y_inds, missing_values, sep_nan=False):
 		miss_i, miss_j = missing_values[0]
 	miss_index = 1
 
-	counts = np.zeros((x.shape[1],2+sep_nan,len(start_counts)),dtype=np.uint32);
+	counts = np.zeros((x.shape[1],2+sep_nan,n_classes),dtype=np.uint32);
 	for i in range(x.shape[0]):
 		for j in range(x.shape[1]):
 			if(i == miss_i and j == miss_j):
@@ -315,9 +318,16 @@ TreeNode: A particular node in the tree
 	nan -- For each split in split_on the index of the node in the nan slot
 	counts -- If is a leaf node the number of samples of each class falling in it
 '''
-TreeNode = namedtuple("TreeNode",['ttype','index','split_data','counts'])
-TN = NamedTuple([i4,i4,ListType(i4[:]),u4[::1]],TreeNode)
+tree_node_fields = [
+	('ttype',i4),
+	('index',i4),
+	('split_data', ListType(i4[:])),
+	('counts',u4[::1])
+]
 
+# TreeNode = namedtuple("TreeNode",['ttype','index','split_data','counts'])
+# TN = NamedTuple([i4,i4,ListType(i4[:]),u4[::1]],TreeNode)
+TreeNode, TreeNodeType = define_structref('TreeNode', tree_node_fields)
 
 '''
 SplitContext: An object holding relevant local variables of the tree after a split.
@@ -328,8 +338,16 @@ SplitContext: An object holding relevant local variables of the tree after a spl
 	parent node -- The node from which this branch was produced.
 '''
 
-SplitContext = namedtuple("SplitContext",['inds','impurity','counts','parent_node'])
-SC = NamedTuple([u4[::1],f8,u4[::1],i4],SplitContext)
+# SplitContext = namedtuple("SplitContext",['inds','impurity','counts','parent_node'])
+# SC = NamedTuple([u4[::1],f8,u4[::1],i4],SplitContext)
+
+split_context_fields = [
+	('inds',u4[::1]),
+	('impurity',f8),
+	('counts',u4[::1]),
+	('parent_node',i4)
+]
+SplitContext, SplitContextType = define_structref('SplitContext', split_context_fields)
 
 i4_arr = i4[:]
 
@@ -366,26 +384,34 @@ def fit_tree(x, y, missing_values, criterion_enum, split_enum, sep_nan=False, ca
 	sorted_inds = np.argsort(y)
 	x_sorted = x[sorted_inds]
 	counts, u_ys, y_inds = unique_counts(y[sorted_inds]);
+	n_classes = len(u_ys)
 	impurity = criterion_func(criterion_enum,np.expand_dims(counts,0))[0]
 
-	contexts = List.empty_list(SC)
-	contexts.append(SplitContext(np.arange(0,len(x),dtype=np.uint32),impurity,counts,ZERO))
+	# contexts = List.empty_list(SplitContextType)
+	contexts = new_vector(8)
+	contexts.add(_pointer_from_struct_incref(
+		SplitContext(np.arange(0,len(x),dtype=np.uint32),impurity,counts,ZERO)))
+	# contexts.append()
 
 	node_dict = Dict.empty(u4,BE_List)
-	nodes = List.empty_list(TN)
-	nodes.append(TreeNode(NODE,ZERO,List.empty_list(i4_arr),counts))
+	nodes = new_vector(8)
+	# nodes = List.empty_list(TreeNodeType)
+	nodes.add(_pointer_from_struct_incref(
+		TreeNode(NODE,ZERO,List.empty_list(i4_arr),counts)))
 	
 
 	while len(contexts) > 0:
-		new_contexts = List.empty_list(SC)
+		# new_contexts = List.empty_list(SplitContextType)
+		new_contexts = new_vector(len(contexts))
 		# locs = (node_dict,nodes,new_contexts,cache_nodes)
 		for i in range(len(contexts)):
-			c = contexts[i]
+			c = _struct_from_pointer(SplitContextType,contexts[i]) 
 			c_x, c_y = x_sorted[c.inds], y_inds[c.inds]
 
-			countsPS = counts_per_split(c.counts, c_x, c_y, missing_values, sep_nan)
+			# print(len(c.counts),n_classes)
+			countsPS = counts_per_split(c_x, c_y, n_classes, missing_values, sep_nan)
 			# print("M PS:", missing_values, "\n", countsPS)
-			flat_impurities = criterion_func(criterion_enum,countsPS.reshape((-1,countsPS.shape[2])))
+			flat_impurities = criterion_func(criterion_enum, countsPS.reshape((-1,countsPS.shape[2])))
 			impurities = flat_impurities.reshape((countsPS.shape[0],countsPS.shape[1]))
 			# print("IMP:", impurities)
 
@@ -393,33 +419,36 @@ def fit_tree(x, y, missing_values, criterion_enum, split_enum, sep_nan=False, ca
 			total_split_impurity = impurities[:,0] + impurities[:,1];
 			if(sep_nan): total_split_impurity += impurities[:,2]
 			impurity_decrease = c.impurity - (total_split_impurity);
-			splits = split_chooser(split_enum,impurity_decrease)
+			splits = split_chooser(split_enum, impurity_decrease)
 
 			for j in range(len(splits)):
 				split = splits[j]
 
 				if(impurity_decrease[split] <= 0.0):
-					nodes[c.parent_node]=TreeNode(LEAF,c.parent_node,List.empty_list(i4_arr),c.counts)
+					_decref_pointer(nodes[c.parent_node])
+					nodes[c.parent_node]=_pointer_from_struct_incref(TreeNode(LEAF,c.parent_node,List.empty_list(i4_arr),c.counts))
 				else:
 					mask = c_x[:,split];
 					missing = np.argwhere(missing_values[:,1] == split)[:,0]
 					# print("missing", split, missing)
 					node_l, node_r, node_n = -1, -1, -1
-					new_inds_l, new_inds_r, new_inds_n = r_l_n_split(mask,missing)
+					new_inds_l, new_inds_r, new_inds_n = r_l_n_split(mask, missing)
 					
 					#New node for left.
 					# node_l = new_node(locs,split,new_inds_l, impurities,countsPS,0)
-					if (cache_nodes): node_l= akd_get(node_dict,new_inds_l)
+					if (cache_nodes): node_l= akd_get(node_dict, new_inds_l)
 					if(node_l == -1):
 						node_l = len(nodes)
 						if(cache_nodes): akd_insert(node_dict,new_inds_l,node_l)
 						ms_impurity_l = impurities[split,0].item()
 						if(ms_impurity_l > 0):
-							nodes.append(TreeNode(NODE,node_l,List.empty_list(i4_arr),countsPS[split,0]))
-							new_contexts.append(SplitContext(new_inds_l,
-								ms_impurity_l,countsPS[split,0], node_l))
+							nodes.add(_pointer_from_struct_incref(
+								TreeNode(NODE,node_l,List.empty_list(i4_arr),countsPS[split,0])))
+							new_contexts.add(_pointer_from_struct_incref(SplitContext(new_inds_l,
+								ms_impurity_l,countsPS[split,0], node_l)))
 						else:
-							nodes.append(TreeNode(LEAF,node_l,List.empty_list(i4_arr),countsPS[split,0]))
+							nodes.add(_pointer_from_struct_incref(
+								TreeNode(LEAF,node_l,List.empty_list(i4_arr),countsPS[split,0])))
 						
 
 					#New node for right.
@@ -430,11 +459,13 @@ def fit_tree(x, y, missing_values, criterion_enum, split_enum, sep_nan=False, ca
 						if(cache_nodes): akd_insert(node_dict,new_inds_r,node_r)
 						ms_impurity_r = impurities[split,1].item()
 						if(ms_impurity_r > 0):
-							nodes.append(TreeNode(NODE,node_r,List.empty_list(i4_arr),countsPS[split,1]))
-							new_contexts.append(SplitContext(new_inds_r,
-								ms_impurity_r,countsPS[split,1], node_r))
+							nodes.add(_pointer_from_struct_incref(
+								TreeNode(NODE,node_r,List.empty_list(i4_arr),countsPS[split,1])))
+							new_contexts.add(_pointer_from_struct_incref(SplitContext(new_inds_r,
+								ms_impurity_r,countsPS[split,1], node_r)))
 						else:
-							nodes.append(TreeNode(LEAF,node_r,List.empty_list(i4_arr),countsPS[split,1]))
+							nodes.add(_pointer_from_struct_incref((
+								TreeNode(LEAF,node_r,List.empty_list(i4_arr),countsPS[split,1]))))
 						
 
 					#New node for NaN values.
@@ -446,16 +477,23 @@ def fit_tree(x, y, missing_values, criterion_enum, split_enum, sep_nan=False, ca
 							if(cache_nodes): akd_insert(node_dict,new_inds_n,node_n)
 							ms_impurity_n = impurities[split,2].item()
 							if(ms_impurity_n > 0):
-								nodes.append(TreeNode(NODE,node_n,List.empty_list(i4_arr),countsPS[split,2]))
-								new_contexts.append(SplitContext(new_inds_n,
-									ms_impurity_n,countsPS[split,2], node_n))
+								nodes.add(_pointer_from_struct_incref(
+									TreeNode(NODE,node_n,List.empty_list(i4_arr),countsPS[split,2])))
+								new_contexts.add(_pointer_from_struct_incref(SplitContext(new_inds_n,
+									ms_impurity_n,countsPS[split,2], node_n)))
 							else:
-								nodes.append(TreeNode(LEAF,node_n,List.empty_list(i4_arr),countsPS[split,2]))
-					nodes[c.parent_node].split_data.append(np.array([split, node_l, node_r, node_n],dtype=np.int32))
+								nodes.add(_pointer_from_struct_incref(
+									TreeNode(LEAF,node_n,List.empty_list(i4_arr),countsPS[split,2])))
+					parent_node = _struct_from_pointer(TreeNodeType, nodes[c.parent_node])
+					parent_node.split_data.append(np.array([split, node_l, node_r, node_n],dtype=np.int32))
 
+		for i in range(len(contexts)):
+			_decref_pointer(contexts[i])
 		contexts = new_contexts
 
 	out = encode_tree(nodes,u_ys)
+	for i in range(len(nodes)):
+		node = _decref_pointer(nodes[i])
 	return out
 
 @njit(nogil=True,fastmath=True)
@@ -469,18 +507,21 @@ def encode_tree(nodes,u_ys):
 		cost associate with unboxing Lists of NamedTuples, this seems to not be the case if
 		the list is contained inside a jitclass, but jitclasses are not cacheable or AOT compilable
 	'''
-	n_classes = len(nodes[0].counts)
+	root_node = _struct_from_pointer(TreeNodeType,nodes[0])
+	n_classes = len(root_node.counts)
 	out_node_slices = np.empty((len(nodes)+1,),dtype=np.int32)
 	
 	offset = 1 
 	out_node_slices[0] = offset
-	for i,node in enumerate(nodes):
+	for i in range(len(nodes)):
+		node = _struct_from_pointer(TreeNodeType,nodes[i])
 		l = 4 + len(node.split_data)*4 + n_classes
 		offset += l 
 		out_node_slices[i+1] = offset
 	out = np.empty((offset+len(u_ys)),dtype=np.int32)
 	out[0] = np.array(offset,dtype=np.int32).item()
-	for i,node in enumerate(nodes):
+	for i in range(len(nodes)):
+		node = _struct_from_pointer(TreeNodeType,nodes[i])
 		ind = out_node_slices[i]
 
 		out[ind+0] = out_node_slices[i+1]-out_node_slices[i]
