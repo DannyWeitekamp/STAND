@@ -2,7 +2,7 @@
 # define NPY_NO_DEPRECATED_API NPY_1_7_API_VERSION
 import numpy as np
 import numba
-from numba import types, njit, guvectorize,vectorize,prange, jit
+from numba import types, njit, guvectorize,vectorize,prange, jit, literally
 # from numba.experimental import jitclass
 from numba import deferred_type, optional
 from numba import void,b1,u1,u2,u4,u8,i1,i2,i4,i8,f4,f8,c8,c16
@@ -15,6 +15,7 @@ from numbaILP.compile_template import compile_template
 from enum import IntEnum
 from numba.pycc import CC
 from numbaILP.fnvhash import hasharray#, AKD#, akd_insert,akd_get
+
 
 @njit(nogil=True,fastmath=True,cache=False)
 def unique_counts(inp):
@@ -73,6 +74,7 @@ def return_zero(counts):
 CRITERION_gini = 1
 CRITERION_return_zero = 2
 
+
 @njit(cache=True, inline='always')
 def criterion_func(func_enum,counts):
 	if(func_enum == 1):
@@ -105,6 +107,7 @@ def choose_all_max(impurity_decrease):
 
 SPLIT_CHOICE_single_max = 1
 SPLIT_CHOICE_all_max = 2
+
 
 @njit(cache=True,inline='always')
 def split_chooser(func_enum,impurity_decrease):
@@ -354,15 +357,12 @@ def new_node(locs,split,new_inds, impurities,countsPS,ind):
 	return node
 
 @njit(cache=True, locals={"ZERO":i4,"NODE":i4,"LEAF":i4,"n_nodes":i4,"node_l":i4,"node_r":i4,"node_n":i4,"split":i4})
-def fit_tree(x, y, criterion_enum, split_enum, missing_values, sep_nan=False, cache_nodes=False):
+def fit_tree(x, y, missing_values, criterion_enum, split_enum, sep_nan=False, cache_nodes=False):
 	'''Fits a decision/ambiguity tree'''
-	#ENUMS--necessary if want to use 32bit integers since literals default to 64bit
-	# if(_missing_values is None):
-	# 	missing_values = np.empty((0,2), dtype=np.int64)
-	# else:
-	# 	missing_values = _missing_values
 
+	#ENUMS definitions necessary if want to use 32bit integers since literals default to 64bit
 	ZERO, NODE, LEAF = 0, 1, 2
+
 	sorted_inds = np.argsort(y)
 	x_sorted = x[sorted_inds]
 	counts, u_ys, y_inds = unique_counts(y[sorted_inds]);
@@ -796,37 +796,54 @@ def str_tree(tree):
 
 def print_tree(tree):
 	print(str_tree(tree))
+
 		
 class TreeClassifier(object):
 	def __init__(self, 
-					  criterion_func='gini',
-					  split_chooser='choose_all_max',
-					  pred_choice_func='choose_pure_majority_general',
-					  positive_class=1):
+					  criterion='gini',
+					  split_choice='all_max',
+					  pred_choice='pure_majority_general',
+					  positive_class=1,
+					  sep_nan=False):
 
-		l = globals()
-		criterion_func = l[criterion_func]
-		split_chooser = l[split_chooser]
-		pred_choice_func = l[pred_choice_func]
-		positive_class = positive_class
-		
-		ft = fit_tree
-		@njit(nogil=True,fastmath=True)
-		def _fit(X,y):
-			return ft(X,y,criterion_func,split_chooser)
+		g = globals()
+		criterion_enum = getattr(g,f"CRITERION_{criterion}",None)
+		split_enum = getattr(g,f"SPLIT_CHOICE_{split_choice}",None)
+		pred_choice_enum = getattr(g,f"PRED_CHOICE_{pred_choice}",None)
+
+		if(criterion_enum is None): raise ValueError(f"Invalid criterion {criterion}")
+		if(split_enum is None): raise ValueError(f"Invalid split_choice {split_choice}")
+		if(pred_choice_enum is None): raise ValueError(f"Invalid pred_choice {pred_choice}")
+
+		@njit(cache=True)
+		def _fit(x,y,missing_values=None):	
+			if(missing_values is None): missing_values = np.empty((0,2), dtype=np.int64)
+			out =fit_tree(x,y,
+					missing_values=missing_values,
+					criterion_enum=literally(criterion_enum),
+					split_enum=literally(split_enum),
+					sep_nan=literally(sep_nan)
+				 )
+			return out
 		self._fit = _fit
 
-		@njit(nogil=True,fastmath=True)
-		def _predict(tree,X):
-			return predict_tree(tree,X,pred_choice_func,positive_class)
+		@njit(cache=True)
+		def _predict(tree, X, missing_values=None):	
+			if(missing_values is None): missing_values = np.empty((0,2), dtype=np.int64)
+			out =predict_tree(tree,X,
+					pred_choice_enum=literally(pred_choice_enum),
+					positive_class=literally(positive_class),
+					decode_classes=True
+				 )
+			return out
 		self._predict = _predict
-
 		self.tree = None
 		
-	def fit(self,X,y):
-		self.tree = self._fit(X,y)
+	def fit(self,X,y,missing_values=None):
+		self.tree = self._fit(X, y, missing_values)
 
 	def predict(self,X):
+		if(self.tree is None): raise RuntimeError("TreeClassifier must be fit before predict() is called.")
 		return self._predict(self.tree,X)
 
 	def __str__(self):
@@ -837,9 +854,9 @@ class TreeClassifier(object):
 def test_fit(x,y,missing_values=None):	
 	if(missing_values is None): missing_values = np.empty((0,2), dtype=np.int64)
 	out =fit_tree(x,y,
+			missing_values=missing_values,
 			criterion_enum=1,
 			split_enum=1,
-			missing_values=missing_values,
 			sep_nan=True
 		 )
 	return out
@@ -850,9 +867,9 @@ def test_fit(x,y,missing_values=None):
 def test_Afit(x,y,missing_values=None):	
 	if(missing_values is None): missing_values = np.empty((0,2), dtype=np.int64)
 	out =fit_tree(x,y,
+			missing_values=missing_values,
 			criterion_enum=1,
 			split_enum=2,
-			missing_values=missing_values,
 			cache_nodes=True,
 		 )
 	return out
