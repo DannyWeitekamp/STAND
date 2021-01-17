@@ -201,7 +201,7 @@ TreeTypes_LEAF = 2
 ######### Utility Functions for Fit/Predict  #########
 
 @njit(nogil=True,fastmath=True,cache=True)
-def counts_per_split(start_counts, x, y_inds, missing_values, sep_nan=False):
+def counts_per_split(x, y_inds, missing_values, n_classes, sep_nan=False):
 	''' 
 		Determines the number of elements of each class that would be in the resulting
 		left, right and nan nodes if a split was made at each possible feature.
@@ -211,7 +211,7 @@ def counts_per_split(start_counts, x, y_inds, missing_values, sep_nan=False):
 		miss_i, miss_j = missing_values[0]
 	miss_index = 1
 
-	counts = np.zeros((x.shape[1],2+sep_nan,len(start_counts)),dtype=np.uint32);
+	counts = np.zeros((x.shape[1], 2+sep_nan, n_classes),dtype=np.uint32);
 	for i in range(x.shape[0]):
 		for j in range(x.shape[1]):
 			if(i == miss_i and j == miss_j):
@@ -341,11 +341,11 @@ i4_arr = i4[:]
 @njit(cache=True,locals={"NODE":i4,"LEAF":i4,'node':i4},inline='always')
 def new_node(locs,split,new_inds, impurities,countsPS,ind):
 	node_dict,nodes,new_contexts,cache_nodes = locs
-	NODE, LEAF = np.array(1,dtype=np.int32).item(), np.array(2,dtype=np.int32).item()
-	node = -1
+	NODE, LEAF = i4(1), i4(2) #np.array(1,dtype=np.int32).item(), np.array(2,dtype=np.int32).item()
+	node = i4(-1)
 	if (cache_nodes): node= akd_get(node_dict,new_inds)
 	if(node == -1):
-		node = np.array(len(nodes),dtype=np.int32).item()
+		node = i4(len(nodes))
 		if(cache_nodes): akd_insert(node_dict,new_inds,node)
 		ms_impurity = impurities[split,ind].item()
 		if(ms_impurity > 0.0):
@@ -356,16 +356,98 @@ def new_node(locs,split,new_inds, impurities,countsPS,ind):
 			nodes.append(TreeNode(LEAF,node,List.empty_list(i4_arr),countsPS[split,ind]))
 	return node
 
+# @njit(cache=True,locals={"NODE":i4,"LEAF":i4,'node':i4},inline='always')
+# def new_node(node_dict, nodes, new_contexts, cache_nodes, split, new_inds, impurities,countsPS,ind):
+# 	NODE, LEAF = 1, 2
+# 	node_id = -1
+# 	if (cache_nodes): node_id = akd_get(node_dict,new_inds_n)
+# 	if(node_id == -1):
+# 		node_n = len(nodes)
+# 		if(cache_nodes): akd_insert(node_dict,new_inds_n,node_n)
+# 		ms_impurity_n = impurities[split,2].item()
+# 		if(ms_impurity_n > 0):
+# 			nodes.append(TreeNode(NODE,node_n,List.empty_list(i4_arr),countsPS[split,2]))
+# 			new_contexts.append(SplitContext(new_inds_n,
+# 				ms_impurity_n,countsPS[split,2], node_n))
+# 		else:
+# 			nodes.append(TreeNode(LEAF,node_n,List.empty_list(i4_arr),countsPS[split,2]))
+# 	return node_id
+
+@njit(cache=True)
+def get_counts_impurities(xb, xc, y, missing_values, criterion_enum, n_classes, sep_nan):
+
+	countsPS = counts_per_split(xb, y, missing_values, sep_nan, n_classes)
+	flat_impurities = criterion_func(criterion_enum,countsPS.reshape((-1,countsPS.shape[2])))
+	impurities = flat_impurities.reshape((countsPS.shape[0], countsPS.shape[1]))
+
+	for j in range(xc.shape[1]):
+		xc_j = xc[:,j]
+		srt_inds = np.argsort(xc_j)
+		xc_j = xc_j[srt_inds]
+		y_j = y[srt_inds]
+			
+		#Nan's show up at the end of a sorted list, find where they start 
+		nan_start = len(xc_j)
+		for i in range(len(xc_j)-1,-1,-1):
+			if(not np.isnan(xc_j[i])): break
+			nan_start = i
+
+		#Find left(0) and right(1) cumulative counts for splitting at each possible threshold
+		cum_counts.empty((len(y_j)+1, 2, n_classes),dtype=np.int32)
+		cum_counts[0] = 0
+		for i,y_ij in enumerate(y_j):
+			cum_counts[i+1, 0] = cum_counts[i]
+			cum_counts[i+1, 0, y_ij] += 1
+		
+		for i,y_ij in enumerate(y_j):
+			cum_counts[i+1, 1] = cum_counts_left[len(y_j)-i,0]
+
+		max_ind, depth = (nan_start-1), 1
+		impurity, prev_impurity, thresh_ind = np.inf, -np.inf, 0
+
+		best_ind = (nan_start-1)>>2
+		impurity = np.sum(criterion_func(criterion_enum, cum_counts[best_ind]))
+		recurse = True
+		while(recurse):
+			recurse = False
+			half_step = max_ind >> depth
+			if(half_step == 0): break
+
+			less = best_ind - half_step
+			less_impurity = np.sum(criterion_func(criterion_enum, cum_counts[less]))
+			if(less_impurity < impurity):
+				impurity, best_ind, recurse  = less_impurity, less_ind, True
+
+			more = best_ind + half_step
+			more_impurity = np.sum(criterion_func(criterion_enum, cum_counts[more]))
+			if(more_impurity < impurity):
+				impurity, best_ind, recurse  = more_impurity, more_ind, True
+
+
+		thresh = (xc_j[best_ind] + xc_j[best_ind+1]) / 2.0
+
+
+
+		
+
+
+
+
+			
+
+
 @njit(cache=True, locals={"ZERO":i4,"NODE":i4,"LEAF":i4,"n_nodes":i4,"node_l":i4,"node_r":i4,"node_n":i4,"split":i4})
-def fit_tree(x, y, missing_values, criterion_enum, split_enum, sep_nan=False, cache_nodes=False):
+def fit_tree(x_bin, x_cont, y, missing_values, criterion_enum, split_enum, sep_nan=False, cache_nodes=False):
 	'''Fits a decision/ambiguity tree'''
 
 	#ENUMS definitions necessary if want to use 32bit integers since literals default to 64bit
 	ZERO, NODE, LEAF = 0, 1, 2
 
 	sorted_inds = np.argsort(y)
-	x_sorted = x[sorted_inds]
+	x_bin_sorted = x_bin[sorted_inds]
+	x_cont_sorted = x_cont[sorted_inds]
 	counts, u_ys, y_inds = unique_counts(y[sorted_inds]);
+	n_classes = len(u_ys)
 	impurity = criterion_func(criterion_enum,np.expand_dims(counts,0))[0]
 
 	contexts = List.empty_list(SC)
@@ -381,19 +463,24 @@ def fit_tree(x, y, missing_values, criterion_enum, split_enum, sep_nan=False, ca
 		# locs = (node_dict,nodes,new_contexts,cache_nodes)
 		for i in range(len(contexts)):
 			c = contexts[i]
-			c_x, c_y = x_sorted[c.inds], y_inds[c.inds]
+			c_xb, c_xc, c_y = x_bin_sorted[c.inds], x_cont_sorted[c.inds], y_inds[c.inds]
 
-			countsPS = counts_per_split(c.counts, c_x, c_y, missing_values, sep_nan)
-			# print("M PS:", missing_values, "\n", countsPS)
-			flat_impurities = criterion_func(criterion_enum,countsPS.reshape((-1,countsPS.shape[2])))
-			impurities = flat_impurities.reshape((countsPS.shape[0],countsPS.shape[1]))
+			# c_xb, c_y = x_sorted[c.inds], y_inds[c.inds]
+
+			# countsPS = counts_per_split(c_x, c_y, n_classes, missing_values, sep_nan)
+			# # print("M PS:", missing_values, "\n", countsPS)
+			# flat_impurities = criterion_func(criterion_enum,countsPS.reshape((-1,countsPS.shape[2])))
+			# impurities = flat_impurities.reshape((countsPS.shape[0],countsPS.shape[1]))
+
+			countsPS, impurities = get_counts_impurities(c_xb, c_xc, c_y, missing_values,
+										criterion_enum, n_classes, sep_nan)
 			# print("IMP:", impurities)
 
 			#Sum of new impurities of left and right side of split
 			total_split_impurity = impurities[:,0] + impurities[:,1];
 			if(sep_nan): total_split_impurity += impurities[:,2]
 			impurity_decrease = c.impurity - (total_split_impurity);
-			splits = split_chooser(split_enum,impurity_decrease)
+			splits = split_chooser(split_enum, impurity_decrease)
 
 			for j in range(len(splits)):
 				split = splits[j]
@@ -406,51 +493,18 @@ def fit_tree(x, y, missing_values, criterion_enum, split_enum, sep_nan=False, ca
 					# print("missing", split, missing)
 					node_l, node_r, node_n = -1, -1, -1
 					new_inds_l, new_inds_r, new_inds_n = r_l_n_split(mask,missing)
+					locs = (node_dict, nodes,new_contexts, cache_nodes)
 					
 					#New node for left.
-					# node_l = new_node(locs,split,new_inds_l, impurities,countsPS,0)
-					if (cache_nodes): node_l= akd_get(node_dict,new_inds_l)
-					if(node_l == -1):
-						node_l = len(nodes)
-						if(cache_nodes): akd_insert(node_dict,new_inds_l,node_l)
-						ms_impurity_l = impurities[split,0].item()
-						if(ms_impurity_l > 0):
-							nodes.append(TreeNode(NODE,node_l,List.empty_list(i4_arr),countsPS[split,0]))
-							new_contexts.append(SplitContext(new_inds_l,
-								ms_impurity_l,countsPS[split,0], node_l))
-						else:
-							nodes.append(TreeNode(LEAF,node_l,List.empty_list(i4_arr),countsPS[split,0]))
-						
+					node_l = new_node(locs,split,new_inds_l, impurities,countsPS, literally(0))
 
 					#New node for right.
-					# node_r = new_node(locs,split,new_inds_r, impurities,countsPS,1)
-					if (cache_nodes): node_r = akd_get(node_dict,new_inds_r)
-					if(node_r == -1):
-						node_r = len(nodes)
-						if(cache_nodes): akd_insert(node_dict,new_inds_r,node_r)
-						ms_impurity_r = impurities[split,1].item()
-						if(ms_impurity_r > 0):
-							nodes.append(TreeNode(NODE,node_r,List.empty_list(i4_arr),countsPS[split,1]))
-							new_contexts.append(SplitContext(new_inds_r,
-								ms_impurity_r,countsPS[split,1], node_r))
-						else:
-							nodes.append(TreeNode(LEAF,node_r,List.empty_list(i4_arr),countsPS[split,1]))
-						
+					node_r = new_node(locs,split,new_inds_r, impurities,countsPS,literally(1))
 
 					#New node for NaN values.
 					if(sep_nan and len(new_inds_n) > 0):
-						# node_n = new_node(locs,split,new_inds_n, impurities,countsPS,2)
-						if (cache_nodes): node_n = akd_get(node_dict,new_inds_n)
-						if(node_n == -1):
-							node_n = len(nodes)
-							if(cache_nodes): akd_insert(node_dict,new_inds_n,node_n)
-							ms_impurity_n = impurities[split,2].item()
-							if(ms_impurity_n > 0):
-								nodes.append(TreeNode(NODE,node_n,List.empty_list(i4_arr),countsPS[split,2]))
-								new_contexts.append(SplitContext(new_inds_n,
-									ms_impurity_n,countsPS[split,2], node_n))
-							else:
-								nodes.append(TreeNode(LEAF,node_n,List.empty_list(i4_arr),countsPS[split,2]))
+						node_n = new_node(locs,split,new_inds_n, impurities,countsPS,literally(2))
+						
 					nodes[c.parent_node].split_data.append(np.array([split, node_l, node_r, node_n],dtype=np.int32))
 
 		contexts = new_contexts
