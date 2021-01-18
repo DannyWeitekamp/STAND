@@ -384,9 +384,9 @@ def get_counts_impurities(xb, xc, y, missing_values, criterion_enum, n_classes, 
 		srt_inds = np.argsort(xc_j)
 		xc_j = xc_j[srt_inds]
 		y_j = y[srt_inds]
-		# print()
-		# print(xc_j)
-		# print(y_j)
+		print()
+		print(xc_j)
+		print(y_j)
 
 		#Nan's show up at the end of a sorted list, find where they start 
 		nan_start = len(xc_j)
@@ -395,19 +395,25 @@ def get_counts_impurities(xb, xc, y, missing_values, criterion_enum, n_classes, 
 			nan_start = i
 
 		#Find left(0) and right(1) cumulative counts for splitting at each possible threshold
-		cum_counts = np.empty((nan_start+1, 2, n_classes),dtype=np.int32)
-		cum_counts[0] = 0
+		cum_counts = np.zeros((nan_start+1, 2, n_classes),dtype=np.int32)
 		for i in range(nan_start):
 			y_ij = y_j[i]
 			cum_counts[i+1, 0] = cum_counts[i, 0]
 			cum_counts[i+1, 0, y_ij] += 1
-		for i in range(1,len(cum_counts)):
-			cum_counts[i, 1] = cum_counts[nan_start-i,0]
-		cum_counts[0, 1] = cum_counts[nan_start, 0]
+
+
+		for i in range(nan_start,0,-1):
+			y_ij = y_j[i-1]
+			cum_counts[i-1, 1] = cum_counts[i, 1]
+			cum_counts[i-1, 1, y_ij] += 1
+
+		# for i in range(0,len(cum_counts)):
+		# 	cum_counts[i, 1] = cum_counts[nan_start-i,0]
+		# cum_counts[0, 1] = cum_counts[-1, 0]-cum_counts[i, 0]
 
 		#Find all i s.t. xc_j[i] != xc_j[i+1] (i.e. candidate pairs for threshold)
 		thresh_inds, c = np.empty((nan_start,),dtype=np.int32), 0
-		for i in range(0,nan_start-1):
+		for i in range(0, nan_start):
 			if(xc_j[i] != xc_j[i+1]):
 				thresh_inds[c] = i
 				c += 1
@@ -416,49 +422,16 @@ def get_counts_impurities(xb, xc, y, missing_values, criterion_enum, n_classes, 
 
 		# print("thresh_inds",thresh_inds)
 		# print(cum_counts)
+		best_impurity, best_ind = np.inf, -1
+		# print(best_ind)
+		print("thresh_inds", thresh_inds)
+		for t_i in thresh_inds:
+			impurity = np.sum(criterion_func(criterion_enum, cum_counts[t_i]))
+			if(impurity < best_impurity):
+				best_impurity, best_ind = impurity, t_i
+		print(best_ind)
 
-		max_ind, depth = (len(thresh_inds)-1), 1
-		best_ind = (len(thresh_inds)-1)>>depth
-		impurity = np.sum(criterion_func(criterion_enum, cum_counts[:1,thresh_inds[best_ind]]))
-		# print("IMP", impurity)
-		while(True):
-			depth += 1
-			old_best_ind = best_ind
-			half_step = max(max_ind >> depth,1)
-
-			less_ind = max(best_ind - half_step,0)
-			more_ind = min(best_ind + half_step,len(thresh_inds)-1)
-			
-			
-			less_impurity = np.sum(criterion_func(criterion_enum, cum_counts[thresh_inds[less_ind]]))
-			if(less_ind != best_ind):
-				less_impurity = np.sum(criterion_func(criterion_enum, cum_counts[thresh_inds[less_ind]]))
-				# print("l", less_impurity)
-				if(less_impurity < impurity):
-					impurity, best_ind  = less_impurity, less_ind
-
-			more_impurity = np.sum(criterion_func(criterion_enum, cum_counts[thresh_inds[more_ind]]))
-			if(more_ind != best_ind):
-				more_impurity = np.sum(criterion_func(criterion_enum, cum_counts[thresh_inds[more_ind]]))
-				# print("m %.2f"% more_impurity)
-				if(more_impurity < impurity):
-					impurity, best_ind  = more_impurity, more_ind
-
-			print()
-			print(old_best_ind, less_ind, more_ind)
-			print(impurity, less_impurity, more_impurity)
-			print(cum_counts[thresh_inds[less_ind]],cum_counts[thresh_inds[more_ind]])
-			print(criterion_func(criterion_enum, cum_counts[thresh_inds[less_ind]]),criterion_func(criterion_enum, cum_counts[thresh_inds[more_ind]]))
-			# print(impurity, less_impurity, more_impurity)
-			# print(old_best_ind, best_ind, less_ind, more_ind)
-
-			if(half_step <= 1): break
-
-
-			# depth += 1
-
-
-		thresh = (xc_j[thresh_inds[best_ind]] + xc_j[thresh_inds[best_ind]+1]) / 2.0
+		thresh = (xc_j[best_ind-1] + xc_j[best_ind]) / 2.0 if best_ind != 0 else np.inf
 
 		if(sep_nan):
 			nan_counts = np.empty((2,cum_counts.shape[-1]),dtype=np.int64)
@@ -1073,9 +1046,8 @@ if(__name__ == "__main__"):
 
 	N = 10
 	xc = np.asarray([np.arange(N)],np.float64).T
-	for i in range(N):
+	for i in range(N+1):
 		y = np.concatenate([np.zeros(i,dtype=np.int64),np.ones(N-i,dtype=np.int64)])
-		print(y)
 		get_counts_impurities(xb, xc, y, missing_values, CRITERION_gini, 2, True)
 
 
