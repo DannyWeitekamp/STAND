@@ -189,3 +189,6 @@ if(__name__ == "__main__"):
 		
 
 
+#Things that need to be tested
+#   -missing values in both binary and continous
+#   -Nan values 
