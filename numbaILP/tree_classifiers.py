@@ -375,8 +375,7 @@ def new_node(locs,split,new_inds, impurities,countsPS,ind):
 
 @njit(cache=True)
 def get_counts_impurities(xb, xc, y, missing_values, criterion_enum, n_classes, sep_nan):
-
-	countsPS = counts_per_split(xb, y, missing_values, sep_nan, n_classes)
+	countsPS = counts_per_split(xb, y, missing_values, n_classes, sep_nan)
 	flat_impurities = criterion_func(criterion_enum,countsPS.reshape((-1,countsPS.shape[2])))
 	impurities = flat_impurities.reshape((countsPS.shape[0], countsPS.shape[1]))
 
@@ -385,7 +384,10 @@ def get_counts_impurities(xb, xc, y, missing_values, criterion_enum, n_classes, 
 		srt_inds = np.argsort(xc_j)
 		xc_j = xc_j[srt_inds]
 		y_j = y[srt_inds]
-			
+		# print()
+		# print(xc_j)
+		# print(y_j)
+
 		#Nan's show up at the end of a sorted list, find where they start 
 		nan_start = len(xc_j)
 		for i in range(len(xc_j)-1,-1,-1):
@@ -393,38 +395,84 @@ def get_counts_impurities(xb, xc, y, missing_values, criterion_enum, n_classes, 
 			nan_start = i
 
 		#Find left(0) and right(1) cumulative counts for splitting at each possible threshold
-		cum_counts.empty((len(y_j)+1, 2, n_classes),dtype=np.int32)
+		cum_counts = np.empty((nan_start+1, 2, n_classes),dtype=np.int32)
 		cum_counts[0] = 0
-		for i,y_ij in enumerate(y_j):
-			cum_counts[i+1, 0] = cum_counts[i]
+		for i in range(nan_start):
+			y_ij = y_j[i]
+			cum_counts[i+1, 0] = cum_counts[i, 0]
 			cum_counts[i+1, 0, y_ij] += 1
-		
-		for i,y_ij in enumerate(y_j):
-			cum_counts[i+1, 1] = cum_counts_left[len(y_j)-i,0]
+		for i in range(1,len(cum_counts)):
+			cum_counts[i, 1] = cum_counts[nan_start-i,0]
+		cum_counts[0, 1] = cum_counts[nan_start, 0]
 
-		max_ind, depth = (nan_start-1), 1
-		impurity, prev_impurity, thresh_ind = np.inf, -np.inf, 0
+		#Find all i s.t. xc_j[i] != xc_j[i+1] (i.e. candidate pairs for threshold)
+		thresh_inds, c = np.empty((nan_start,),dtype=np.int32), 0
+		for i in range(0,nan_start-1):
+			if(xc_j[i] != xc_j[i+1]):
+				thresh_inds[c] = i
+				c += 1
+		#If every value is the same then just use i=0
+		thresh_inds = thresh_inds[:c] if (c > 0) else np.zeros((1,),dtype=np.int32)
 
-		best_ind = (nan_start-1)>>2
-		impurity = np.sum(criterion_func(criterion_enum, cum_counts[best_ind]))
-		recurse = True
-		while(recurse):
-			recurse = False
-			half_step = max_ind >> depth
-			if(half_step == 0): break
+		# print("thresh_inds",thresh_inds)
+		# print(cum_counts)
 
-			less = best_ind - half_step
-			less_impurity = np.sum(criterion_func(criterion_enum, cum_counts[less]))
-			if(less_impurity < impurity):
-				impurity, best_ind, recurse  = less_impurity, less_ind, True
+		max_ind, depth = (len(thresh_inds)-1), 1
+		best_ind = (len(thresh_inds)-1)>>depth
+		impurity = np.sum(criterion_func(criterion_enum, cum_counts[:1,thresh_inds[best_ind]]))
+		# print("IMP", impurity)
+		while(True):
+			depth += 1
+			old_best_ind = best_ind
+			half_step = max(max_ind >> depth,1)
 
-			more = best_ind + half_step
-			more_impurity = np.sum(criterion_func(criterion_enum, cum_counts[more]))
-			if(more_impurity < impurity):
-				impurity, best_ind, recurse  = more_impurity, more_ind, True
+			less_ind = max(best_ind - half_step,0)
+			more_ind = min(best_ind + half_step,len(thresh_inds)-1)
+			
+			
+			less_impurity = np.sum(criterion_func(criterion_enum, cum_counts[thresh_inds[less_ind]]))
+			if(less_ind != best_ind):
+				less_impurity = np.sum(criterion_func(criterion_enum, cum_counts[thresh_inds[less_ind]]))
+				# print("l", less_impurity)
+				if(less_impurity < impurity):
+					impurity, best_ind  = less_impurity, less_ind
+
+			more_impurity = np.sum(criterion_func(criterion_enum, cum_counts[thresh_inds[more_ind]]))
+			if(more_ind != best_ind):
+				more_impurity = np.sum(criterion_func(criterion_enum, cum_counts[thresh_inds[more_ind]]))
+				# print("m %.2f"% more_impurity)
+				if(more_impurity < impurity):
+					impurity, best_ind  = more_impurity, more_ind
+
+			print()
+			print(old_best_ind, less_ind, more_ind)
+			print(impurity, less_impurity, more_impurity)
+			print(cum_counts[thresh_inds[less_ind]],cum_counts[thresh_inds[more_ind]])
+			print(criterion_func(criterion_enum, cum_counts[thresh_inds[less_ind]]),criterion_func(criterion_enum, cum_counts[thresh_inds[more_ind]]))
+			# print(impurity, less_impurity, more_impurity)
+			# print(old_best_ind, best_ind, less_ind, more_ind)
+
+			if(half_step <= 1): break
 
 
-		thresh = (xc_j[best_ind] + xc_j[best_ind+1]) / 2.0
+			# depth += 1
+
+
+		thresh = (xc_j[thresh_inds[best_ind]] + xc_j[thresh_inds[best_ind]+1]) / 2.0
+
+		if(sep_nan):
+			nan_counts = np.empty((2,cum_counts.shape[-1]),dtype=np.int64)
+			nan_counts[0] = cum_counts[-1,0]
+			nan_counts[1] = 0
+			for i in range(nan_start,len(y_j)):
+				nan_counts[1,y_j[i]] += 1
+			# 	print("I",i)
+			# print(nan_counts)
+
+
+		# else:
+		# 	thresh = xc_j[0]
+		print(j, best_ind, thresh)
 
 
 
@@ -969,6 +1017,70 @@ def test_Afit(x,y,missing_values=None):
 
 
 if(__name__ == "__main__"):
+
+	xc = np.triu(np.ones((6,6)))
+	# xc = np.asarray([
+#	 0 1 2 3 4 5 6 7 8 9 10111213141516
+	# [10,10,10], #3
+	# [1, 0, 5], #1
+	# [1, 0, 4], #1
+	# [1, 0, 7], #1
+	# [0, 0, 1], #2
+	# [0, 0, 1], #2
+	# [0, 0, 1], #2
+	# ],np.float64);
+
+	xb = np.asarray([
+#	 0 1 2 3 4 5 6 7 8 9 10111213141516
+	# [1, 1, 1], #3
+	[1, 0, 1], #1
+	[1, 0, 1], #1
+	[1, 0, 1], #1
+	[0, 0, 1], #2
+	[0, 0, 1], #2
+	[0, 0, 1], #2
+	],np.bool);
+
+	y = np.asarray([0,0,0,1,1,1],np.int64);
+	
+	missing_values = np.empty((0,2),np.int64)
+	get_counts_impurities(xb, xc, y, missing_values, CRITERION_gini, 2, True)
+
+	xc = np.asarray([
+	# [10,10,10], #3
+	[1, 0, 5], #1
+	[1, 0, 4], #1
+	[1, 0, 7], #1
+	[0, 0, 1], #2
+	[0, 0, 1], #2
+	[0, 0, 1], #2
+	],np.float64);
+
+	get_counts_impurities(xb, xc, y, missing_values, CRITERION_gini, 2, True)
+
+
+	xc = np.asarray([
+	# [10,10,10], #3
+	[1, 0, 5], #1
+	[1, 0, 4], #1
+	[1, 0, 7], #1
+	[np.nan, 0, 1], #2
+	[np.nan, 0, 1], #2
+	[np.nan, 0, 1], #2
+	],np.float64);
+
+	get_counts_impurities(xb, xc, y, missing_values, CRITERION_gini, 2, True)
+
+	N = 10
+	xc = np.asarray([np.arange(N)],np.float64).T
+	for i in range(N):
+		y = np.concatenate([np.zeros(i,dtype=np.int64),np.ones(N-i,dtype=np.int64)])
+		print(y)
+		get_counts_impurities(xb, xc, y, missing_values, CRITERION_gini, 2, True)
+
+
+	# np.empty(())
+	'''
 	
 	data = np.asarray([
 #	 0 1 2 3 4 5 6 7 8 9 10111213141516
@@ -1227,6 +1339,7 @@ a = {"obj2-contenteditable": False,
 # dv = DictVectorizer()
 
 # dv.vectorize(a)
+'''
 
 
 
