@@ -222,8 +222,11 @@ def counts_per_binary_split(x, y_inds, missing_values, n_classes, sep_nan=False)
 			if(i == miss_i and j == miss_j):
 				# counts[j,0,y_inds[i]] += 1;	
 				# counts[j,1,y_inds[i]] += 1;	
-				miss_i, miss_j = missing_values[miss_index]
-				miss_index += 1
+				if(miss_index < len(missing_values)):
+					miss_i, miss_j = missing_values[miss_index]
+					miss_index += 1
+				else:
+					miss_i, miss_j = -1, -1
 			elif(sep_nan and np.isnan(x[i,j])):
 				counts[j,2,y_inds[i]] += 1;	
 			else:
@@ -441,8 +444,11 @@ def get_counts_impurities(xb, xc, y, missing_values, base_impurity, criterion_en
 			cum_counts[i+1, 0] = cum_counts[i, 0]
 			if(miss_i == i and miss_j == j):
 				#Ignore this feature since it's missing
-				miss_i, miss_j = missing_values[miss_index]
-				miss_index += 1
+				if(miss_index < len(missing_values)):
+					miss_i, miss_j = missing_values[miss_index]
+					miss_index += 1
+				else:
+					miss_i, miss_j = -1, -1
 			else:
 				cum_counts[i+1, 0, y_ij] += 1
 				# if(y_ij == pure_target):
@@ -460,8 +466,11 @@ def get_counts_impurities(xb, xc, y, missing_values, base_impurity, criterion_en
 			cum_counts[i-1, 1] = cum_counts[i, 1]
 			if(miss_i == i and miss_j == j):
 				#Ignore this feature since it's missing
-				miss_i, miss_j = missing_values[miss_index]
-				miss_index += 1
+				if(miss_index < len(missing_values)):
+					miss_i, miss_j = missing_values[miss_index]
+					miss_index += 1
+				else:
+					miss_i, miss_j = -1, -1
 			else:
 				cum_counts[i-1, 1, y_ij] += 1
 				# if(y_ij == pure_target):
