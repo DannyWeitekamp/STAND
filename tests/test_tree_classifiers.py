@@ -53,25 +53,27 @@ def test_basics1():
 	data1_flt = data1.astype(np.float64)
 	
 	dt = TreeClassifier('decision_tree')
-	dt.fit(data1,None,labels1)
-	# print(str(dt))
-	# print(dt.predict(data1,None))
+	dt.fit(data1,None,labels1) # Binary DT
 	assert np.sum(dt.predict(data1,None) == labels1) >= 6
-	dt.fit(None,data1_flt,labels1)
-	# print(str(dt))
-	# print(dt.predict(None,data1_flt))
+	dt.fit(None,data1_flt,labels1) # Continous DT 
+	print(dt)
+	print(dt.predict(None,data1_flt))
 	assert np.sum(dt.predict(None,data1_flt) == labels1) >= 6
-
-
+	dt.fit(data1, data1_flt, labels1) # Mixed DT 
+	assert np.sum(dt.predict(data1, data1_flt) == labels1) >= 6
+	
 	at = TreeClassifier('ambiguity_tree')
-	at.fit(data1,None,labels1)
-	# print(str(at))
-	# print(at.predict(data1,None))
+	at.fit(data1,None,labels1) # Binary AT
+	print(at)
 	assert np.sum(at.predict(data1,None) == labels1) >= 7
-	at.fit(None,data1_flt,labels1)
-	# print(str(at))
-	# print(at.predict(None,data1_flt))
+	at.fit(None,data1_flt,labels1) # Continous AT
+	print(at)
+	print(at.predict(None,data1_flt))
 	assert np.sum(at.predict(None,data1_flt) == labels1) >= 7
+	at.fit(data1,data1_flt,labels1) # Mixed AT
+	print(at)
+	print(at.predict(data1,data1_flt))
+	assert np.sum(at.predict(data1,data1_flt) == labels1) >= 7
 
 
 def test_basics2():
@@ -79,15 +81,16 @@ def test_basics2():
 	data2_flt = data2.astype(np.float64)
 
 	dt = TreeClassifier('decision_tree')
-	dt.fit(data2,None,labels2)
+	
+	dt.fit(data2,None,labels2) # Binary DT
 	assert np.sum(dt.predict(data2,None) == labels2) >= 5
-	dt.fit(None,data2_flt,labels2)
+	dt.fit(None,data2_flt,labels2) # Continous DT
 	assert np.sum(dt.predict(None,data2_flt) == labels2) >= 5
 
 	at = TreeClassifier('ambiguity_tree')
-	at.fit(data2,None,labels2)
+	at.fit(data2,None,labels2) # Binary AT
 	assert np.sum(at.predict(data2,None) == labels2) >= 6
-	at.fit(None,data2_flt,labels2)
+	at.fit(None,data2_flt,labels2) # Continous AT
 	assert np.sum(at.predict(None,data2_flt) == labels2) >= 6
 
 def test_basics3():
@@ -95,15 +98,15 @@ def test_basics3():
 	data3_flt = data3.astype(np.float64)
 
 	dt = TreeClassifier('decision_tree')
-	dt.fit(data3,None,labels3)
+	dt.fit(data3,None,labels3) # Binary DT
 	assert np.sum(dt.predict(data3,None) == labels3) >= 3
-	dt.fit(None,data3_flt,labels3)
+	dt.fit(None,data3_flt,labels3) # Continous DT
 	assert np.sum(dt.predict(None,data3_flt) == labels3) >= 3
 
 	at = TreeClassifier('ambiguity_tree')
-	at.fit(data3,None,labels3)
+	at.fit(data3,None,labels3) # Binary AT
 	assert np.sum(at.predict(data3,None) == labels3) >= 3
-	at.fit(None,data3_flt,labels3)
+	at.fit(None,data3_flt,labels3) # Continous AT
 	assert np.sum(at.predict(None,data3_flt) == labels3) >= 3
 
 #### test_missing ####
@@ -201,8 +204,8 @@ def test_b_sklearn_tree_fit(benchmark):
 	
 if(__name__ == "__main__"):
 	test_basics1()
-	test_basics2()
-	test_basics3()
+	# test_basics2()
+	# test_basics3()
 	# test_missing()
 	# test_as_conditions()
 		

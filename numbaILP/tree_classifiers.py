@@ -431,8 +431,11 @@ def get_counts_impurities(xb, xc, y, missing_values, base_impurity, criterion_en
 		#  have a pure right or left (e.g. y_j=[0,0,1,0,1,1,1] has pure_min=2,pure_max=4)
 		cum_counts = np.zeros((nan_start+1, 2, n_classes),dtype=np.int32)
 		# pure_min, pure_target = 0, y_j[0]
+		# print(len(missing_values), miss_index)
 		miss_start = miss_index
-		miss_i, miss_j = missing_values[miss_start]
+		miss_i, miss_j = -1, -1
+		if (miss_start < len(missing_values)):
+			miss_i, miss_j = missing_values[miss_start]	
 		for i in range(nan_start):
 			y_ij = y_j[i]
 			cum_counts[i+1, 0] = cum_counts[i, 0]
@@ -449,7 +452,9 @@ def get_counts_impurities(xb, xc, y, missing_values, base_impurity, criterion_en
 
 		# pure_max, pure_target = nan_start, y_j[-1]
 		miss_index = miss_start
-		miss_i, miss_j = missing_values[miss_start]
+		miss_i, miss_j = -1, -1
+		if (miss_start < len(missing_values)):
+			miss_i, miss_j = missing_values[miss_start]	
 		for i in range(nan_start,0,-1):
 			y_ij = y_j[i-1]
 			cum_counts[i-1, 1] = cum_counts[i, 1]
@@ -463,7 +468,7 @@ def get_counts_impurities(xb, xc, y, missing_values, base_impurity, criterion_en
 				# 	pure_max = i
 				# else:
 				# 	pure_target = -1
-
+		# print(cum)
 		# print("interval",pure_min, pure_max)
 		# if(j == 0): base_impurity = criterion_func(criterion_enum, cum_counts[0])
 			
@@ -490,8 +495,8 @@ def get_counts_impurities(xb, xc, y, missing_values, base_impurity, criterion_en
 			# print("thresh_inds", thresh_inds)
 			for t_i in thresh_inds:
 				impurity = criterion_func(criterion_enum, cum_counts[t_i])
-				total_impurity = np.sum(impurities)
-				# print(t_i, impurity, best_impurity)
+				total_impurity = np.sum(impurity)
+				# print(t_i, total_impurity, best_total_impurity)
 				if(total_impurity < best_total_impurity):
 					best_impurity, best_total_impurity, best_ind = impurity, total_impurity, t_i
 			thresh = (xc_j[best_ind-1] + xc_j[best_ind]) / 2.0 #if best_ind != 0 else np.inf
@@ -578,6 +583,8 @@ def fit_tree(x_bin, x_cont, y, missing_values, criterion_enum, split_enum, sep_n
 			total_split_impurity = impurities[:,0] + impurities[:,1];
 			if(sep_nan): total_split_impurity += impurities[:,2]
 			impurity_decrease = c.impurity - (total_split_impurity);
+			# print(total_split_impurity)
+			# print(impurity_decrease)
 			splits = split_chooser(split_enum, impurity_decrease)
 
 
@@ -590,7 +597,7 @@ def fit_tree(x_bin, x_cont, y, missing_values, criterion_enum, split_enum, sep_n
 					if (split < c_xb.shape[1]):
 						mask = c_xb[:,split]
 					else: 
-						mask = c_xc[:,split-c_xb.shape[1]] >= thresholds[split]
+						mask = c_xc[:,split-c_xb.shape[1]] >= thresholds[split-c_xb.shape[1]]
 					missing = np.argwhere(missing_values[:,1] == split)[:,0]
 					# print("missing", split, missing)
 					node_l, node_r, node_n = -1, -1, -1
@@ -608,7 +615,7 @@ def fit_tree(x_bin, x_cont, y, missing_values, criterion_enum, split_enum, sep_n
 						node_n = new_node(locs,split,new_inds_n, impurities,countsPS,literally(2))
 						
 					#If is continous bitcast threshold to an i4 else set to 1 i.e. 1e-45
-					thresh = np.float32(thresholds[split]).view(np.int32) if j >= x_bin.shape[1] else 1
+					thresh = np.float32(thresholds[split-c_xb.shape[1]]).view(np.int32) if split >= c_xb.shape[1] else 1
 					split_data = np.array([split, thresh, node_l, node_r, node_n],dtype=np.int32)
 					nodes[c.parent_node].split_data.append(split_data)
 
@@ -899,27 +906,42 @@ def tree_to_conditions(tree,target_class,only_pure_leaves=False):
 
 
 		
-@njit(nogil=True,fastmath=True, cache=True, locals={"ONE":i4,"_n":i4})
+@njit(nogil=True,fastmath=True, cache=True, locals={"ZERO":u1, "VISIT":u1, "VISITED": u1, "_n":i4})
 def predict_tree(tree,xb,xc,pred_choice_enum,positive_class=0,decode_classes=True):
 	'''Predicts the class associated with an unlabelled sample using a fitted 
 		decision/ambiguity tree'''
+	ZERO, VISIT, VISITED = 0, 1, 2
 	L = max(len(xb),len(xc))
 	out = np.empty((L,),dtype=np.int64)
 	y_uvs = tree.u_ys#_get_y_order(tree)
 	for i in range(L):
-		node_inds = List.empty_list(i4); node_inds.append(0)
+		# Use a mask instead of a list to avoid repeats that can blow up
+		#  if multiple splits are possible. Keep track of visited in case
+		#  of loops (Although there should not be any loops).
+		new_node_mask = np.zeros((len(tree.nodes),),dtype=np.uint8)
+		new_node_mask[0] = 1
+		node_inds = np.nonzero(new_node_mask==VISIT)[0]
 		leafs = List()
+
 		while len(node_inds) > 0:
-			new_node_inds = List()
+			#Mark all node_inds as visited so we don't mark them for a revisit
+			for ind in node_inds:
+				new_node_mask[ind] = VISITED
+
+			# Go through every node that has been queued for a visit. In a traditional
+			#  decision tree there should only ever be one next node.
 			for ind in node_inds:
 				node = tree.nodes[ind]
-				# ttype, index, splits, counts = #_unpack_node(tree,node)
 				if(node.ttype == TreeTypes_NODE):
-
+					# Test every split in the node. Again in a traditional decision tree
+					#  there should only be one split per node.
 					for s in node.split_data:
 						split_on, ithresh, left, right, nan  = s[0],s[1],s[2],s[3],s[4]
+
+						# Determine if this sample should feed right, left, or nan (if ternary)
 						if(split_on < xb.shape[1]):
-							j = split_on
+							# Binary case
+							j = split_on 
 							if(np.isnan(xb[i,j])):
 								_n = nan
 							elif(xb[i,j]):
@@ -927,8 +949,9 @@ def predict_tree(tree,xb,xc,pred_choice_enum,positive_class=0,decode_classes=Tru
 							else:
 								_n = left
 						else:
+							# Continous case
 							thresh = np.int32(ithresh).view(np.float32)
-							j = split_on-xb.shape[1]
+							j = split_on-xb.shape[1] 
 
 							if(np.isnan(xc[i,j])):
 								_n = nan
@@ -936,11 +959,17 @@ def predict_tree(tree,xb,xc,pred_choice_enum,positive_class=0,decode_classes=Tru
 								_n = right
 							else:
 								_n = left
-						new_node_inds.append(_n)
+						if(new_node_mask[_n] != VISITED): new_node_mask[_n] = VISIT
+							
 				else:
 					leafs.append(node.counts)
-			node_inds = new_node_inds
-		out_i = pred_choice_func(pred_choice_enum,leafs,positive_class)
+
+			node_inds = np.nonzero(new_node_mask==VISIT)[0]
+		# print(leafs)
+		# Since the leaf that the sample ends up in is ambiguous for an ambiguity
+		#   tree we need a subroutine that chooses how to classify the sample from the
+		#   various leaves that it could end up in. 
+		out_i = pred_choice_func(pred_choice_enum, leafs, positive_class)
 		if(decode_classes):out_i = y_uvs[out_i]
 		out[i] = out_i
 	return out
