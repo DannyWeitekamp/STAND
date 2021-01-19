@@ -54,49 +54,57 @@ def test_basics1():
 	
 	dt = TreeClassifier('decision_tree')
 	dt.fit(data1,None,labels1)
-	print(str(dt))
-	print(dt.predict(data1,None))
+	# print(str(dt))
+	# print(dt.predict(data1,None))
 	assert np.sum(dt.predict(data1,None) == labels1) >= 6
 	dt.fit(None,data1_flt,labels1)
-	print(str(dt))
-	print(dt.predict(None,data1_flt))
+	# print(str(dt))
+	# print(dt.predict(None,data1_flt))
 	assert np.sum(dt.predict(None,data1_flt) == labels1) >= 6
 
 
 	at = TreeClassifier('ambiguity_tree')
 	at.fit(data1,None,labels1)
-	print(str(at))
-	print(at.predict(data1,None))
+	# print(str(at))
+	# print(at.predict(data1,None))
 	assert np.sum(at.predict(data1,None) == labels1) >= 7
 	at.fit(None,data1_flt,labels1)
-	print(str(at))
-	print(at.predict(None,data1_flt))
+	# print(str(at))
+	# print(at.predict(None,data1_flt))
 	assert np.sum(at.predict(None,data1_flt) == labels1) >= 7
 
 
 def test_basics2():
 	data2, labels2 = setup2()
+	data2_flt = data2.astype(np.float64)
 
 	dt = TreeClassifier('decision_tree')
 	dt.fit(data2,None,labels2)
+	assert np.sum(dt.predict(data2,None) == labels2) >= 5
+	dt.fit(None,data2_flt,labels2)
+	assert np.sum(dt.predict(None,data2_flt) == labels2) >= 5
 
 	at = TreeClassifier('ambiguity_tree')
 	at.fit(data2,None,labels2)
-
-	assert np.sum(dt.predict(data2,None) == labels2) >= 5
 	assert np.sum(at.predict(data2,None) == labels2) >= 6
+	at.fit(None,data2_flt,labels2)
+	assert np.sum(at.predict(None,data2_flt) == labels2) >= 6
 
 def test_basics3():
 	data3, labels3 = setup3()
+	data3_flt = data3.astype(np.float64)
 
 	dt = TreeClassifier('decision_tree')
 	dt.fit(data3,None,labels3)
+	assert np.sum(dt.predict(data3,None) == labels3) >= 3
+	dt.fit(None,data3_flt,labels3)
+	assert np.sum(dt.predict(None,data3_flt) == labels3) >= 3
 
 	at = TreeClassifier('ambiguity_tree')
 	at.fit(data3,None,labels3)
-
-	assert np.sum(dt.predict(data3,None) == labels3) >= 3
 	assert np.sum(at.predict(data3,None) == labels3) >= 3
+	at.fit(None,data3_flt,labels3)
+	assert np.sum(at.predict(None,data3_flt) == labels3) >= 3
 
 #### test_missing ####
 
@@ -193,8 +201,8 @@ def test_b_sklearn_tree_fit(benchmark):
 	
 if(__name__ == "__main__"):
 	test_basics1()
-	# test_basics2()
-	# test_basics3()
+	test_basics2()
+	test_basics3()
 	# test_missing()
 	# test_as_conditions()
 		
