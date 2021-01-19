@@ -50,40 +50,53 @@ def setup3():
 
 def test_basics1():
 	data1, labels1 = setup1()
+	data1_flt = data1.astype(np.float64)
 	
 	dt = TreeClassifier('decision_tree')
-	dt.fit(data1,labels1)
+	dt.fit(data1,None,labels1)
+	print(str(dt))
+	print(dt.predict(data1,None))
+	assert np.sum(dt.predict(data1,None) == labels1) >= 6
+	dt.fit(None,data1_flt,labels1)
+	print(str(dt))
+	print(dt.predict(None,data1_flt))
+	assert np.sum(dt.predict(None,data1_flt) == labels1) >= 6
+
 
 	at = TreeClassifier('ambiguity_tree')
-	at.fit(data1,labels1)
-
-	assert np.sum(dt.predict(data1) == labels1) >= 6
-	assert np.sum(at.predict(data1) == labels1) >= 7
+	at.fit(data1,None,labels1)
+	print(str(at))
+	print(at.predict(data1,None))
+	assert np.sum(at.predict(data1,None) == labels1) >= 7
+	at.fit(None,data1_flt,labels1)
+	print(str(at))
+	print(at.predict(None,data1_flt))
+	assert np.sum(at.predict(None,data1_flt) == labels1) >= 7
 
 
 def test_basics2():
 	data2, labels2 = setup2()
 
 	dt = TreeClassifier('decision_tree')
-	dt.fit(data2,labels2)
+	dt.fit(data2,None,labels2)
 
 	at = TreeClassifier('ambiguity_tree')
-	at.fit(data2,labels2)
+	at.fit(data2,None,labels2)
 
-	assert np.sum(dt.predict(data2) == labels2) >= 5
-	assert np.sum(at.predict(data2) == labels2) >= 6
+	assert np.sum(dt.predict(data2,None) == labels2) >= 5
+	assert np.sum(at.predict(data2,None) == labels2) >= 6
 
 def test_basics3():
 	data3, labels3 = setup3()
 
 	dt = TreeClassifier('decision_tree')
-	dt.fit(data3,labels3)
+	dt.fit(data3,None,labels3)
 
 	at = TreeClassifier('ambiguity_tree')
-	at.fit(data3,labels3)
+	at.fit(data3,None,labels3)
 
-	assert np.sum(dt.predict(data3) == labels3) >= 3
-	assert np.sum(at.predict(data3) == labels3) >= 3
+	assert np.sum(dt.predict(data3,None) == labels3) >= 3
+	assert np.sum(at.predict(data3,None) == labels3) >= 3
 
 #### test_missing ####
 
@@ -115,12 +128,12 @@ def test_missing():
 	dt = TreeClassifier('decision_tree')
 
 	#It should not be possible to produce a pure tree with this data
-	dt.fit(data,labels)
+	dt.fit(data,None,labels)
 	assert not tree_is_pure(dt)
 
 	#However if the second feature of the third item happened to me a missing value
 	#	then it should be possible to produce two pure leaves
-	dt.fit(data,labels, missing_values)
+	dt.fit(data,None,labels, missing_values)
 	assert tree_is_pure(dt)
 
 	
@@ -130,10 +143,10 @@ def test_as_conditions():
 	data2, labels2 = setup2()
 
 	dt = TreeClassifier('decision_tree',positive_class=1)
-	dt.fit(data2,labels2)
+	dt.fit(data2,None,labels2)
 
 	at = TreeClassifier('ambiguity_tree',positive_class=1)
-	at.fit(data2,labels2)
+	at.fit(data2,None,labels2)
 
 	conds = dt.as_conditions(only_pure_leaves=False)
 	print(conds)
@@ -146,11 +159,11 @@ def test_as_conditions():
 def test_b_decision_tree_fit(benchmark):
 	data1, labels1 = setup1()
 	dt = TreeClassifier('decision_tree')
-	dt.fit(data1,labels1)
+	dt.fit(data1,None,labels1)
 	fit = dt._fit
 	@njit(cache=True)
 	def f():
-		return fit(data1, labels1)
+		return fit(data1,np.zeros((0,0),dtype=np.float64), labels1)
 
 	benchmark.pedantic(f, warmup_rounds=1, iterations=100)
 
@@ -158,11 +171,11 @@ def test_b_decision_tree_fit(benchmark):
 def test_b_ambiguity_tree_fit(benchmark):
 	data1, labels1 = setup1()
 	dt = TreeClassifier('ambiguity_tree')
-	dt.fit(data1,labels1)
+	dt.fit(data1,None,labels1)
 	fit = dt._fit
 	@njit(cache=True)
 	def f():
-		return fit(data1, labels1)
+		return fit(data1, np.zeros((0,0),dtype=np.float64), labels1)
 
 	benchmark.pedantic(f, warmup_rounds=1, iterations=100)
 
@@ -179,13 +192,11 @@ def test_b_sklearn_tree_fit(benchmark):
 
 	
 if(__name__ == "__main__"):
-	test_simple()
-	test_bloop()
 	test_basics1()
-	test_basics2()
-	test_basics3()
-	test_missing()
-	test_as_conditions()
+	# test_basics2()
+	# test_basics3()
+	# test_missing()
+	# test_as_conditions()
 		
 
 
