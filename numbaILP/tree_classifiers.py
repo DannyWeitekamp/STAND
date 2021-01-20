@@ -435,20 +435,25 @@ def get_counts_impurities(xb, xc, y, missing_values, base_impurity, counts, crit
 	# missing_values = missing_values[miss_index:]
 	thresholds = np.empty((n_c,),dtype=np.float64)
 	for j in range(n_c):
-		#Sort on feature j so we can decide where the threshold will go
-		xc_j = xc[:,j]
-		srt_inds = np.argsort(xc_j)
-		xc_j = xc_j[srt_inds]
-		y_j = y[srt_inds]
 
-		# miss_start = miss_index
+		miss_counts = np.zeros((n_classes,),dtype=np.int32)#np.copy(counts)
 		miss_mask = np.zeros((len(xc),),dtype=np.uint8)
 		while (miss_index < len(missing_values)):
 			miss_i, miss_j = missing_values[miss_index]
 			if(miss_j != j): break
 			miss_mask[miss_i] = 1
 			miss_index += 1
-		miss_mask = miss_mask[srt_inds]
+			miss_counts[y[miss_i]] += 1
+		non_miss_inds = np.nonzero(miss_mask)[0]
+
+		#Sort on feature j so we can decide where the threshold will go
+		xc_j = xc[:,j]
+		srt_inds = np.argsort(xc_j[non_miss_inds])
+		xc_j = xc_j[srt_inds]
+		y_j = y[srt_inds]
+
+		# miss_start = miss_index
+		
 
 		# print()
 		print("xc_j",xc_j)
@@ -466,7 +471,7 @@ def get_counts_impurities(xb, xc, y, missing_values, base_impurity, counts, crit
 		#  Also find and interval [pure_min,pure_max) such that all splits outside of it
 		#  have a pure right or left (e.g. y_j=[0,0,1,0,1,1,1] has pure_min=2,pure_max=4)
 		cum_counts = np.zeros((nan_start+1, 2, n_classes),dtype=np.int32)
-		miss_counts = np.zeros((n_classes,),dtype=np.int32)#np.copy(counts)
+		
 		# deffered = np.zeros((nan_start+1, 2, n_classes),dtype=np.int32)
 		# pure_min, pure_target = 0, y_j[0]
 		# print(len(missing_values), miss_index)
@@ -478,7 +483,8 @@ def get_counts_impurities(xb, xc, y, missing_values, base_impurity, counts, crit
 		for i in range(nan_start):
 			y_ij = y_j[i]
 			cum_counts[i+1, 0] = cum_counts[i, 0]
-			if(miss_mask[i]):
+			cum_counts[i+1, 0, y_ij] += 1
+			# if(miss_mask[i]):
 			# if(miss_i == srt_inds[i] and miss_j == j+n_b):
 				# print("S")
 				#Ignore this feature since it's missing
@@ -490,9 +496,9 @@ def get_counts_impurities(xb, xc, y, missing_values, base_impurity, counts, crit
 				# print("S", miss_i, miss_j, miss_index)
 				#Missing values always go left
 				# cum_counts[i+1, 0, y_ij] += 1
-				miss_counts[y_ij] += 1
-			else:
-				cum_counts[i+1, 0, y_ij] += 1
+				
+			# else:
+				
 				# if(y_ij == pure_target):
 				# 	pure_min = i+1
 				# else:
