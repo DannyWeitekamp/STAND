@@ -260,7 +260,7 @@ def test_missing_ordering():
 	xc = np.asarray([[4,3,2,1,7,0,1]],np.float64).T
 	xb = np.zeros((0,0),np.bool)
 	y =  np.asarray([0,0,1,1,0,1,0],dtype=np.int64)
-	counts = np.array([3,3],dtype=np.int64)
+	counts = np.array([4,3],dtype=np.int64)
 
 	out = get_counts_impurities(xb, xc, y, missing_values, 1.0, counts, CRITERION_gini, 2, True)
 	countsPS, impurities, thresholds = out
@@ -358,12 +358,12 @@ def test_b_sklearn_tree_fit(benchmark):
 
 	
 if(__name__ == "__main__"):
-	test_optimal_split()
+	# test_optimal_split()
 	# test_basics1()
-	# test_basics2()
+	test_basics2()
 	# test_basics3()
 	# test_missing()
-	test_missing_ordering()
+	# test_missing_ordering()
 	# test_mixed()
 	# test_missing_mixed()
 	
