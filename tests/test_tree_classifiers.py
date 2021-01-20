@@ -19,7 +19,7 @@ def test_optimal_split():
 		counts = np.array([i,N-i],dtype=np.int64)
 		out = get_counts_impurities(xb, xc, y, missing_values, 1.0, counts, CRITERION_gini, 2, True)
 		countsPS, impurities, thresholds = out
-		# assert tot_impurities[0] == 0.0
+		assert (impurities == 0.0).all()
 		# print(i, countsPS, impurities, thresholds)
 		if(i ==0 or i == N): 
 			#When the input is pure the threshold should be inf
@@ -305,46 +305,78 @@ def test_missing_mixed():
 	
 #### test_as_conditions ####
 
-def test_as_conditions():
-	data2, labels2 = setup2()
+# def test_as_conditions():
+# 	data2, labels2 = setup2()
 
-	dt = TreeClassifier('decision_tree',positive_class=1)
-	dt.fit(data2,None,labels2)
+# 	dt = TreeClassifier('decision_tree',positive_class=1)
+# 	dt.fit(data2,None,labels2)
 
-	at = TreeClassifier('ambiguity_tree',positive_class=1)
-	at.fit(data2,None,labels2)
+# 	at = TreeClassifier('ambiguity_tree',positive_class=1)
+# 	at.fit(data2,None,labels2)
 
-	conds = dt.as_conditions(only_pure_leaves=False)
-	print(conds)
+# 	conds = dt.as_conditions(only_pure_leaves=False)
+# 	print(conds)
 
-	conds = at.as_conditions(only_pure_leaves=True)
-	print(conds)
+# 	conds = at.as_conditions(only_pure_leaves=True)
+# 	print(conds)
 
 #### BENCHMARKS ####
 
-def test_b_decision_tree_fit(benchmark):
+def test_b_bin_decision_tree_fit(benchmark):
 	data1, labels1 = setup1()
 	dt = TreeClassifier('decision_tree')
 	dt.fit(data1,None,labels1)
 	fit = dt._fit
+	xc = np.zeros((0,0),dtype=np.float64)
+	missing_values = np.zeros((0,0),dtype=np.int64)
 	@njit(cache=True)
 	def f():
-		return fit(data1,np.zeros((0,0),dtype=np.float64), labels1)
+		return fit(data1,xc, labels1, missing_values)
+
+	benchmark.pedantic(f, warmup_rounds=1, iterations=100)
+
+def test_b_cont_decision_tree_fit(benchmark):
+	data1, labels1 = setup1()
+	data1_flt = data1.astype(np.float64)
+	dt = TreeClassifier('decision_tree')
+	dt.fit(data1,None,labels1)
+	fit = dt._fit
+	xb = np.zeros((0,0),dtype=np.bool)
+	missing_values = np.zeros((0,0),dtype=np.int64)
+	@njit(cache=True)
+	def f():
+		return fit(xb, data1_flt, labels1, missing_values)
 
 	benchmark.pedantic(f, warmup_rounds=1, iterations=100)
 
 
-def test_b_ambiguity_tree_fit(benchmark):
+def test_b_bin_ambiguity_tree_fit(benchmark):
 	data1, labels1 = setup1()
 	dt = TreeClassifier('ambiguity_tree')
 	dt.fit(data1,None,labels1)
 	fit = dt._fit
+	xc = np.zeros((0,0),dtype=np.float64)
+	missing_values = np.zeros((0,0),dtype=np.int64)
 	@njit(cache=True)
 	def f():
-		return fit(data1, np.zeros((0,0),dtype=np.float64), labels1)
+		return fit(data1, xc, labels1, missing_values)
 
 	benchmark.pedantic(f, warmup_rounds=1, iterations=100)
 
+
+def test_b_cont_ambiguity_tree_fit(benchmark):
+	data1, labels1 = setup1()
+	data1_flt = data1.astype(np.float64)
+	dt = TreeClassifier('ambiguity_tree')
+	dt.fit(data1,None,labels1)
+	fit = dt._fit
+	xb = np.zeros((0,0),dtype=np.bool)
+	missing_values = np.zeros((0,0),dtype=np.int64)
+	@njit(cache=True)
+	def f():
+		return fit(xb, data1_flt, labels1, missing_values)
+
+	benchmark.pedantic(f, warmup_rounds=1, iterations=100)
 
 def test_b_sklearn_tree_fit(benchmark):
 	data1, labels1 = setup1()
@@ -358,14 +390,14 @@ def test_b_sklearn_tree_fit(benchmark):
 
 	
 if(__name__ == "__main__"):
-	# test_optimal_split()
-	# test_basics1()
+	test_optimal_split()
+	test_basics1()
 	test_basics2()
-	# test_basics3()
-	# test_missing()
-	# test_missing_ordering()
-	# test_mixed()
-	# test_missing_mixed()
+	test_basics3()
+	test_missing()
+	test_missing_ordering()
+	test_mixed()
+	test_missing_mixed()
 	
 
 

@@ -403,228 +403,124 @@ def new_node(locs,split,new_inds, impurities,countsPS,ind):
 @njit(cache=True)
 def get_counts_impurities(xb, xc, y, missing_values, base_impurity, counts, criterion_enum, n_classes, sep_nan):
 	#NOTE: This function assumes that the elements [i,j] of missing_values is sorted by 'j'  
-
 	n_b, n_c = xb.shape[1], xc.shape[1]
 	countsPS = np.empty((n_b+n_c, 2+sep_nan, n_classes),dtype=np.uint32)
 	impurities = np.empty((n_b+n_c, 2+sep_nan),dtype=np.float64)
 
-	#Handle binary case
+	# Handle binary case
 	countsPS_n_b, miss_index = counts_per_binary_split(xb, y, missing_values, n_classes, sep_nan)
 	countsPS[:n_b] = countsPS_n_b
 	flat_impurities = criterion_func(criterion_enum, countsPS_n_b.reshape((-1,n_classes)))
 	impurities[:n_b] = flat_impurities.reshape((n_b, countsPS.shape[1]))
 
-	#Throw missing values into the left bin
+	# Throw missing values into the left bin
 	for i,j in missing_values:
 		if(j >= xb.shape[1]): break
 		countsPS[j,0,y[i]] += 1
 
 
-	# print("miss_index_start",miss_index)
+	# Sort missing values so that they are ordered by (j, i)
+	if(len(missing_values) > 0):
+		m_arg_s = np.argsort(missing_values[:,0])
+		missing_values = missing_values[m_arg_s]
+		m_arg_s = np.argsort(missing_values[:,1])
+		missing_values = missing_values[m_arg_s]
 
-	#Sort missing values so that they are ordered by (j, i)
-	# print("missing_values_bef", missing_values)
-	m_arg_s = np.argsort(missing_values[:,0])
-	missing_values = missing_values[m_arg_s]
-	# print("missing_values_mid", missing_values)
-	m_arg_s = np.argsort(missing_values[:,1])
-	missing_values = missing_values[m_arg_s]
-	# print("missing_values", missing_values)
-
-	#Handle continous case	
-	# missing_values = missing_values[miss_index:]
+	# Handle continous case	
 	thresholds = np.empty((n_c,),dtype=np.float64)
+	
 	is_pure = np.sum(counts > 0) <= 1
-	for j in range(n_c):
-		# print("xc", xc)
-		# print("y", y)
-		miss_counts = np.zeros((n_classes,),dtype=np.int32)#np.copy(counts)
+	if(is_pure):
+		# If this node is pure then just return placeholder info
+		for j in range(n_c):
+			countsPS[j] = np.zeros((2+sep_nan, n_classes),dtype=np.int32)
+			countsPS[j,0] = counts
+			thresholds[n_b +j] = np.inf
+			impurities[n_b +j] = 0.0
+	else:
+		# Otherwise we need to find the best threshold to split on per feature
+		for j in range(n_c):
+			# Generate and indicies along i that excludes missing values
+			miss_counts = np.zeros((n_classes,),dtype=np.int32)
+			non_miss_mask = np.ones((len(xc),),dtype=np.uint8)
+			while (miss_index < len(missing_values)):
+				miss_i, miss_j = missing_values[miss_index]
+				if(miss_j != j): break
+				non_miss_mask[miss_i] = 0
+				miss_index += 1
+				miss_counts[y[miss_i]] += 1
+			non_miss_inds = np.nonzero(non_miss_mask)[0]
+			
+			# Select all non missing features and labels for candidate split j 
+			xc_j = xc[non_miss_inds,j]
+			#  and sort by feature
+			srt_inds = np.argsort(xc_j)
+			xc_j = xc_j[srt_inds]
+			y_j = y[non_miss_inds[srt_inds]]			
 
-		non_miss_mask = np.ones((len(xc),),dtype=np.uint8)
-		while (miss_index < len(missing_values)):
-			miss_i, miss_j = missing_values[miss_index]
-			if(miss_j != j): break
-			non_miss_mask[miss_i] = 0
-			miss_index += 1
-			miss_counts[y[miss_i]] += 1
-		non_miss_inds = np.nonzero(non_miss_mask)[0]
-		non_miss_counts = counts-miss_counts
-		# print("missing_values",missing_values)
-		# print("missing_values",)
-		#Sort on feature j so we can decide where the threshold will go
-		xc_j = xc[non_miss_inds,j]
-		# y_j = y[non_miss_inds]
-		# print("xc_j_bef",xc_j,non_miss_inds)
-		srt_inds = np.argsort(xc_j)
-		xc_j = xc_j[srt_inds]
-		y_j = y[non_miss_inds[srt_inds]]
+			# numpy puts nan's at the end of a sort, find where they start 
+			nan_start = len(xc_j)
+			for i in range(len(xc_j)-1,-1,-1):
+				if(not np.isnan(xc_j[i])): break
+				nan_start = i
+			
+			# Find left(0) and right(1) cumulative counts for splitting at each possible threshold
+			#  i.e figure out what child counts looks like if we put the threshold inbetween
+			#  each of the sorted feature pairs.			
+			cum_counts = np.zeros((nan_start+1, 2, n_classes),dtype=np.int32)
+			for i in range(nan_start):
+				y_ij = y_j[i]
+				cum_counts[i+1, 0] = cum_counts[i, 0]
+				cum_counts[i+1, 0, y_ij] += 1
 
-		# miss_start = miss_index
-		
+			cum_counts[:,1] = (counts-miss_counts) - cum_counts[:,0]
+			
+			#Find all 'i' s.t. xc_j[i] != xc_j[i-1] (i.e. candidate pairs for threshold)
+			thresh_inds, c = np.empty((nan_start,),dtype=np.int32), 0
+			for i in range(1, nan_start+1):
+				if(xc_j[i] != xc_j[i-1]):
+					thresh_inds[c] = i
+					c += 1
+					
+			#If every value is the same then just use i=0
+			 # if (c > 0) else np.zeros((1,),dtype=np.int32)
+			best_impurity = np.zeros((2,),dtype=np.float64)
+			best_impurity[0] = base_impurity
+			best_total_impurity, best_ind = np.inf, -1
 
-		# print()
-		# print("xc_j",xc_j)
-		# print("y_j",y_j)
-
-		#Numpy puts nan's at the end of a sort, find where they start 
-		nan_start = len(xc_j)
-		for i in range(len(xc_j)-1,-1,-1):
-			if(not np.isnan(xc_j[i])): break
-			nan_start = i
-		
-		# Find left(0) and right(1) cumulative counts for splitting at each possible threshold
-		#  i.e figure out what child counts looks like if we put the threshold inbetween
-		#  each of the sorted feature pairs.
-		#  Also find and interval [pure_min,pure_max) such that all splits outside of it
-		#  have a pure right or left (e.g. y_j=[0,0,1,0,1,1,1] has pure_min=2,pure_max=4)
-		cum_counts = np.zeros((nan_start+1, 2, n_classes),dtype=np.int32)
-		
-		# deffered = np.zeros((nan_start+1, 2, n_classes),dtype=np.int32)
-		# pure_min, pure_target = 0, y_j[0]
-		# print(len(missing_values), miss_index)
-		# miss_start = miss_index
-		# miss_i, miss_j = -1, -1
-		# if (miss_start < len(missing_values)):
-		# 	miss_i, miss_j = missing_values[miss_start]	
-		# print("A",miss_i, miss_j, miss_start, len(missing_values))
-		for i in range(nan_start):
-			y_ij = y_j[i]
-			cum_counts[i+1, 0] = cum_counts[i, 0]
-			cum_counts[i+1, 0, y_ij] += 1
-			# if(miss_mask[i]):
-			# if(miss_i == srt_inds[i] and miss_j == j+n_b):
-				# print("S")
-				#Ignore this feature since it's missing
-				# miss_index += 1
-				# if(miss_index < len(missing_values)):
-				# 	miss_i, miss_j = missing_values[miss_index]
-				# else:
-				# 	miss_i, miss_j = -1, -1
-				# print("S", miss_i, miss_j, miss_index)
-				#Missing values always go left
-				# cum_counts[i+1, 0, y_ij] += 1
+			#If the features are not all the same find the best threshold
+			if(c > 0):
+				thresh_inds = thresh_inds[:c]
+				for t_i in thresh_inds:
+					impurity = criterion_func(criterion_enum, cum_counts[t_i])
+					total_impurity = np.sum(impurity)
+					if(total_impurity < best_total_impurity):
+						best_impurity, best_total_impurity, best_ind = impurity, total_impurity, t_i
 				
-			# else:
-				
-				# if(y_ij == pure_target):
-				# 	pure_min = i+1
-				# else:
-				# 	pure_target = -1
+				thresh = (xc_j[best_ind-1] + xc_j[best_ind]) / 2.0 #if best_ind != 0 else np.inf
+			#Otherwise just use a placeholder threshold
+			else:
+				thresh = np.inf
 
-		# print("miss_counts",miss_counts)
-		# print("counts",counts)
-		cum_counts[:,1] = (counts-miss_counts) - cum_counts[:,0]
-		# pure_max, pure_target = nan_start, y_j[-1]
-		# miss_index = miss_start
-		# miss_i, miss_j = -1, -1
-		# if (miss_start < len(missing_values)):
-		# 	miss_i, miss_j = missing_values[miss_start]	
-		# # print("B",miss_i, miss_j)
-		# for i in range(nan_start,0,-1):
-		# 	y_ij = y_j[i-1]
-		# 	cum_counts[i-1, 1] = cum_counts[i, 1]
-		# 	if(miss_i == i-1 and miss_j == j+n_b):
-		# 		# print("S")
-		# 		#Ignore this feature since it's missing
-		# 		miss_index += 1
-		# 		if(miss_index < len(missing_values)):
-		# 			miss_i, miss_j = missing_values[miss_index]
-		# 		else:
-		# 			miss_i, miss_j = -1, -1
-		# 		# print("S", miss_i, miss_j, miss_index)
-		# 		#Missing values always go left
-		# 		# cum_counts[i-1, 0, y_ij] += 1
-		# 	else:
-		# 		cum_counts[i-1, 1, y_ij] += 1
-		# 		# if(y_ij == pure_target):
-		# 		# 	pure_max = i
-		# 		# else:
-		# 		# 	pure_target = -1
-		# print(cum_counts)
-		# print("miss_mask", miss_mask)
-		# print("interval",pure_min, pure_max)
-		# if(j == 0): base_impurity = criterion_func(criterion_enum, cum_counts[0])
+			#Fill in outputs for candidate split j
+			impurities[n_b+j,:2] = best_impurity
+			thresholds[j] = thresh
+			countsPS[n_b+j,:2] = cum_counts[best_ind]
+
+			# Even though missing values are ignored in impurity calculations 
+			#   the total counts still need to be correct. Throw them in left bin.
+			countsPS[n_b+j, 0] = countsPS[n_b+j, 0] + miss_counts 
 			
-		#Find all 'i' s.t. xc_j[i] != xc_j[i+1] (i.e. candidate pairs for threshold)
-		#  only consider indicies inside the pure interval
-		thresh_inds, c = np.empty((nan_start,),dtype=np.int32), 0
-		for i in range(1, nan_start+1):
-			if(xc_j[i] != xc_j[i-1]):
-				thresh_inds[c] = i
-				c += 1
+			#Add in counts and impurity for NaN case
+			if(sep_nan):
+				nan_counts = np.empty((1,cum_counts.shape[-1]),dtype=np.int64)
+				nan_counts[0] = 0
+				for i in range(nan_start,len(y_j)):
+					nan_counts[0,y_j[i]] += 1
 
-			
+				countsPS[n_b+j,2] = nan_counts
+				impurities[n_b+j,2] = criterion_func(criterion_enum, nan_counts)[0]
 
-			# print(xc_j[i], xc_j[i-1])
-			
-		# print("thresh_inds",thresh_inds, c)
-				
-		#If every value is the same then just use i=0
-		 # if (c > 0) else np.zeros((1,),dtype=np.int32)
-		best_impurity = np.zeros((2,),dtype=np.float64)
-		best_impurity[0] = base_impurity
-		best_total_impurity, best_ind = np.inf, -1
-
-		#If the features are not all the same and the node is not pure
-		if(c > 0 and not is_pure):
-			thresh_inds = thresh_inds[:c]
-
-
-			
-			
-			# print("thresh_inds", thresh_inds)
-			for t_i in thresh_inds:
-				impurity = criterion_func(criterion_enum, cum_counts[t_i])
-				total_impurity = np.sum(impurity)
-				# print(cc)
-				# print(t_i, total_impurity, best_total_impurity)
-				if(total_impurity < best_total_impurity):
-					best_impurity, best_total_impurity, best_ind = impurity, total_impurity, t_i
-			
-			thresh = (xc_j[best_ind-1] + xc_j[best_ind]) / 2.0 #if best_ind != 0 else np.inf
-			# print("my thresh", thresh)
-		#Otherwise just use a placeholder threshold
-		else:
-			# best_impurity, best_ind = np.zeros((2,),dtype=np.float64), nan_start
-			thresh = np.inf
-
-		# print(best_ind,thresh)
-		countsPS[n_b+j,:2] = cum_counts[best_ind]
-		# print(countsPS[n_b+j])
-		# Even though missing values are ignored in impurity calculations 
-		#   the total counts still need to be correct. Throw them in left bin.
-		countsPS[n_b+j, 0] = countsPS[n_b+j, 0] + miss_counts 
-		impurities[n_b+j,:2] = best_impurity
-		thresholds[j] = thresh
-
-		if(sep_nan):
-			nan_counts = np.empty((1,cum_counts.shape[-1]),dtype=np.int64)
-			nan_counts[0] = 0
-			for i in range(nan_start,len(y_j)):
-				nan_counts[0,y_j[i]] += 1
-
-			countsPS[n_b+j,2] = nan_counts
-			impurities[n_b+j,2] = criterion_func(criterion_enum, nan_counts)[0]
-
-
-
-
-			# 	print("I",i)
-			# print(nan_counts)
-	# print("miss_start",miss_start)
-	# for i,j in missing_values[miss_start:]:
-	# 	print(i,j,y[i])
-	# 	print(countsPS[j],0)
-	# 	countsPS[j,0,y[i]] += 1
-	# 	print(countsPS[j],0)
-
-		# else:
-		# 	thresh = xc_j[0]
-		# print("OUT", j, best_ind)
-		# print(countsPS[n_b+j])
-		# print(thresholds[j], total_split_impurities[n_b+j], )
-	# print(countsPS)
-	# print("thresholds", thresholds)
 	return countsPS, impurities, thresholds
 
 
@@ -660,7 +556,7 @@ def fit_tree(x_bin, x_cont, y, missing_values, criterion_enum, split_enum, sep_n
 
 	while len(contexts) > 0:
 		new_contexts = List.empty_list(SC)
-		# locs = (node_dict,nodes,new_contexts,cache_nodes)
+		locs = (node_dict,nodes,new_contexts,cache_nodes)
 		for i in range(len(contexts)):
 			c = contexts[i]
 			c_xb, c_xc, c_y = x_bin_sorted[c.inds], x_cont_sorted[c.inds], y_inds[c.inds]
@@ -701,7 +597,7 @@ def fit_tree(x_bin, x_cont, y, missing_values, criterion_enum, split_enum, sep_n
 					# print("missing", split, missing)
 					node_l, node_r, node_n = -1, -1, -1
 					new_inds_l, new_inds_r, new_inds_n = r_l_n_split(mask,missing)
-					locs = (node_dict, nodes,new_contexts, cache_nodes)
+					# locs = (node_dict, nodes,new_contexts, cache_nodes)
 					
 					#New node for left.
 					node_l = new_node(locs,split,new_inds_l, impurities,countsPS, literally(0))
@@ -1159,8 +1055,7 @@ class TreeClassifier(object):
 		self.positive_class = positive_class
 
 		@njit(cache=True)
-		def _fit(xb,xc,y,missing_values=None):	
-			if(missing_values is None): missing_values = np.empty((0,2), dtype=np.int64)
+		def _fit(xb,xc,y,missing_values):	
 			out =fit_tree(xb,xc,y,
 					missing_values=missing_values,
 					criterion_enum=literally(criterion_enum),
@@ -1172,8 +1067,7 @@ class TreeClassifier(object):
 		self._fit = _fit
 
 		@njit(cache=True)
-		def _predict(tree, xb, xc, missing_values=None, positive_class=1):	
-			if(missing_values is None): missing_values = np.empty((0,2), dtype=np.int64)
+		def _predict(tree, xb, xc, positive_class):	
 			out =predict_tree(tree,xb,xc,
 					pred_choice_enum=literally(pred_choice_enum),
 					positive_class=positive_class,
@@ -1186,6 +1080,7 @@ class TreeClassifier(object):
 	def fit(self,xb,xc,y,missing_values=None):
 		if(xb is None): xb = np.empty((0,0), dtype=np.bool)
 		if(xc is None): xc = np.empty((0,0), dtype=np.float64)
+		if(missing_values is None): missing_values = np.empty((0,2), dtype=np.int64)
 		self.tree = self._fit(xb, xc, y, missing_values)
 
 	def predict(self,xb,xc,positive_class=None):
