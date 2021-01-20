@@ -4,6 +4,32 @@ from numba.typed import List, Dict
 import numpy as np
 import re
 
+
+#### test_optimal_split ####
+
+def test_optimal_split():
+	'''Check that can find optimal splits on continous variables when they exist'''
+	#
+	missing_values = np.empty((0,2),np.int64)
+	N = 10
+	xc = np.asarray([np.arange(N)],np.float64).T
+	xb = np.zeros((0,0),np.bool)
+	for i in range(N+1):
+		y = np.concatenate([np.zeros(i,dtype=np.int64),np.ones(N-i,dtype=np.int64)])
+		counts = np.array([i,N-i],dtype=np.int64)
+		out = get_counts_impurities(xb, xc, y, missing_values, 1.0, counts, CRITERION_gini, 2, True)
+		countsPS, impurities, thresholds = out
+		# assert tot_impurities[0] == 0.0
+		# print(i, countsPS, impurities, thresholds)
+		if(i ==0 or i == N): 
+			#When the input is pure the threshold should be inf
+			assert thresholds[0] == np.inf
+			assert all(np.sum(countsPS[0],axis=1) == np.array([10,0,0]))
+		else:
+			assert thresholds[0] > i-1 and thresholds[0] < i
+			assert all(np.sum(countsPS[0],axis=1) == np.array([i,N-i,0]))
+	
+
 #### test_basics ####
 
 def setup1():
@@ -109,6 +135,66 @@ def test_basics3():
 	at.fit(None,data3_flt,labels3) # Continous AT
 	assert np.sum(at.predict(None,data3_flt) == labels3) >= 3
 
+def setup_mixed():
+	data = np.asarray([
+#	 0 1 2 3 4 5 6 7 8 9 10111213141516
+	[0,0,0], #1
+	[0,0,1], #1
+	[0,1,1], #1
+	[1,1,1], #2
+	[0,1,1], #2
+	[1,1,1], #2
+	],np.bool);
+
+	data_flt = np.asarray([
+	[0,0,0],
+	[0,0,0],
+	[0,0,0],
+	[0,0,1],
+	[1,1,0],
+	[0,1,0],
+	],np.float64);
+
+	labels = np.asarray([1,1,1,2,2,2],np.int64);
+
+	return data, data_flt, labels
+
+def setup_missing_mixed():
+	data, data_flt, labels = setup_mixed()
+	missing_values = np.array([[0,0],[1,1],[0,2],[3,0],[0,5],[2,4],[3,3]],dtype=np.int64)
+	for i, j in missing_values:
+		if j < data.shape[1]:
+			data[i,j] = ~data[i,j]
+		else:
+			j = j-data.shape[1]
+			data_flt[i,j] = not data_flt[i,j]
+	# data[missing_values.T] = ~data[missing_values.T]
+	# print("M",data[missing_values])
+	# print("MT",data[missing_values.T])
+	return data, data_flt, labels, missing_values
+
+
+
+def test_mixed():
+	data, data_flt, labels = setup_mixed()
+	# data_flt = data.astype(np.float64)
+
+	dt = TreeClassifier('decision_tree')
+	dt.fit(data,data_flt,labels) # Continous DT
+	# print(dt)
+	# print(dt.predict(data,data_flt))
+	assert np.sum(dt.predict(data,data_flt) == labels) >= 5
+
+	at = TreeClassifier('ambiguity_tree')
+	# at.fit(data,None,labels3) # Binary AT
+	# print(at)
+	# assert np.sum(at.predict(data,None) == labels3) >= 6
+	at.fit(data,data_flt,labels) # Continous AT
+	# print(at)
+	# print(at.predict(data,data_flt))
+	assert np.sum(at.predict(data,data_flt) == labels) >= 6
+
+
 #### test_missing ####
 
 def tree_is_pure(tree_classifier):
@@ -119,6 +205,11 @@ def tree_is_pure(tree_classifier):
 		arr = [int(x) for x in re.findall(r'\d+',leaf_line.split(":")[1])]
 		if (sum([x != 0 for x in arr]) != 1): pure = False
 	return pure
+
+def count_non_leaf_nodes(tree_classifier):
+	'''Find the number of nodes in the tree'''
+	return len(re.findall(r'NODE.+',str(tree_classifier)))
+		
 
 def setup_missing():
 	data = np.asarray([
@@ -135,17 +226,81 @@ def setup_missing():
 
 def test_missing():
 	data, labels, missing_values = setup_missing()
+	data_flt = data.astype(np.float64)
 
 	dt = TreeClassifier('decision_tree')
 
 	#It should not be possible to produce a pure tree with this data
 	dt.fit(data,None,labels)
+	print(dt)
+	assert not tree_is_pure(dt)
+	dt.fit(None,data_flt,labels)
+	print(dt)
+	assert not tree_is_pure(dt)
+	dt.fit(data,data_flt,labels)
+	print(dt)
 	assert not tree_is_pure(dt)
 
-	#However if the second feature of the third item happened to me a missing value
-	#	then it should be possible to produce two pure leaves
+	#However if the second feature of the third item happens to be a missing value
+	#	then the tree should at least try to make a split at feature 1
 	dt.fit(data,None,labels, missing_values)
-	assert tree_is_pure(dt)
+	print(dt)
+	assert count_non_leaf_nodes(dt) > 0
+	dt.fit(None,data_flt,labels, missing_values)
+	print(dt)
+	assert count_non_leaf_nodes(dt) > 0
+	dt.fit(data,data_flt,labels, np.asarray([[2,1],[2,3]],np.int64))
+	print(dt)
+	assert count_non_leaf_nodes(dt) > 0
+
+def test_missing_ordering():
+	N = 6
+	# missing_values = np.empty((0,0),dtype=np.int64)#np.asarray([[1,0],[2,0],[3,0],[4,0]],np.int64)
+	missing_values = np.asarray([[0,0], [1,0],[2,0],[3,0], [4,0]],np.int64)
+	xc = np.asarray([[4,3,2,1,7,0,1]],np.float64).T
+	xb = np.zeros((0,0),np.bool)
+	y =  np.asarray([0,0,1,1,0,1,0],dtype=np.int64)
+	counts = np.array([3,3],dtype=np.int64)
+
+	out = get_counts_impurities(xb, xc, y, missing_values, 1.0, counts, CRITERION_gini, 2, True)
+	countsPS, impurities, thresholds = out
+	print(thresholds)
+	assert thresholds[0] == 0.5
+
+
+
+def test_missing_mixed():
+	data, data_flt, labels, missing_values = setup_missing_mixed()
+	print(data)
+	print(data_flt)
+
+	# It should not be possible to produce a pure tree with this data
+	# which is basically basic2 but with some key features flipped
+	dt = TreeClassifier('ambiguity_tree')
+	dt.fit(data, data_flt, labels) # Continous DT
+	print(dt)
+	assert not tree_is_pure(dt)
+	nonleaf_w_o_missing = count_non_leaf_nodes(dt)
+
+	# But if we mark the flipped features as missing then it should still work
+	dt = TreeClassifier('ambiguity_tree')
+	dt.fit(data, data_flt, labels, missing_values) # Continous DT
+	print(dt)
+	assert nonleaf_w_o_missing < count_non_leaf_nodes(dt)
+	# print(dt.predict(data,data_flt))
+	# assert np.sum(dt.predict(data,data_flt) == labels) >= 5
+
+	# at = TreeClassifier('ambiguity_tree')
+	# at.fit(data,None,labels3) # Binary AT
+	# print(at)
+	# assert np.sum(at.predict(data,None) == labels3) >= 6
+	# at.fit(data,data_flt,labels) # Continous AT
+	# print(at)
+	# print(at.predict(data,data_flt))
+	# assert np.sum(at.predict(data,data_flt) == labels) >= 6
+
+
+
 
 	
 #### test_as_conditions ####
@@ -203,10 +358,17 @@ def test_b_sklearn_tree_fit(benchmark):
 
 	
 if(__name__ == "__main__"):
-	test_basics1()
+	test_optimal_split()
+	# test_basics1()
 	# test_basics2()
 	# test_basics3()
 	# test_missing()
+	test_missing_ordering()
+	# test_mixed()
+	# test_missing_mixed()
+	
+
+
 	# test_as_conditions()
 		
 
