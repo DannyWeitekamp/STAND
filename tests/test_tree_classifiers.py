@@ -3,7 +3,7 @@ from numbaILP.tree_classifiers import *
 from numba.typed import List, Dict
 import numpy as np
 import re
-
+import pytest
 
 #### test_optimal_split ####
 
@@ -120,6 +120,8 @@ def test_basics2():
 	assert np.sum(at.predict(None,data2_flt) == labels2) >= 6
 
 def test_basics3():
+	'''In this test it should pretty much fail to make a split regardless
+		of implementation but it should still guess at 50% accuracy'''
 	data3, labels3 = setup3()
 	data3_flt = data3.astype(np.float64)
 
@@ -168,30 +170,20 @@ def setup_missing_mixed():
 		else:
 			j = j-data.shape[1]
 			data_flt[i,j] = not data_flt[i,j]
-	# data[missing_values.T] = ~data[missing_values.T]
-	# print("M",data[missing_values])
-	# print("MT",data[missing_values.T])
+
 	return data, data_flt, labels, missing_values
 
 
 
 def test_mixed():
 	data, data_flt, labels = setup_mixed()
-	# data_flt = data.astype(np.float64)
 
 	dt = TreeClassifier('decision_tree')
-	dt.fit(data,data_flt,labels) # Continous DT
-	# print(dt)
-	# print(dt.predict(data,data_flt))
+	dt.fit(data,data_flt,labels) # Mixed DT
 	assert np.sum(dt.predict(data,data_flt) == labels) >= 5
 
 	at = TreeClassifier('ambiguity_tree')
-	# at.fit(data,None,labels3) # Binary AT
-	# print(at)
-	# assert np.sum(at.predict(data,None) == labels3) >= 6
-	at.fit(data,data_flt,labels) # Continous AT
-	# print(at)
-	# print(at.predict(data,data_flt))
+	at.fit(data,data_flt,labels) # Mixed AT
 	assert np.sum(at.predict(data,data_flt) == labels) >= 6
 
 
@@ -287,17 +279,7 @@ def test_missing_mixed():
 	dt.fit(data, data_flt, labels, missing_values) # Continous DT
 	print(dt)
 	assert nonleaf_w_o_missing < count_non_leaf_nodes(dt)
-	# print(dt.predict(data,data_flt))
-	# assert np.sum(dt.predict(data,data_flt) == labels) >= 5
-
-	# at = TreeClassifier('ambiguity_tree')
-	# at.fit(data,None,labels3) # Binary AT
-	# print(at)
-	# assert np.sum(at.predict(data,None) == labels3) >= 6
-	# at.fit(data,data_flt,labels) # Continous AT
-	# print(at)
-	# print(at.predict(data,data_flt))
-	# assert np.sum(at.predict(data,data_flt) == labels) >= 6
+	
 
 
 #### test_nan #### 
@@ -354,7 +336,7 @@ def setup_nan():
 def test_nan():
 	data1, data2, data3, data4, labels = setup_nan()
 	dt = TreeClassifier('ambiguity_tree')
-	dt.fit(None, data1, labels) # Continous DT
+	dt.fit(None, data1, labels) 
 	print(dt)
 	assert tree_is_pure(dt)
 	op_counts = get_tree_op_counts(dt)
@@ -363,7 +345,13 @@ def test_nan():
 	assert op_counts.get(OP_GE,0) == 0
 	assert op_counts.get(OP_LT,0) == 0
 
-	dt.fit(None, data2, labels) # Continous DT
+	assert np.sum(dt.predict(None,data1) == labels) == 6
+
+	#If the NaN values are missing we shouldn't be able to make any splits
+	dt.fit(None, data1, labels, np.asarray([[5,0], [4,1],[3,2]],dtype=np.int64)) 
+	assert not tree_is_pure(dt)
+
+	dt.fit(None, data2, labels) 
 	print(dt)
 	assert tree_is_pure(dt)
 	op_counts = get_tree_op_counts(dt)
@@ -372,7 +360,13 @@ def test_nan():
 	assert op_counts.get(OP_GE,0) == 0
 	assert op_counts.get(OP_LT,0) == 0
 
-	dt.fit(None, data3, labels) # Continous DT
+	assert np.sum(dt.predict(None,data2) == labels) == 6
+
+	#If the NaN values are missing we shouldn't be able to make any splits
+	dt.fit(None, data2, labels, np.asarray([[5,0], [4,1],[3,2]],dtype=np.int64)) 
+	assert not tree_is_pure(dt)
+
+	dt.fit(None, data3, labels)
 	print(dt)
 	assert tree_is_pure(dt)
 	op_counts = get_tree_op_counts(dt)
@@ -380,13 +374,17 @@ def test_nan():
 	assert op_counts.get(OP_GE,0) == 1
 	assert op_counts.get(OP_LT,0) == 0
 
-	dt.fit(None, data4, labels) # Continous DT
+	assert np.sum(dt.predict(None,data3) == labels) == 6
+
+	dt.fit(None, data4, labels)
 	print(dt)
 	assert tree_is_pure(dt)
 	op_counts = get_tree_op_counts(dt)
 	assert op_counts.get(OP_ISNAN,0) == 0
 	assert op_counts.get(OP_GE,0) == 0
 	assert op_counts.get(OP_LT,0) == 1
+
+	assert np.sum(dt.predict(None,data4) == labels) == 6
 
 
 
@@ -410,62 +408,52 @@ def test_nan():
 
 #### BENCHMARKS ####
 
+@pytest.mark.benchmark(group="fit_tree")
 def test_b_bin_decision_tree_fit(benchmark):
 	data1, labels1 = setup1()
 	dt = TreeClassifier('decision_tree')
-	dt.fit(data1,None,labels1)
-	fit = dt._fit
-	xc = np.zeros((0,0),dtype=np.float64)
-	missing_values = np.zeros((0,0),dtype=np.int64)
-	@njit(cache=True)
+
 	def f():
-		return fit(data1,xc, labels1, missing_values)
+		return dt.fit(data1,None, labels1)
 
 	benchmark.pedantic(f, warmup_rounds=1, iterations=100)
 
+@pytest.mark.benchmark(group="fit_tree")
 def test_b_cont_decision_tree_fit(benchmark):
 	data1, labels1 = setup1()
 	data1_flt = data1.astype(np.float64)
 	dt = TreeClassifier('decision_tree')
-	dt.fit(data1,None,labels1)
-	fit = dt._fit
-	xb = np.zeros((0,0),dtype=np.bool)
-	missing_values = np.zeros((0,0),dtype=np.int64)
-	@njit(cache=True)
+
 	def f():
-		return fit(xb, data1_flt, labels1, missing_values)
+		return dt.fit(None, data1_flt, labels1)
 
 	benchmark.pedantic(f, warmup_rounds=1, iterations=100)
 
 
+@pytest.mark.benchmark(group="fit_tree")
 def test_b_bin_ambiguity_tree_fit(benchmark):
 	data1, labels1 = setup1()
 	dt = TreeClassifier('ambiguity_tree')
-	dt.fit(data1,None,labels1)
-	fit = dt._fit
-	xc = np.zeros((0,0),dtype=np.float64)
-	missing_values = np.zeros((0,0),dtype=np.int64)
-	@njit(cache=True)
+
 	def f():
-		return fit(data1, xc, labels1, missing_values)
+		return dt.fit(data1, None, labels1)
 
 	benchmark.pedantic(f, warmup_rounds=1, iterations=100)
 
 
+@pytest.mark.benchmark(group="fit_tree")
 def test_b_cont_ambiguity_tree_fit(benchmark):
 	data1, labels1 = setup1()
 	data1_flt = data1.astype(np.float64)
 	dt = TreeClassifier('ambiguity_tree')
-	dt.fit(data1,None,labels1)
-	fit = dt._fit
-	xb = np.zeros((0,0),dtype=np.bool)
-	missing_values = np.zeros((0,0),dtype=np.int64)
-	@njit(cache=True)
+
 	def f():
-		return fit(xb, data1_flt, labels1, missing_values)
+		return dt.fit(None, data1_flt, labels1)
 
 	benchmark.pedantic(f, warmup_rounds=1, iterations=100)
 
+
+@pytest.mark.benchmark(group="fit_tree")
 def test_b_sklearn_tree_fit(benchmark):
 	data1, labels1 = setup1()
 	clf = SKTree.DecisionTreeClassifier()
@@ -475,18 +463,80 @@ def test_b_sklearn_tree_fit(benchmark):
 
 	benchmark.pedantic(f, warmup_rounds=1, iterations=100)
 
+#### Predict BENCHMARKS ####
 
-	
+@pytest.mark.benchmark(group="predict_tree")
+def test_b_bin_decision_tree_predict(benchmark):
+	data1, labels1 = setup1()
+	dt = TreeClassifier('decision_tree')
+	dt.fit(data1, None, labels1)
+
+	def f():
+		return dt.predict(data1,None)
+
+	benchmark.pedantic(f, warmup_rounds=1, iterations=100)
+
+
+@pytest.mark.benchmark(group="predict_tree")
+def test_b_cont_decision_tree_predict(benchmark):
+	data1, labels1 = setup1()
+	data1_flt = data1.astype(np.float64)
+	dt = TreeClassifier('decision_tree')
+	dt.fit(None, data1_flt, labels1)
+
+	def f():
+		return dt.predict(None,data1_flt)
+
+	benchmark.pedantic(f, warmup_rounds=1, iterations=100)
+
+@pytest.mark.benchmark(group="predict_tree")
+def test_b_bin_ambiguity_tree_predict(benchmark):
+	data1, labels1 = setup1()
+	dt = TreeClassifier('ambiguity_tree')
+	dt.fit(data1, None, labels1)
+
+	def f():
+		return dt.predict(data1,None)
+
+	benchmark.pedantic(f, warmup_rounds=1, iterations=100)
+
+
+@pytest.mark.benchmark(group="predict_tree")
+def test_b_cont_ambiguity_tree_predict(benchmark):
+	data1, labels1 = setup1()
+	data1_flt = data1.astype(np.float64)
+	dt = TreeClassifier('ambiguity_tree')
+	dt.fit(None, data1_flt, labels1)
+
+	def f():
+		return dt.predict(None,data1_flt)
+
+	benchmark.pedantic(f, warmup_rounds=1, iterations=100)
+
+
+@pytest.mark.benchmark(group="predict_tree")
+def test_b_sklearn_tree_predict(benchmark):
+	data1, labels1 = setup1()
+	clf = SKTree.DecisionTreeClassifier()
+	clf.fit(data1, labels1)
+
+	def f():
+		clf.predict(data1)
+		
+	benchmark.pedantic(f, warmup_rounds=1, iterations=100)
+
+
+
 if(__name__ == "__main__"):
-	test_optimal_split()
-	test_basics1()
-	test_basics2()
-	test_basics3()
-	test_missing()
-	test_missing_ordering()
-	test_mixed()
+	# test_optimal_split()
+	# test_basics1()
+	# test_basics2()
+	# test_basics3()
+	# test_missing()
+	# test_missing_ordering()
+	# test_mixed()
 	test_missing_mixed()
-	test_nan()
+	# test_nan()
 	
 
 

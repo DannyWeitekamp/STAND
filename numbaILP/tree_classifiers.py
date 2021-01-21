@@ -474,13 +474,13 @@ def get_counts_impurities(xb, xc, y, missing_values, base_impurity, counts, crit
 			# print("xc_j",xc_j)
 			# print("y_j",y_j)
 
-			# numpy puts nan's at the end of a sort, find where they start 
+			# NaN's end up at the end of a sort (in numpy), find where they start 
 			nan_start = len(xc_j)
 			for i in range(len(xc_j)-1,-1,-1):
 				if(not np.isnan(xc_j[i])): break
 				nan_start = i
 
-			# print("NSL", nan_start, len(xc_j))
+			#Find counts for NaN only bin
 			has_nan = nan_start != len(xc_j)
 			nan_counts = np.zeros((n_classes,),dtype=np.int32)
 			for i in range(nan_start,len(xc_j)):
@@ -508,8 +508,7 @@ def get_counts_impurities(xb, xc, y, missing_values, base_impurity, counts, crit
 					thresh_inds[c] = i
 					c += 1
 					
-			#If every value is the same then just use i=0
-			 # if (c > 0) else np.zeros((1,),dtype=np.int32)
+			# If every value is the same then just use i=0
 			best_impurity = np.zeros((2,),dtype=np.float64)
 			best_impurity[0] = base_impurity
 			best_total_impurity, best_counts, best_op = np.inf, cum_counts[-1], OP_GE
@@ -520,13 +519,16 @@ def get_counts_impurities(xb, xc, y, missing_values, base_impurity, counts, crit
 				thresh_inds = thresh_inds[:c]
 				split_counts = best_ind = -1
 				for t_i in thresh_inds:
-					# 3 Possibilities for handling NaN with 3 different operations
+					# We need to find the best of three choices for handling NaNs 
+					#  NOTE: can't just use >= since for all t (NaN >= t) == 0 
 				 	#  1 : (Nan|N vs Y) : x >= thresh
 					#  2 : (Nan|Y vs N) : x < thresh 
 					#  3 : (Y|N vs Nan) : np.isnan(x)
-					# We need to check (1 and 2) on every possible threshold
-					# print("sep_has", sep_nan, has_nan)
+
+					# Check (1 and 2) on every possible threshold
+					#  to see what leads to the smallest impurity
 					if(sep_nan and has_nan):
+						# Build counts for '<' and '>=", always putting NaNs in left
 						c_lt = np.empty((2, n_classes),dtype=np.int32)
 						c_lt[0] = cum_counts[t_i,1] + nan_counts
 						c_lt[1] = cum_counts[t_i,0]
@@ -534,22 +536,7 @@ def get_counts_impurities(xb, xc, y, missing_values, base_impurity, counts, crit
 						c_ge[0] = cum_counts[t_i,0] + nan_counts
 						c_ge[1] = cum_counts[t_i,1]
 
-
-						# c_lt = cum_counts[t_i][::-1] # Switch left/right bins
-						# c_ge = cum_counts[t_i][::1]  # Just copy
-						# print(nan_counts)
-						# print("c_lt","c_ge")
-						# print(c_lt)
-						# print(c_ge)
-						# # NOTE: Flipping assumes criterion func is symmetric
-						# print(c_lt[0] + nan_counts)
-						# print(c_ge[0] + nan_counts )
-						# c_lt[0,:] = c_lt[0,:] + nan_counts
-						# c_ge[0,:] = c_ge[0,:] + nan_counts 
-						# print("c_lt","c_ge")
-						# print(c_lt)
-						# print(c_ge)
-						# print("----------")
+						# Figure out which operation is better in terms of total impurity
 						impurity_lt = criterion_func(criterion_enum, c_lt)
 						impurity_ge = criterion_func(criterion_enum, c_ge)
 						total_impurity_lt = np.sum(impurity_lt) 
@@ -565,36 +552,30 @@ def get_counts_impurities(xb, xc, y, missing_values, base_impurity, counts, crit
 							op = OP_GE 
 							split_counts = c_ge
 					else:
+						# When there are no NaNs or if we ignore them fallback on ">="
 						split_counts = cum_counts[t_i]
 						impurity = criterion_func(criterion_enum, split_counts)
 						total_impurity = np.sum(impurity)
 						op = OP_GE
-
-
-
 					
 					if(total_impurity < best_total_impurity):
+						# If this is the best theshold point so far mark it as such
 						best_impurity, best_total_impurity = impurity, total_impurity
 						best_ind, best_op = t_i, op
 						best_counts = split_counts
 
-				# print("AAA",xc_j[best_ind-1], xc_j[best_ind])
 				thresh = (xc_j[best_ind-1] + xc_j[best_ind]) / 2.0 #if best_ind != 0 else np.inf
 			else:
 				# Otherwise just use a placeholder threshold
 				best_op = OP_GE
 				thresh = np.inf
-
 			
-			
-			#See if using OP_ISNAN would produce better results
+			#See if using np.is_nan() would produce better results
 			if(sep_nan and has_nan):
-				
+				#Left is non_NaN right is NaN
 				is_nan_counts = np.empty((2, n_classes),dtype=np.int32)
-				is_nan_counts[0] = counts-nan_counts
+				is_nan_counts[0] = counts-(nan_counts+miss_counts)
 				is_nan_counts[1] = nan_counts
-				# print("is_nan_counts")
-				# print(is_nan_counts)
 
 				is_nan_impurity = criterion_func(criterion_enum, is_nan_counts)
 				is_nan_total_impurity = np.sum(is_nan_impurity)
@@ -603,22 +584,12 @@ def get_counts_impurities(xb, xc, y, missing_values, base_impurity, counts, crit
 					best_op = OP_ISNAN
 					best_counts = is_nan_counts
 
-
-				# nan_counts[0] = 0
-				# for i in range(nan_start,len(y_j)):
-				# 	nan_counts[0,y_j[i]] += 1
-
-				# countsPS[n_b+j,2] = nan_counts
-				# = criterion_func(criterion_enum, is_nan_counts)[0]
-
 			#Fill in outputs for candidate split j
-
 			impurities[n_b+j,:2] = best_impurity
 			thresholds[j] = thresh
-			countsPS[n_b+j,:2] = best_counts#cum_counts[best_ind] #TODO: FIX
+			countsPS[n_b+j,:2] = best_counts#
 			ops[n_b+j] = best_op
 			
-
 			# Even though missing values are ignored in impurity calculations 
 			#   the total counts still need to be correct. Throw them in left bin.
 			countsPS[n_b+j, 0] = countsPS[n_b+j, 0] + miss_counts 
