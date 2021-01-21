@@ -202,7 +202,7 @@ TreeTypes_LEAF = 2
 ######### Utility Functions for Fit/Predict  #########
 
 @njit(nogil=True,fastmath=True,cache=True)
-def counts_per_binary_split(xb, y_inds, missing_values, n_classes, sep_nan=False):
+def counts_per_binary_split(xb, y_inds, missing_values, n_classes):
 	''' 
 		Determines the number of elements of each class that would be in the resulting
 		left, right and nan nodes if a split was made at each possible binary feature.
@@ -215,7 +215,10 @@ def counts_per_binary_split(xb, y_inds, missing_values, n_classes, sep_nan=False
 	miss_index = 1 #if(miss_j < xb.shape[1]) else 0
 	
 
-	counts = np.zeros((xb.shape[1], 2+sep_nan, n_classes),dtype=np.uint32);
+	counts = np.zeros((xb.shape[1], 2, n_classes),dtype=np.uint32);
+	nan_counts = np.zeros((xb.shape[1], n_classes),dtype=np.uint32);
+	has_nan = np.zeros((xb.shape[1], n_classes),dtype=np.uint32);
+	# has_nan = False
 
 	#Go through in Fortran order (Note: missing values should be ordered by j)
 	for j in range(xb.shape[1]):
@@ -229,8 +232,10 @@ def counts_per_binary_split(xb, y_inds, missing_values, n_classes, sep_nan=False
 					miss_index += 1
 				else:
 					miss_i, miss_j = -1, -1
-			elif(sep_nan and np.isnan(xb[i,j])):
-				counts[j,2,y_inds[i]] += 1;	
+			elif(xb[i,j] == 255):
+				nan_counts[j,y_inds[i]] += 1;
+				has_nan[j] = True
+				# counts[j,2,y_inds[i]] += 1;	
 			else:
 				if(xb[i,j]):
 					counts[j,1,y_inds[i]] += 1;	
@@ -239,7 +244,7 @@ def counts_per_binary_split(xb, y_inds, missing_values, n_classes, sep_nan=False
 
 	
 
-	return counts, miss_index-1
+	return counts, nan_counts, has_nan, miss_index-1
 
 
 
@@ -400,19 +405,82 @@ def new_node(locs,split,new_inds, impurities,countsPS,ind):
 # 			nodes.append(TreeNode(LEAF,node_n,List.empty_list(i4_arr),countsPS[split,2]))
 # 	return node_id
 
+OP_IS_TRUE = 0 
+OP_GE = 1
+OP_LT = 2 
+OP_ISNAN = 3
+
+
 @njit(cache=True)
 def get_counts_impurities(xb, xc, y, missing_values, base_impurity, counts, criterion_enum, n_classes, sep_nan):
+	print("START")
 	#NOTE: This function assumes that the elements [i,j] of missing_values is sorted by 'j'  
 	n_b, n_c = xb.shape[1], xc.shape[1]
-	countsPS = np.empty((n_b+n_c, 2+sep_nan, n_classes),dtype=np.uint32)
-	impurities = np.empty((n_b+n_c, 2+sep_nan),dtype=np.float64)
+	countsPS = np.empty((n_b+n_c, 2, n_classes),dtype=np.uint32)
+	impurities = np.empty((n_b+n_c, 2),dtype=np.float64)
+	ops = np.empty((n_b+n_c,),dtype=np.uint8)
 
 	# Handle binary case
-	countsPS_n_b, miss_index = counts_per_binary_split(xb, y, missing_values, n_classes, sep_nan)
-	countsPS[:n_b] = countsPS_n_b
-	flat_impurities = criterion_func(criterion_enum, countsPS_n_b.reshape((-1,n_classes)))
-	impurities[:n_b] = flat_impurities.reshape((n_b, countsPS.shape[1]))
+	counts_b, countsPS_nan, has_nan_PS, miss_index = \
+	 	counts_per_binary_split(xb, y, missing_values, n_classes)
 
+	for j in range(n_b):
+		has_nan = has_nan_PS[j]
+		counts_b_j = counts_b[j]
+		counts_b_j_nan = countsPS_nan[j]
+
+		# 3 Possibilities for handling NaN with 3 different operations
+		#  1 : (Nan|N vs Y) : x >= thresh
+		#  2 : (Nan|Y vs N) : x < thresh 
+		#  3 : (Y|N vs Nan) : np.isnan(x)
+		counts_b_ge = np.empty((2, n_classes),dtype=np.uint32)
+		counts_b_ge[0, :] = counts_b_j[0, :] + counts_b_j_nan
+		counts_b_ge[1, :] = counts_b_j[1, :]
+		impurities_b_ge = criterion_func(criterion_enum, counts_b_ge)
+		total_impurity_b_ge = np.sum(impurities_b_ge)
+		# flat_impurities = criterion_func(criterion_enum, counts_b_ge.reshape((-1,n_classes)))
+		# impurities_b_ge = flat_impurities.reshape((n_b, countsPS.shape[1]))
+		if(sep_nan and has_nan):
+			counts_b_lt = np.empty((2, n_classes),dtype=np.uint32)
+			counts_b_lt[0, :] = counts_b_j[0, :] 
+			counts_b_lt[1, :] = counts_b_j[1, :] + counts_b_j_nan
+			impurities_b_lt = criterion_func(criterion_enum, counts_b_lt)
+			total_impurity_b_lt = np.sum(impurities_b_lt)
+			# flat_impurities = criterion_func(criterion_enum, counts_b_lt.reshape((-1,n_classes)))
+			# impurities_b_lt = flat_impurities.reshape((n_b, countsPS.shape[1]))
+
+			counts_b_in = np.empty((2, n_classes),dtype=np.uint32)
+			counts_b_in[0, :] = counts-counts_b_j_nan
+			counts_b_in[1, :] = counts_b_j_nan
+			impurities_b_in = criterion_func(criterion_enum, counts_b_in)
+			total_impurity_b_in = np.sum(impurities_b_in)
+			# flat_impurities = criterion_func(criterion_enum, counts_b_in.reshape((-1,n_classes)))
+			# impurities_b_in = flat_impurities.reshape((n_b, countsPS.shape[1]))
+
+			m = np.argmin(np.asarray([total_impurity_b_ge, total_impurity_b_lt, total_impurity_b_in]))
+			if(m == 0):
+				countsPS[j] = counts_b_ge
+				impurities[j] = impurities_b_ge
+				ops[j] = OP_GE
+			elif(m == 1):
+				countsPS[j] = counts_b_lt
+				impurities[j] = impurities_b_lt
+				ops[j] = OP_LT
+			else:
+				countsPS[j] = counts_b_in
+				impurities[j] = impurities_b_in
+				ops[j] = OP_ISNAN
+
+
+
+			
+		else:
+			countsPS[j] = counts_b_ge
+			impurities[j] = impurities_b_ge
+			ops[j] = OP_GE
+
+
+	# print(countsPS_n_b)
 	# Throw missing values into the left bin
 	for i,j in missing_values:
 		if(j >= xb.shape[1]): break
@@ -429,11 +497,12 @@ def get_counts_impurities(xb, xc, y, missing_values, base_impurity, counts, crit
 	# Handle continous case	
 	thresholds = np.empty((n_c,),dtype=np.float64)
 	
+	
 	is_pure = np.sum(counts > 0) <= 1
 	if(is_pure):
 		# If this node is pure then just return placeholder info
 		for j in range(n_c):
-			countsPS[j] = np.zeros((2+sep_nan, n_classes),dtype=np.int32)
+			countsPS[j] = np.zeros((2, n_classes),dtype=np.int32)
 			countsPS[j,0] = counts
 			thresholds[n_b +j] = np.inf
 			impurities[n_b +j] = 0.0
@@ -458,11 +527,21 @@ def get_counts_impurities(xb, xc, y, missing_values, base_impurity, counts, crit
 			xc_j = xc_j[srt_inds]
 			y_j = y[non_miss_inds[srt_inds]]			
 
+			print("xc_j",xc_j)
+			print("y_j",y_j)
+
 			# numpy puts nan's at the end of a sort, find where they start 
 			nan_start = len(xc_j)
 			for i in range(len(xc_j)-1,-1,-1):
 				if(not np.isnan(xc_j[i])): break
 				nan_start = i
+
+			has_nan = nan_start != len(xc_j)
+			nan_counts = np.zeros((n_classes,),dtype=np.int32)
+			for i in range(nan_start,len(xc_j)):
+				nan_counts[y_j[i]] += 1
+
+			# print("nan_start",nan_start)
 			
 			# Find left(0) and right(1) cumulative counts for splitting at each possible threshold
 			#  i.e figure out what child counts looks like if we put the threshold inbetween
@@ -473,11 +552,13 @@ def get_counts_impurities(xb, xc, y, missing_values, base_impurity, counts, crit
 				cum_counts[i+1, 0] = cum_counts[i, 0]
 				cum_counts[i+1, 0, y_ij] += 1
 
-			cum_counts[:,1] = (counts-miss_counts) - cum_counts[:,0]
+			cum_counts[:,1] = (counts-(miss_counts+nan_counts)) - cum_counts[:,0]
+
+			print("cum_counts", cum_counts)
 			
 			#Find all 'i' s.t. xc_j[i] != xc_j[i-1] (i.e. candidate pairs for threshold)
 			thresh_inds, c = np.empty((nan_start,),dtype=np.int32), 0
-			for i in range(1, nan_start+1):
+			for i in range(1, nan_start):
 				if(xc_j[i] != xc_j[i-1]):
 					thresh_inds[c] = i
 					c += 1
@@ -486,46 +567,115 @@ def get_counts_impurities(xb, xc, y, missing_values, base_impurity, counts, crit
 			 # if (c > 0) else np.zeros((1,),dtype=np.int32)
 			best_impurity = np.zeros((2,),dtype=np.float64)
 			best_impurity[0] = base_impurity
-			best_total_impurity, best_ind = np.inf, -1
+			best_total_impurity, best_counts, best_op = np.inf, cum_counts[-1], OP_GE
 
-			#If the features are not all the same find the best threshold
+			
 			if(c > 0):
+				# If the features are not all the same find the best threshold
 				thresh_inds = thresh_inds[:c]
+				split_counts = best_ind = -1
 				for t_i in thresh_inds:
-					impurity = criterion_func(criterion_enum, cum_counts[t_i])
-					total_impurity = np.sum(impurity)
+					# 3 Possibilities for handling NaN with 3 different operations
+				 	#  1 : (Nan|N vs Y) : x >= thresh
+					#  2 : (Nan|Y vs N) : x < thresh 
+					#  3 : (Y|N vs Nan) : np.isnan(x)
+					# We need to check (1 and 2) on every possible threshold
+					if(sep_nan and has_nan):
+						c_lt = cum_counts[len(cum_counts)-t_i-1].copy()
+						c_ge = cum_counts[t_i].copy()
+						print("c_lt","c_ge")
+						print(c_lt)
+						print(c_ge)
+						print("----------")
+						# NOTE: Flipping assumes criterion func is symmetric
+						c_lt[0] = c_lt[0] + nan_counts
+						c_ge[0] = c_ge[0] + nan_counts 
+						impurity_lt = criterion_func(criterion_enum, c_lt)
+						impurity_ge = criterion_func(criterion_enum, c_ge)
+						total_impurity_lt = np.sum(impurity_lt) 
+						total_impurity_ge = np.sum(impurity_ge) 
+						if(total_impurity_lt <= total_impurity_ge):
+							impurity = impurity_lt
+							total_impurity = total_impurity_lt
+							op = OP_LT 
+							split_counts = c_lt
+						else:
+							impurity = impurity_ge
+							total_impurity = total_impurity_ge
+							op = OP_GE 
+							split_counts = c_ge
+					else:
+						split_counts = cum_counts[t_i]
+						impurity = criterion_func(criterion_enum, split_counts)
+						total_impurity = np.sum(impurity)
+						op = OP_GE
+
+
+
+					
 					if(total_impurity < best_total_impurity):
-						best_impurity, best_total_impurity, best_ind = impurity, total_impurity, t_i
-				
+						best_impurity, best_total_impurity = impurity, total_impurity
+						best_ind, best_op = t_i, op
+						best_counts = split_counts
+
+				print("AAA",xc_j[best_ind-1], xc_j[best_ind])
 				thresh = (xc_j[best_ind-1] + xc_j[best_ind]) / 2.0 #if best_ind != 0 else np.inf
-			#Otherwise just use a placeholder threshold
 			else:
+				# Otherwise just use a placeholder threshold
+				best_op = OP_GE
 				thresh = np.inf
 
+			
+			
+			#See if using OP_ISNAN would produce better results
+			if(sep_nan and has_nan):
+				
+				is_nan_counts = np.empty((2, n_classes),dtype=np.int32)
+				is_nan_counts[0] = counts-nan_counts
+				is_nan_counts[1] = nan_counts
+
+				is_nan_impurity = criterion_func(criterion_enum, is_nan_counts)
+				is_nan_total_impurity = np.sum(is_nan_impurity)
+				if(is_nan_total_impurity < best_total_impurity):
+					best_impurity, best_total_impurity = is_nan_impurity, is_nan_total_impurity
+					best_op = OP_ISNAN
+					best_counts = is_nan_counts
+
+
+				# nan_counts[0] = 0
+				# for i in range(nan_start,len(y_j)):
+				# 	nan_counts[0,y_j[i]] += 1
+
+				# countsPS[n_b+j,2] = nan_counts
+				# = criterion_func(criterion_enum, is_nan_counts)[0]
+
 			#Fill in outputs for candidate split j
+
 			impurities[n_b+j,:2] = best_impurity
 			thresholds[j] = thresh
-			countsPS[n_b+j,:2] = cum_counts[best_ind]
+			countsPS[n_b+j,:2] = best_counts#cum_counts[best_ind] #TODO: FIX
+			ops[n_b+j] = best_op
+			
 
 			# Even though missing values are ignored in impurity calculations 
 			#   the total counts still need to be correct. Throw them in left bin.
 			countsPS[n_b+j, 0] = countsPS[n_b+j, 0] + miss_counts 
+
 			
-			#Add in counts and impurity for NaN case
-			if(sep_nan):
-				nan_counts = np.empty((1,cum_counts.shape[-1]),dtype=np.int64)
-				nan_counts[0] = 0
-				for i in range(nan_start,len(y_j)):
-					nan_counts[0,y_j[i]] += 1
-
-				countsPS[n_b+j,2] = nan_counts
-				impurities[n_b+j,2] = criterion_func(criterion_enum, nan_counts)[0]
-
-	return countsPS, impurities, thresholds
+	print(countsPS)
+	print("impurities")
+	print(impurities)
+	print("thresholds",thresholds)
+	return countsPS, impurities, thresholds, ops
 
 
 
 
+# The problem is where do I put the NaN values:
+#  -They are different from missing
+#  -There are three possibilities (Nan vs Y|N), (Nan|Y vs N), (Nan|N vs Y)
+#  -Should handle first after (sep_nan) and other two in (c > 0)
+#  -So it's
 
 
 
@@ -538,7 +688,6 @@ def fit_tree(x_bin, x_cont, y, missing_values, criterion_enum, split_enum, sep_n
 
 	#ENUMS definitions necessary if want to use 32bit integers since literals default to 64bit
 	ZERO, NODE, LEAF = 0, 1, 2
-
 	sorted_inds = np.argsort(y)
 	x_bin_sorted = x_bin[sorted_inds]
 	x_cont_sorted = x_cont[sorted_inds]
@@ -553,7 +702,6 @@ def fit_tree(x_bin, x_cont, y, missing_values, criterion_enum, split_enum, sep_n
 	nodes = List.empty_list(TN)
 	nodes.append(TreeNode(NODE,ZERO,List.empty_list(i4_arr),counts))
 	
-
 	while len(contexts) > 0:
 		new_contexts = List.empty_list(SC)
 		locs = (node_dict,nodes,new_contexts,cache_nodes)
@@ -567,21 +715,18 @@ def fit_tree(x_bin, x_cont, y, missing_values, criterion_enum, split_enum, sep_n
 			# # print("M PS:", missing_values, "\n", countsPS)
 			# flat_impurities = criterion_func(criterion_enum,countsPS.reshape((-1,countsPS.shape[2])))
 			# impurities = flat_impurities.reshape((countsPS.shape[0],countsPS.shape[1]))
-
-			countsPS, impurities, thresholds =  \
+			countsPS, impurities, thresholds, ops =  \
 				get_counts_impurities(c_xb, c_xc, c_y, missing_values, c.impurity, c.counts,
 										criterion_enum, n_classes, sep_nan)
 			# print("IMP:", impurities)
-
+			# print(countsPS, impurities, thresholds, ops)
 			#Sum of new impurities of left and right side of split
 			total_split_impurity = impurities[:,0] + impurities[:,1];
 			if(sep_nan): total_split_impurity += impurities[:,2]
 			impurity_decrease = c.impurity - (total_split_impurity);
-			# print(total_split_impurity)
-			# print("impurity_decrease", c.impurity , total_split_impurity)
+			# print("impurity_decrease", impurity_decrease)
 			splits = split_chooser(split_enum, impurity_decrease)
 			# print("splits",splits)
-
 
 			for j in range(len(splits)):
 				split = splits[j]
@@ -592,13 +737,17 @@ def fit_tree(x_bin, x_cont, y, missing_values, criterion_enum, split_enum, sep_n
 					if (split < c_xb.shape[1]):
 						mask = c_xb[:,split]
 					else: 
-						mask = c_xc[:,split-c_xb.shape[1]] >= thresholds[split-c_xb.shape[1]]
+						n_mask = np.isnan(c_xc[:,split-c_xb.shape[1]]).astype(np.uint8)
+						mask = (c_xc[:,split-c_xb.shape[1]] >= thresholds[split-c_xb.shape[1]]).astype(np.uint8)
+						mask = np.where(n_mask, u1(255), mask)
+						# mask[n_mask] = 255
+					# print("mask",mask)
 					missing = np.argwhere(missing_values[:,1] == split)[:,0]
 					# print("missing", split, missing)
 					node_l, node_r, node_n = -1, -1, -1
 					new_inds_l, new_inds_r, new_inds_n = r_l_n_split(mask,missing)
+					# print("mask",new_inds_l, new_inds_r, new_inds_n)
 					# locs = (node_dict, nodes,new_contexts, cache_nodes)
-					
 					#New node for left.
 					node_l = new_node(locs,split,new_inds_l, impurities,countsPS, literally(0))
 
@@ -608,7 +757,7 @@ def fit_tree(x_bin, x_cont, y, missing_values, criterion_enum, split_enum, sep_n
 					#New node for NaN values.
 					if(sep_nan and len(new_inds_n) > 0):
 						node_n = new_node(locs,split,new_inds_n, impurities,countsPS,literally(2))
-						
+					
 					#If is continous bitcast threshold to an i4 else set to 1 i.e. 1e-45
 					thresh = np.float32(thresholds[split-c_xb.shape[1]]).view(np.int32) if split >= c_xb.shape[1] else 1
 					split_data = np.array([split, thresh, node_l, node_r, node_n],dtype=np.int32)
@@ -937,7 +1086,7 @@ def predict_tree(tree,xb,xc,pred_choice_enum,positive_class=0,decode_classes=Tru
 						if(split_on < xb.shape[1]):
 							# Binary case
 							j = split_on 
-							if(np.isnan(xb[i,j])):
+							if(xb[i,j] == 255):
 								_n = nan
 							elif(xb[i,j]):
 								_n = right
@@ -1078,16 +1227,22 @@ class TreeClassifier(object):
 		self.tree = None
 		
 	def fit(self,xb,xc,y,missing_values=None):
-		if(xb is None): xb = np.empty((0,0), dtype=np.bool)
+		if(xb is None): xb = np.empty((0,0), dtype=np.uint8)
 		if(xc is None): xc = np.empty((0,0), dtype=np.float64)
 		if(missing_values is None): missing_values = np.empty((0,2), dtype=np.int64)
+		xb = xb.astype(np.uint8)
+		xc = xc.astype(np.float64)
+		y = y.astype(np.int64)
+		missing_values = missing_values.astype(np.int64)
 		self.tree = self._fit(xb, xc, y, missing_values)
 
 	def predict(self,xb,xc,positive_class=None):
 		if(self.tree is None): raise RuntimeError("TreeClassifier must be fit before predict() is called.")
 		if(positive_class is None): positive_class = self.positive_class
-		if(xb is None): xb = np.empty((0,0), dtype=np.bool)
+		if(xb is None): xb = np.empty((0,0), dtype=np.uint8)
 		if(xc is None): xc = np.empty((0,0), dtype=np.float64)
+		xb = xb.astype(np.uint8)
+		xc = xc.astype(np.float64)
 		return self._predict(self.tree, xb, xc, positive_class)
 
 	def __str__(self):

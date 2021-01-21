@@ -300,6 +300,44 @@ def test_missing_mixed():
 	# assert np.sum(at.predict(data,data_flt) == labels) >= 6
 
 
+#### test_nan #### 
+
+def setup_nan():
+	n = 255
+	data = np.asarray([
+	[1,0,1], #1
+	[1,1,1], #1
+	[1,1,1], #1
+	[1,0,n], #2
+	[1,n,1], #2
+	[n,1,1], #2
+	],np.uint8);
+
+	n = np.nan
+	data_flt = np.asarray([
+	[1,0,1], #1
+	[1,1,1], #1
+	[1,1,1], #1
+	[1,0,n], #2
+	[1,n,1], #2
+	[n,1,1], #2
+	],np.float64);
+
+	labels = np.asarray([1,1,1,2,2,2],dtype=np.int64)
+
+	return data, data_flt, labels
+
+def test_nan():
+	data, data_flt, labels = setup_nan()
+	dt = TreeClassifier('ambiguity_tree')
+	dt.fit(data, None, labels) # Continous DT
+	print(dt)
+
+	data, data_flt, labels = setup_nan()
+	dt = TreeClassifier('ambiguity_tree')
+	dt.fit(None, data_flt, labels) # Continous DT
+	print(dt)
+
 
 
 	
@@ -390,14 +428,15 @@ def test_b_sklearn_tree_fit(benchmark):
 
 	
 if(__name__ == "__main__"):
-	test_optimal_split()
-	test_basics1()
-	test_basics2()
-	test_basics3()
-	test_missing()
-	test_missing_ordering()
-	test_mixed()
-	test_missing_mixed()
+	# test_optimal_split()
+	# test_basics1()
+	# test_basics2()
+	# test_basics3()
+	# test_missing()
+	# test_missing_ordering()
+	# test_mixed()
+	# test_missing_mixed()
+	test_nan()
 	
 
 
