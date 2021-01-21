@@ -18,16 +18,16 @@ def test_optimal_split():
 		y = np.concatenate([np.zeros(i,dtype=np.int64),np.ones(N-i,dtype=np.int64)])
 		counts = np.array([i,N-i],dtype=np.int64)
 		out = get_counts_impurities(xb, xc, y, missing_values, 1.0, counts, CRITERION_gini, 2, True)
-		countsPS, impurities, thresholds = out
+		countsPS, impurities, thresholds, ops = out
 		assert (impurities == 0.0).all()
-		# print(i, countsPS, impurities, thresholds)
+		print(i, countsPS, impurities, thresholds)
 		if(i ==0 or i == N): 
 			#When the input is pure the threshold should be inf
 			assert thresholds[0] == np.inf
-			assert all(np.sum(countsPS[0],axis=1) == np.array([10,0,0]))
+			assert all(np.sum(countsPS[0],axis=1) == np.array([10,0]))
 		else:
 			assert thresholds[0] > i-1 and thresholds[0] < i
-			assert all(np.sum(countsPS[0],axis=1) == np.array([i,N-i,0]))
+			assert all(np.sum(countsPS[0],axis=1) == np.array([i,N-i]))
 	
 
 #### test_basics ####
@@ -263,7 +263,7 @@ def test_missing_ordering():
 	counts = np.array([4,3],dtype=np.int64)
 
 	out = get_counts_impurities(xb, xc, y, missing_values, 1.0, counts, CRITERION_gini, 2, True)
-	countsPS, impurities, thresholds = out
+	countsPS, impurities, thresholds, ops = out
 	print(thresholds)
 	assert thresholds[0] == 0.5
 
@@ -302,41 +302,91 @@ def test_missing_mixed():
 
 #### test_nan #### 
 
+def get_tree_op_counts(dt):
+	d = {}
+	for node in dt.tree.nodes:
+		d[node.op_enum] = d.get(node.op_enum,0)+1
+	return d
+
 def setup_nan():
-	n = 255
-	data = np.asarray([
-	[1,0,1], #1
+	n = np.nan
+	data1 = np.asarray([
 	[1,1,1], #1
 	[1,1,1], #1
-	[1,0,n], #2
+	[1,1,1], #1
+	[1,1,n], #2
 	[1,n,1], #2
 	[n,1,1], #2
-	],np.uint8);
+	],np.float64);
 
-	n = np.nan
-	data_flt = np.asarray([
-	[1,0,1], #1
+	data2 = np.asarray([
+	[0,0,0], #0
+	[0,0,0], #0
+	[0,0,0], #0
+	[0,0,n], #2
+	[0,n,0], #2
+	[n,0,0], #2
+	],np.float64);
+
+	data3 = np.asarray([
 	[1,1,1], #1
 	[1,1,1], #1
-	[1,0,n], #2
+	[1,1,1], #1
+	[1,1,n], #2
+	[1,n,0], #2
+	[n,1,0], #2
+	],np.float64);
+
+
+	data4 = np.asarray([
+	[1,1,0], #1
+	[1,1,0], #1
+	[1,1,0], #1
+	[1,1,n], #2
 	[1,n,1], #2
 	[n,1,1], #2
 	],np.float64);
 
 	labels = np.asarray([1,1,1,2,2,2],dtype=np.int64)
 
-	return data, data_flt, labels
+	return data1, data2, data3, data4, labels
 
 def test_nan():
-	data, data_flt, labels = setup_nan()
+	data1, data2, data3, data4, labels = setup_nan()
 	dt = TreeClassifier('ambiguity_tree')
-	dt.fit(data, None, labels) # Continous DT
+	dt.fit(None, data1, labels) # Continous DT
 	print(dt)
+	assert tree_is_pure(dt)
+	op_counts = get_tree_op_counts(dt)
+	print(op_counts)
+	assert op_counts.get(OP_ISNAN,0) > 0
+	assert op_counts.get(OP_GE,0) == 0
+	assert op_counts.get(OP_LT,0) == 0
 
-	data, data_flt, labels = setup_nan()
-	dt = TreeClassifier('ambiguity_tree')
-	dt.fit(None, data_flt, labels) # Continous DT
+	dt.fit(None, data2, labels) # Continous DT
 	print(dt)
+	assert tree_is_pure(dt)
+	op_counts = get_tree_op_counts(dt)
+	print(op_counts)
+	assert op_counts.get(OP_ISNAN,0) > 0
+	assert op_counts.get(OP_GE,0) == 0
+	assert op_counts.get(OP_LT,0) == 0
+
+	dt.fit(None, data3, labels) # Continous DT
+	print(dt)
+	assert tree_is_pure(dt)
+	op_counts = get_tree_op_counts(dt)
+	assert op_counts.get(OP_ISNAN,0) == 0
+	assert op_counts.get(OP_GE,0) == 1
+	assert op_counts.get(OP_LT,0) == 0
+
+	dt.fit(None, data4, labels) # Continous DT
+	print(dt)
+	assert tree_is_pure(dt)
+	op_counts = get_tree_op_counts(dt)
+	assert op_counts.get(OP_ISNAN,0) == 0
+	assert op_counts.get(OP_GE,0) == 0
+	assert op_counts.get(OP_LT,0) == 1
 
 
 
@@ -428,14 +478,14 @@ def test_b_sklearn_tree_fit(benchmark):
 
 	
 if(__name__ == "__main__"):
-	# test_optimal_split()
-	# test_basics1()
-	# test_basics2()
-	# test_basics3()
-	# test_missing()
-	# test_missing_ordering()
-	# test_mixed()
-	# test_missing_mixed()
+	test_optimal_split()
+	test_basics1()
+	test_basics2()
+	test_basics3()
+	test_missing()
+	test_missing_ordering()
+	test_mixed()
+	test_missing_mixed()
 	test_nan()
 	
 
