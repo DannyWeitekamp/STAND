@@ -223,6 +223,7 @@ def counts_per_binary_split(xb, y_inds, missing_values, n_classes):
 	#Go through in Fortran order (Note: missing values should be ordered by j)
 	for j in range(xb.shape[1]):
 		for i in range(xb.shape[0]):
+			# print(i,j,miss_i,miss_j, ":", xb.shape[1])
 			if(i == miss_i and j == miss_j):
 				#Missing values always go left
 				# counts[j,0,y_inds[i]] += 1;	
@@ -271,9 +272,9 @@ def r_l_split(x, missing):
 			#Missing values always go left
 			l[nl] = i
 			nl += 1
-
-			next_missing = missing[m_ind]
-			m_ind += 1
+			if(m_ind < len(missing)):
+				next_missing = missing[m_ind]
+				m_ind += 1
 		# elif(sep_nan and x_i == 255):
 		# 	n[nn] = i
 		# 	nn += 1
@@ -409,7 +410,7 @@ OP_ISNAN = u1(3)
 
 
 @njit(cache=True)
-def get_counts_impurities(xb, xc, y, missing_values, base_impurity, counts, criterion_enum, n_classes, sep_nan):
+def get_counts_impurities(xb, xc, y, missing_mask, base_impurity, counts, criterion_enum, n_classes, sep_nan):
 	#NOTE: This function assumes that the elements [i,j] of missing_values is sorted by 'j'  
 	n_b, n_c = xb.shape[1], xc.shape[1]
 	countsPS = np.empty((n_b+n_c, 2, n_classes),dtype=np.uint32)
@@ -417,7 +418,7 @@ def get_counts_impurities(xb, xc, y, missing_values, base_impurity, counts, crit
 	ops = np.empty((n_b+n_c,),dtype=np.uint8)
 
 	# Handle binary case
-	countsPS_n_b, miss_index = counts_per_binary_split(xb, y, missing_values, n_classes)
+	countsPS_n_b, miss_index = counts_per_binary_split(xb, y, n_classes)
 	countsPS[:n_b] = countsPS_n_b
 	flat_impurities = criterion_func(criterion_enum, countsPS_n_b.reshape((-1,n_classes)))
 	impurities[:n_b] = flat_impurities.reshape((n_b,2))
@@ -426,17 +427,22 @@ def get_counts_impurities(xb, xc, y, missing_values, base_impurity, counts, crit
 	
 	# print(countsPS_n_b)
 	# Throw missing values into the left bin
-	for i,j in missing_values:
-		if(j >= xb.shape[1]): break
-		countsPS[j,0,y[i]] += 1
+	# for i,j in missing_values:
+		
+	# 	if(j >= xb.shape[1] or i >= xb.shape[0]):
+	# 		print("HERE!!!!!")
+	# 		print(i,j, countsPS.shape, len(y))
+	# 		break
+		
+	# 	countsPS[j,0,y[i]] += 1
 
 
 	# Sort missing values so that they are ordered by (j, i)
-	if(len(missing_values) > 0):
-		m_arg_s = np.argsort(missing_values[:,0])
-		missing_values = missing_values[m_arg_s]
-		m_arg_s = np.argsort(missing_values[:,1])
-		missing_values = missing_values[m_arg_s]
+	# if(len(missing_values) > 0):
+	# 	m_arg_s = np.argsort(missing_values[:,0])
+	# 	missing_values = missing_values[m_arg_s]
+	# 	m_arg_s = np.argsort(missing_values[:,1])
+	# 	missing_values = missing_values[m_arg_s]
 
 	# Handle continous case	
 	thresholds = np.empty((n_c,),dtype=np.float64)
@@ -644,13 +650,21 @@ def fit_tree(x_bin, x_cont, y, missing_values, criterion_enum, split_enum, sep_n
 			c_xb, c_xc, c_y = x_bin_sorted[c.inds], x_cont_sorted[c.inds], y_inds[c.inds]
 
 			# c_xb, c_y = x_sorted[c.inds], y_inds[c.inds]
-
+			#Bad solution, 
+			ms_v, k = np.empty((len(c.inds),2), dtype=np.int64), 0
+			for miss_i, miss_j in missing_values:
+				if(miss_i in c.inds):
+					ms_v[k,0] = miss_i
+					ms_v[k,1] = miss_j
+					k += 1
+			ms_v = ms_v[:k]
+			# missing = np.argwhere(missing_values[:,0] == split)[:,0]
 			# countsPS = counts_per_split(c_x, c_y, n_classes, missing_values, sep_nan)
 			# # print("M PS:", missing_values, "\n", countsPS)
 			# flat_impurities = criterion_func(criterion_enum,countsPS.reshape((-1,countsPS.shape[2])))
 			# impurities = flat_impurities.reshape((countsPS.shape[0],countsPS.shape[1]))
 			countsPS, impurities, thresholds, ops =  \
-				get_counts_impurities(c_xb, c_xc, c_y, missing_values, c.impurity, c.counts,
+				get_counts_impurities(c_xb, c_xc, c_y, ms_v, c.impurity, c.counts,
 										criterion_enum, n_classes, sep_nan)
 			# print("IMP:", impurities)
 			# print(countsPS, impurities, thresholds, ops)
