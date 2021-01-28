@@ -202,46 +202,45 @@ TreeTypes_LEAF = 2
 ######### Utility Functions for Fit/Predict  #########
 
 @njit(nogil=True,fastmath=True,cache=True)
-def counts_per_binary_split(xb, y_inds, missing_values, n_classes):
+def counts_per_binary_split(xb, y_inds, n_classes):
 	''' 
 		Determines the number of elements of each class that would be in the resulting
 		left, right and nan nodes if a split was made at each possible binary feature.
 		Also outputs the index at which missing values stop being applicable to binary
 		features.
 	'''
-	miss_i, miss_j = -1, -1
-	if (len(missing_values) > 0):
-		miss_i, miss_j = missing_values[0]
-	miss_index = 1 #if(miss_j < xb.shape[1]) else 0
+	# miss_i, miss_j = -1, -1
+	# if (len(missing_values) > 0):
+	# 	miss_i, miss_j = missing_values[0]
+	# miss_index = 1 #if(miss_j < xb.shape[1]) else 0
 	
 
 	counts = np.zeros((xb.shape[1], 2, n_classes),dtype=np.uint32);
+	miss_counts = np.zeros((xb.shape[1], n_classes),dtype=np.uint32);
 	# nan_counts = np.zeros((xb.shape[1], n_classes),dtype=np.uint32);
 	# has_nan = np.zeros((xb.shape[1], n_classes),dtype=np.uint32);
 	# has_nan = False
 
-	#Go through in Fortran order (Note: missing values should be ordered by j)
+	#Go through in Fortran order
 	for j in range(xb.shape[1]):
 		for i in range(xb.shape[0]):
-			# print(i,j,miss_i,miss_j, ":", xb.shape[1])
-			if(i == miss_i and j == miss_j):
-				#Missing values always go left
-				# counts[j,0,y_inds[i]] += 1;	
-				# counts[j,1,y_inds[i]] += 1;	
-				if(miss_index < len(missing_values)):
-					miss_i, miss_j = missing_values[miss_index]
-					miss_index += 1
-				else:
-					miss_i, miss_j = -1, -1
-			else:
-				if(xb[i,j]):
+			x_ij = xb[i,j]
+			if(x_ij):
+				if(x_ij == 1):
 					counts[j,1,y_inds[i]] += 1;	
 				else:
-					counts[j,0,y_inds[i]] += 1;	
+					miss_counts[j,y_inds[i]] += 1;
+
+			else:
+				counts[j,0,y_inds[i]] += 1;	
+			
+				
+				
+
 
 	
 
-	return counts, miss_index-1
+	return counts, miss_counts
 
 
 
@@ -249,7 +248,7 @@ def counts_per_binary_split(xb, y_inds, missing_values, n_classes):
 
 
 @njit(nogil=True,fastmath=True,cache=True)
-def r_l_split(x, missing):
+def r_l_split(x, miss_mask):
 	'''Similar to argwhere applied 3 times each for 0,1 and nan, but does all
 		three at once.'''
 	nl,nr = 0,0
@@ -257,13 +256,14 @@ def r_l_split(x, missing):
 	r = np.empty(x.shape,np.uint32)
 	# n = np.empty(x.shape,np.uint32)
 
-	next_missing = missing[0] if len(missing) > 0 else -1
-	m_ind = 1
+	# next_missing = missing[0] if len(missing) > 0 else -1
+	# m_ind = 1
 	
 	for i in range(len(x)):
 		x_i = x[i]
 
-		if(i == next_missing):
+		# if(i == next_missing):
+		if(miss_mask[i]):
 			# n[nn] = i
 			# nn += 1
 			# r[nr] = i
@@ -272,9 +272,9 @@ def r_l_split(x, missing):
 			#Missing values always go left
 			l[nl] = i
 			nl += 1
-			if(m_ind < len(missing)):
-				next_missing = missing[m_ind]
-				m_ind += 1
+			# if(m_ind < len(missing)):
+			# 	next_missing = missing[m_ind]
+				# m_ind += 1
 		# elif(sep_nan and x_i == 255):
 		# 	n[nn] = i
 		# 	nn += 1
@@ -410,23 +410,26 @@ OP_ISNAN = u1(3)
 
 
 @njit(cache=True)
-def get_counts_impurities(xb, xc, y, missing_mask, base_impurity, counts, criterion_enum, n_classes, sep_nan):
+def get_counts_impurities(xb, xc, y, miss_mask, base_impurity, counts, criterion_enum, n_classes, sep_nan):
 	#NOTE: This function assumes that the elements [i,j] of missing_values is sorted by 'j'  
 	n_b, n_c = xb.shape[1], xc.shape[1]
 	countsPS = np.empty((n_b+n_c, 2, n_classes),dtype=np.uint32)
 	impurities = np.empty((n_b+n_c, 2),dtype=np.float64)
 	ops = np.empty((n_b+n_c,),dtype=np.uint8)
-
 	# Handle binary case
-	countsPS_n_b, miss_index = counts_per_binary_split(xb, y, n_classes)
+	countsPS_n_b, miss_countsPS = counts_per_binary_split(xb, y, n_classes)
 	countsPS[:n_b] = countsPS_n_b
 	flat_impurities = criterion_func(criterion_enum, countsPS_n_b.reshape((-1,n_classes)))
 	impurities[:n_b] = flat_impurities.reshape((n_b,2))
+
 	ops[:n_b] = OP_GE
 
+	# Throw missing values into the left bin
+	for j in range(n_b):
+		countsPS[j,0] = countsPS[j,0] + miss_countsPS[j]
 	
 	# print(countsPS_n_b)
-	# Throw missing values into the left bin
+	
 	# for i,j in missing_values:
 		
 	# 	if(j >= xb.shape[1] or i >= xb.shape[0]):
@@ -461,21 +464,27 @@ def get_counts_impurities(xb, xc, y, missing_mask, base_impurity, counts, criter
 		for j in range(n_c):
 			# Generate and indicies along i that excludes missing values
 			miss_counts = np.zeros((n_classes,),dtype=np.int32)
-			non_miss_mask = np.ones((len(xc),),dtype=np.uint8)
-			while (miss_index < len(missing_values)):
-				miss_i, miss_j = missing_values[miss_index]
-				if(miss_j != j): break
-				non_miss_mask[miss_i] = 0
-				miss_index += 1
-				miss_counts[y[miss_i]] += 1
-			non_miss_inds = np.nonzero(non_miss_mask)[0]
+
+			if(miss_mask.shape[1] > 0):
+				# If the miss_mask exists count the fill in miss_counts and slice out 
+				#  any missing values
+				mm_j = miss_mask[:,j]
+				for i,tr in enumerate(mm_j):
+					if(tr): miss_counts[y[i]] += 1
+				non_miss_j = ~mm_j
+
+				# Select all non missing features and labels for candidate split j 
+				xc_j = xc[non_miss_j,j]
+				y_j = y[non_miss_j]
+			else:
+				xc_j = xc[:,j]
+				y_j = y
 			
-			# Select all non missing features and labels for candidate split j 
-			xc_j = xc[non_miss_inds,j]
-			#  and sort by feature
+			
+			# Sort by feature
 			srt_inds = np.argsort(xc_j)
 			xc_j = xc_j[srt_inds]
-			y_j = y[non_miss_inds[srt_inds]]			
+			y_j = y_j[srt_inds]			
 
 			# print("xc_j",xc_j)
 			# print("y_j",y_j)
@@ -623,7 +632,7 @@ def get_counts_impurities(xb, xc, y, missing_mask, base_impurity, counts, criter
 
 
 @njit(cache=True, locals={"ZERO":i4,"NODE":i4,"LEAF":i4,"n_nodes":i4,"node_l":i4,"node_r":i4,"node_n":i4,"split":i4})
-def fit_tree(x_bin, x_cont, y, missing_values, criterion_enum, split_enum, sep_nan=False, cache_nodes=False):
+def fit_tree(x_bin, x_cont, y, miss_mask, criterion_enum, split_enum, sep_nan=False, cache_nodes=False):
 	'''Fits a decision/ambiguity tree'''
 
 	#ENUMS definitions necessary if want to use 32bit integers since literals default to 64bit
@@ -641,30 +650,29 @@ def fit_tree(x_bin, x_cont, y, missing_values, criterion_enum, split_enum, sep_n
 	node_dict = Dict.empty(u4,BE_List)
 	nodes = List.empty_list(TN)
 	nodes.append(TreeNode(NODE,ZERO,OP_NOP,List.empty_list(i4_arr),counts))
-	
 	while len(contexts) > 0:
 		new_contexts = List.empty_list(SC)
 		locs = (node_dict,nodes,new_contexts,cache_nodes)
 		for i in range(len(contexts)):
 			c = contexts[i]
 			c_xb, c_xc, c_y = x_bin_sorted[c.inds], x_cont_sorted[c.inds], y_inds[c.inds]
-
+			c_mm = miss_mask if(miss_mask.shape[1] == 0) else miss_mask[c.inds]
 			# c_xb, c_y = x_sorted[c.inds], y_inds[c.inds]
 			#Bad solution, 
-			ms_v, k = np.empty((len(c.inds),2), dtype=np.int64), 0
-			for miss_i, miss_j in missing_values:
-				if(miss_i in c.inds):
-					ms_v[k,0] = miss_i
-					ms_v[k,1] = miss_j
-					k += 1
-			ms_v = ms_v[:k]
+			# ms_v, k = np.empty((len(c.inds),2), dtype=np.int64), 0
+			# for miss_i, miss_j in missing_values:
+			# 	if(miss_i in c.inds):
+			# 		ms_v[k,0] = miss_i
+			# 		ms_v[k,1] = miss_j
+			# 		k += 1
+			# ms_v = ms_v[:k]
 			# missing = np.argwhere(missing_values[:,0] == split)[:,0]
 			# countsPS = counts_per_split(c_x, c_y, n_classes, missing_values, sep_nan)
 			# # print("M PS:", missing_values, "\n", countsPS)
 			# flat_impurities = criterion_func(criterion_enum,countsPS.reshape((-1,countsPS.shape[2])))
 			# impurities = flat_impurities.reshape((countsPS.shape[0],countsPS.shape[1]))
 			countsPS, impurities, thresholds, ops =  \
-				get_counts_impurities(c_xb, c_xc, c_y, ms_v, c.impurity, c.counts,
+				get_counts_impurities(c_xb, c_xc, c_y, c_mm, c.impurity, c.counts,
 										criterion_enum, n_classes, sep_nan)
 			# print("IMP:", impurities)
 			# print(countsPS, impurities, thresholds, ops)
@@ -683,10 +691,15 @@ def fit_tree(x_bin, x_cont, y, missing_values, criterion_enum, split_enum, sep_n
 					nodes[c.parent_node]=TreeNode(LEAF,c.parent_node,OP_NOP,List.empty_list(i4_arr),c.counts)
 				else:
 					if (split < c_xb.shape[1]):
-						mask = c_xb[:,split]
 						op = OP_GE
+						split_miss_mask = c_xb[:,split] > 1
+						
+						mask = c_xb[:,split] == 1
 					else: 
+						
 						op = ops[split]
+						split_miss_mask = c_mm[:,split]
+
 						split_slice = c_xc[:,split-c_xb.shape[1]]
 						if(op == OP_GE):
 							mask = (split_slice >= thresholds[split-c_xb.shape[1]])#.astype(np.uint8)
@@ -700,17 +713,19 @@ def fit_tree(x_bin, x_cont, y, missing_values, criterion_enum, split_enum, sep_n
 						# mask = np.where(n_mask, u1(255), mask)
 						# mask[n_mask] = 255
 					# print("mask",mask)
-					missing = np.argwhere(missing_values[:,1] == split)[:,0]
+					# print("split_miss_mask",split_miss_mask)
+					# missing = np.argwhere(missing_values[:,1] == split)[:,0]
 					# print("missing", split, missing)
 					node_l, node_r = -1, -1
-					new_inds_l, new_inds_r = r_l_split(mask,missing)
+					new_inds_l, new_inds_r = r_l_split(mask, split_miss_mask)
+					new_inds_l, new_inds_r = c.inds[new_inds_l], c.inds[new_inds_r]
 					# print("new_inds",new_inds_l, new_inds_r)
 					# locs = (node_dict, nodes,new_contexts, cache_nodes)
 					#New node for left.
-					node_l = new_node(locs,split,OP_NOP,new_inds_l, impurities,countsPS, literally(0))
+					node_l = new_node(locs, split, OP_NOP, new_inds_l, impurities,countsPS, literally(0))
 
 					#New node for right.
-					node_r = new_node(locs,split,OP_NOP,new_inds_r, impurities,countsPS,literally(1))
+					node_r = new_node(locs, split, OP_NOP, new_inds_r, impurities,countsPS, literally(1))
 
 					# #New node for NaN values.
 					# if(sep_nan and len(new_inds_n) > 0):
@@ -1101,7 +1116,6 @@ def str_op(op_enum):
 def str_tree(tree):
 	'''A string representation of a tree usable for the purposes of debugging'''
 	
-	print(tree)
 	# l = ["TREE w/ classes: %s"%_get_y_order(tree)]
 	l = ["TREE w/ classes: %s"%tree.u_ys]
 	# node_offset = 1
@@ -1183,9 +1197,9 @@ class TreeClassifier(object):
 		self.positive_class = positive_class
 
 		@njit(cache=True)
-		def _fit(xb,xc,y,missing_values):	
-			out =fit_tree(xb,xc,y,
-					missing_values=missing_values,
+		def _fit(xb,xc,y,miss_mask):	
+			out =fit_tree(xb,xc,y,miss_mask,
+					# missing_values=missing_values,
 					criterion_enum=literally(criterion_enum),
 					split_enum=literally(split_enum),
 					sep_nan=literally(sep_nan),
@@ -1205,22 +1219,23 @@ class TreeClassifier(object):
 		self._predict = _predict
 		self.tree = None
 		
-	def fit(self,xb,xc,y,missing_values=None):
-		if(xb is None): xb = np.empty((0,0), dtype=np.bool)
+	def fit(self,xb,xc,y,miss_mask=None):
+		if(xb is None): xb = np.empty((0,0), dtype=np.uint8)
 		if(xc is None): xc = np.empty((0,0), dtype=np.float64)
-		if(missing_values is None): missing_values = np.empty((0,2), dtype=np.int64)
-		xb = xb.astype(np.bool)
+		if(miss_mask is None): miss_mask = np.zeros_like(xc, dtype=np.bool)
+		xb = xb.astype(np.uint8)
 		xc = xc.astype(np.float64)
 		y = y.astype(np.int64)
-		missing_values = missing_values.astype(np.int64)
-		self.tree = self._fit(xb, xc, y, missing_values)
+		miss_mask = miss_mask.astype(np.bool)
+		# assert miss_mask.shape == xc.shape
+		self.tree = self._fit(xb, xc, y, miss_mask)
 
 	def predict(self,xb,xc,positive_class=None):
 		if(self.tree is None): raise RuntimeError("TreeClassifier must be fit before predict() is called.")
 		if(positive_class is None): positive_class = self.positive_class
-		if(xb is None): xb = np.empty((0,0), dtype=np.bool)
+		if(xb is None): xb = np.empty((0,0), dtype=np.uint8)
 		if(xc is None): xc = np.empty((0,0), dtype=np.float64)
-		xb = xb.astype(np.bool)
+		xb = xb.astype(np.uint8)
 		xc = xc.astype(np.float64)
 		return self._predict(self.tree, xb, xc, positive_class)
 

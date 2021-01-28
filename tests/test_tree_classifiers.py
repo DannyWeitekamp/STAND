@@ -10,14 +10,14 @@ import pytest
 def test_optimal_split():
 	'''Check that can find optimal splits on continous variables when they exist'''
 	#
-	missing_values = np.empty((0,2),np.int64)
+	miss_mask = np.empty((0,0),np.bool)
 	N = 10
 	xc = np.asarray([np.arange(N)],np.float64).T
 	xb = np.zeros((0,0),np.bool)
 	for i in range(N+1):
 		y = np.concatenate([np.zeros(i,dtype=np.int64),np.ones(N-i,dtype=np.int64)])
 		counts = np.array([i,N-i],dtype=np.int64)
-		out = get_counts_impurities(xb, xc, y, missing_values, 1.0, counts, CRITERION_gini, 2, True)
+		out = get_counts_impurities(xb, xc, y, miss_mask, 1.0, counts, CRITERION_gini, 2, True)
 		countsPS, impurities, thresholds, ops = out
 		assert (impurities == 0.0).all()
 		print(i, countsPS, impurities, thresholds)
@@ -80,12 +80,16 @@ def test_basics1():
 	
 	dt = TreeClassifier('decision_tree')
 	dt.fit(data1,None,labels1) # Binary DT
+	print(dt)
+	print(dt.predict(data1,None))
 	assert np.sum(dt.predict(data1,None) == labels1) >= 6
 	dt.fit(None,data1_flt,labels1) # Continous DT 
 	print(dt)
 	print(dt.predict(None,data1_flt))
 	assert np.sum(dt.predict(None,data1_flt) == labels1) >= 6
 	dt.fit(data1, data1_flt, labels1) # Mixed DT 
+	print(dt)
+	print(dt.predict(data1,data1_flt))
 	assert np.sum(dt.predict(data1, data1_flt) == labels1) >= 6
 	
 	at = TreeClassifier('ambiguity_tree')
@@ -146,7 +150,7 @@ def setup_mixed():
 	[1,1,1], #2
 	[0,1,1], #2
 	[1,1,1], #2
-	],np.bool);
+	],np.uint8);
 
 	data_flt = np.asarray([
 	[0,0,0],
@@ -157,21 +161,39 @@ def setup_mixed():
 	[0,1,0],
 	],np.float64);
 
+	
 	labels = np.asarray([1,1,1,2,2,2],np.int64);
 
 	return data, data_flt, labels
 
 def setup_missing_mixed():
 	data, data_flt, labels = setup_mixed()
-	missing_values = np.array([[0,0],[1,1],[0,2],[3,0],[0,5],[2,4],[3,3]],dtype=np.int64)
-	for i, j in missing_values:
-		if j < data.shape[1]:
-			data[i,j] = ~data[i,j]
-		else:
-			j = j-data.shape[1]
-			data_flt[i,j] = not data_flt[i,j]
+	# missing_values = np.array([[0,0],[1,1],[0,2],[3,0],[0,5],[2,4],[3,3]],dtype=np.int64)
 
-	return data, data_flt, labels, missing_values
+	bin_miss_mask = np.asarray([
+	[1,0,1],
+	[0,1,0],
+	[0,0,0],
+	[1,0,0],
+	[0,0,0],
+	[0,0,0],
+
+	],np.bool)
+
+	miss_mask = np.asarray([
+	[0,0,1],
+	[0,0,0],
+	[0,1,0],
+	[1,0,0],
+	[0,0,0],
+	[0,0,0],
+
+	],np.bool)
+
+	data[bin_miss_mask] = 255
+	data_flt[miss_mask] = data_flt[miss_mask]+1
+	
+	return data, data_flt, miss_mask, labels 
 
 
 
@@ -211,13 +233,20 @@ def setup_missing():
 	[1,0], #2
 	],np.bool);
 
+	miss_mask = np.asarray([
+	[0,0], #1
+	[0,0], #1
+	[0,1], #1 <- mark second feature as missing
+	[0,0], #2
+	],np.bool);
+
+
 	labels = np.asarray([1,1,1,2],np.int64);
-	missing_values = np.asarray([[2,1]],np.int64)
-	return data, labels, missing_values
+	return data, labels, miss_mask
 
 
 def test_missing():
-	data, labels, missing_values = setup_missing()
+	data, labels, miss_mask = setup_missing()
 	data_flt = data.astype(np.float64)
 
 	dt = TreeClassifier('decision_tree')
@@ -235,34 +264,36 @@ def test_missing():
 
 	#However if the second feature of the third item happens to be a missing value
 	#	then the tree should at least try to make a split at feature 1
-	dt.fit(data,None,labels, missing_values)
+	data[miss_mask] = 255
+
+	dt.fit(data,None,labels)
 	print(dt)
 	assert count_non_leaf_nodes(dt) > 0
-	dt.fit(None,data_flt,labels, missing_values)
+	dt.fit(None,data_flt,labels, miss_mask)
 	print(dt)
 	assert count_non_leaf_nodes(dt) > 0
-	dt.fit(data,data_flt,labels, np.asarray([[2,1],[2,3]],np.int64))
+	dt.fit(data,data_flt,labels, miss_mask)
 	print(dt)
 	assert count_non_leaf_nodes(dt) > 0
 
-def test_missing_ordering():
-	N = 6
-	# missing_values = np.empty((0,0),dtype=np.int64)#np.asarray([[1,0],[2,0],[3,0],[4,0]],np.int64)
-	missing_values = np.asarray([[0,0], [1,0],[2,0],[3,0], [4,0]],np.int64)
-	xc = np.asarray([[4,3,2,1,7,0,1]],np.float64).T
-	xb = np.zeros((0,0),np.bool)
-	y =  np.asarray([0,0,1,1,0,1,0],dtype=np.int64)
-	counts = np.array([4,3],dtype=np.int64)
+# def test_missing_ordering():
+# 	N = 6
+# 	# missing_values = np.empty((0,0),dtype=np.int64)#np.asarray([[1,0],[2,0],[3,0],[4,0]],np.int64)
+# 	missing_values = np.asarray([[0,0], [1,0],[2,0],[3,0], [4,0]],np.int64)
+# 	xc = np.asarray([[4,3,2,1,7,0,1]],np.float64).T
+# 	xb = np.zeros((0,0),np.bool)
+# 	y =  np.asarray([0,0,1,1,0,1,0],dtype=np.int64)
+# 	counts = np.array([4,3],dtype=np.int64)
 
-	out = get_counts_impurities(xb, xc, y, missing_values, 1.0, counts, CRITERION_gini, 2, True)
-	countsPS, impurities, thresholds, ops = out
-	print(thresholds)
-	assert thresholds[0] == 0.5
+# 	out = get_counts_impurities(xb, xc, y, missing_values, 1.0, counts, CRITERION_gini, 2, True)
+# 	countsPS, impurities, thresholds, ops = out
+# 	print(thresholds)
+# 	assert thresholds[0] == 0.5
 
 
 
 def test_missing_mixed():
-	data, data_flt, labels, missing_values = setup_missing_mixed()
+	data, data_flt, miss_mask, labels = setup_missing_mixed()
 	print(data)
 	print(data_flt)
 
@@ -276,7 +307,7 @@ def test_missing_mixed():
 
 	# But if we mark the flipped features as missing then it should still work
 	dt = TreeClassifier('ambiguity_tree')
-	dt.fit(data, data_flt, labels, missing_values) # Continous DT
+	dt.fit(data, data_flt, labels, miss_mask) # Continous DT
 	print(dt)
 	assert nonleaf_w_o_missing < count_non_leaf_nodes(dt)
 	
@@ -329,12 +360,21 @@ def setup_nan():
 	[n,1,1], #2
 	],np.float64);
 
+	miss_mask = np.asarray([
+	[0,0,0], #1
+	[0,0,0], #1
+	[0,0,0], #1
+	[0,0,1], #2
+	[0,1,0], #2
+	[1,0,0], #2
+	],np.bool);
+
 	labels = np.asarray([1,1,1,2,2,2],dtype=np.int64)
 
-	return data1, data2, data3, data4, labels
+	return data1, data2, data3, data4, labels, miss_mask
 
 def test_nan():
-	data1, data2, data3, data4, labels = setup_nan()
+	data1, data2, data3, data4, labels, miss_mask = setup_nan()
 	dt = TreeClassifier('ambiguity_tree')
 	dt.fit(None, data1, labels) 
 	print(dt)
@@ -348,7 +388,7 @@ def test_nan():
 	assert np.sum(dt.predict(None,data1) == labels) == 6
 
 	#If the NaN values are missing we shouldn't be able to make any splits
-	dt.fit(None, data1, labels, np.asarray([[5,0], [4,1],[3,2]],dtype=np.int64)) 
+	dt.fit(None, data1, labels, miss_mask) 
 	assert not tree_is_pure(dt)
 
 	dt.fit(None, data2, labels) 
@@ -363,7 +403,7 @@ def test_nan():
 	assert np.sum(dt.predict(None,data2) == labels) == 6
 
 	#If the NaN values are missing we shouldn't be able to make any splits
-	dt.fit(None, data2, labels, np.asarray([[5,0], [4,1],[3,2]],dtype=np.int64)) 
+	dt.fit(None, data2, labels, miss_mask) 
 	assert not tree_is_pure(dt)
 
 	dt.fit(None, data3, labels)
@@ -529,17 +569,17 @@ def test_b_sklearn_tree_predict(benchmark):
 
 if(__name__ == "__main__"):
 	# test_optimal_split()
-	# test_basics1()
+	test_basics1()
 	# test_basics2()
 	# test_basics3()
 	# test_missing()
-	# test_missing_ordering()
+	
 	# test_mixed()
 	test_missing_mixed()
 	# test_nan()
 	
 
-
+	# test_missing_ordering()
 	# test_as_conditions()
 		
 
