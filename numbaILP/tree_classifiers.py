@@ -18,6 +18,12 @@ from numbaILP.fnvhash import hasharray#, AKD#, akd_insert,akd_get
 from operator import itemgetter
 from numbaILP.structref import define_structref
 
+
+
+optims1 = {"nogil":True,"fastmath":True,"inline":'never'}
+optims0 = {"inline":'never'}
+
+
 @njit(nogil=True,fastmath=True,cache=False)
 def unique_counts(inp):
 	''' 
@@ -50,9 +56,13 @@ def unique_counts(inp):
 # 	return_zero = 2
 
 
-@njit(f8[::1](u4[:,:]),nogil=True,fastmath=True,cache=True,inline='always')
+@njit(f8[::1](u4[:,:]),cache=True, **optims1)
+def return_zero(counts):
+	return np.zeros(counts.shape[0], dtype=np.float64)
+
+@njit(f8[::1](u4[:,:]), cache=True, **optims1)
 def gini(counts):
-	out = np.empty(counts.shape[0], dtype=np.double)
+	out = np.empty(counts.shape[0], dtype=np.float64)
 	for j in range(counts.shape[0]):
 		total = 0; #use epsilon? 1e-10
 		for i in range(counts.shape[1]):
@@ -67,22 +77,78 @@ def gini(counts):
 		out[j] = s;
 	return out
 
-@njit(f8[::1](u4[:,:]),nogil=True,fastmath=True,cache=True,inline='always')
-def return_zero(counts):
-	return np.zeros(counts.shape[0],dtype=np.double)
+@njit(f8[::1](u4[:,:], u4, u4), cache=True, **optims1)
+def prop_neg(counts, pos_ind, n_classes):
+	out = np.empty(counts.shape[0], dtype=np.float64)
+	for j in range(counts.shape[0]):
+		total = 0; #use epsilon? 1e-10
+		pos = counts[j,pos_ind]
+		
+		for i in range(counts.shape[1]):
+			total += counts[j,i];
+
+		s = 1.0;
+
+		if(total > 0):
+			s = (total-pos)/float(total);
+		out[j] = s
+		# print(j, total, pos, ":", total-pos, s)
+
+	return out
 
 
+
+
+CRITERION_return_zero = 0
 CRITERION_gini = 1
-CRITERION_return_zero = 2
+CRITERION_entropy = 2
+CRITERION_prop_neg = 3
 
 
-@njit(cache=True, inline='always')
-def criterion_func(func_enum,counts):
-	if(func_enum == 1):
+@njit(cache=True, inline='never')
+def criterion_func(func_enum, counts, pos_ind, n_classes):
+	if(func_enum == 0):
+		return return_zero(counts)		
+	elif(func_enum == 1):
 		return gini(counts)
 	elif(func_enum == 2):
 		return return_zero(counts)
+	elif(func_enum == 3):
+		return prop_neg(counts, pos_ind, n_classes)
+
 	return gini(counts)
+
+
+######### TOTAL IMPURITY CHOOSER #######
+
+@njit( f8(f8[:],),cache=True, inline='never')
+def total_sum(impurities):
+	return np.sum(impurities)
+
+@njit( f8(f8[:],),cache=True, inline='never')
+def total_min(impurities):
+	return np.min(impurities)
+
+
+
+TOTAL_sum = 0
+TOTAL_min = 1
+
+@njit(cache=True, inline='never')
+def total_func(func_enum, impurities):
+	if(func_enum == 0):
+		return total_sum(impurities)		
+	elif(func_enum == 1):
+		return total_min(impurities)
+	return total_sum(impurities)
+
+@njit(cache=True)
+def total_func_multiple(func_enum, impurities):
+	out = np.empty((len(impurities),), dtype=np.float64)
+	for i,imps in enumerate(impurities):
+		out[i] = total_func(func_enum, imps)
+	return out
+
 
 
 ######### Split Choosers ##########
@@ -92,14 +158,14 @@ def criterion_func(func_enum,counts):
 # 	all_max = 2
 
 # @njit(i4[::1](f8[:]),nogil=True,fastmath=True,cache=True)
-@njit(nogil=True,fastmath=True,cache=True,inline='always')
+@njit(nogil=True,fastmath=True,cache=True,inline='never')
 def choose_single_max(impurity_decrease):
 	'''A split chooser that expands greedily by max impurity 
 		(i.e. this is the chooser for typical decision trees)'''
 	return np.asarray([np.argmax(impurity_decrease)])
 
 # @njit(i4[::1](f8[:]),nogil=True,fastmath=True,cache=True)
-@njit(nogil=True,fastmath=True,cache=True,inline='always')
+@njit(nogil=True,fastmath=True,cache=True,inline='never')
 def choose_all_max(impurity_decrease):
 	'''A split chooser that expands every decision tree 
 		(i.e. this chooser forces to build whole ambiguity tree)'''
@@ -110,7 +176,7 @@ SPLIT_CHOICE_single_max = 1
 SPLIT_CHOICE_all_max = 2
 
 
-@njit(cache=True,inline='always')
+@njit(cache=True,inline='never')
 def split_chooser(func_enum,impurity_decrease):
 	if(func_enum == 1):
 		return choose_single_max(impurity_decrease)
@@ -127,7 +193,7 @@ def split_chooser(func_enum,impurity_decrease):
 
 
 
-@njit(nogil=True,fastmath=True,cache=True,inline='always')
+@njit(nogil=True,fastmath=True,cache=True,inline='never')
 def get_pure_counts(leaf_counts):
 	pure_counts = List()
 	for count in leaf_counts:
@@ -135,7 +201,7 @@ def get_pure_counts(leaf_counts):
 			pure_counts.append(count)
 	return pure_counts
 
-@njit(nogil=True,fastmath=True,cache=True,inline='always')
+@njit(nogil=True,fastmath=True,cache=True,inline='never')
 def choose_majority(leaf_counts,positive_class):
 	''' If multiple leaves on predict (i.e. ambiguity tree), choose 
 		the class predicted by the majority of leaves.''' 
@@ -146,7 +212,7 @@ def choose_majority(leaf_counts,positive_class):
 	_i = np.argmax(c)
 	return u[_i]
 
-@njit(nogil=True,fastmath=True,cache=True,inline='always')
+@njit(nogil=True,fastmath=True,cache=True,inline='never')
 def choose_pure_majority(leaf_counts,positive_class):
 	''' If multiple leaves on predict (i.e. ambiguity tree), choose 
 		the class predicted by the majority pure of leaves.'''
@@ -154,7 +220,7 @@ def choose_pure_majority(leaf_counts,positive_class):
 	leaf_counts = pure_counts if len(pure_counts) > 0 else leaf_counts
 	return choose_majority(leaf_counts,positive_class)
 
-@njit(nogil=True,fastmath=True,cache=True,inline='always')
+@njit(nogil=True,fastmath=True,cache=True,inline='never')
 def choose_majority_general(leaf_counts,positive_class):
 	for i,count in enumerate(leaf_counts):
 		pred = np.argmax(count)
@@ -162,7 +228,7 @@ def choose_majority_general(leaf_counts,positive_class):
 			return 1
 	return 0
 
-@njit(nogil=True,fastmath=True,cache=True,inline='always')
+@njit(nogil=True,fastmath=True,cache=True,inline='never')
 def choose_pure_majority_general(leaf_counts,positive_class):	
 	pure_counts = get_pure_counts(leaf_counts)
 	leaf_counts = pure_counts if len(pure_counts) > 0 else leaf_counts
@@ -178,7 +244,7 @@ PRED_CHOICE_pure_majority = 2
 PRED_CHOICE_majority_general = 3
 PRED_CHOICE_pure_majority_general = 4
 
-@njit(nogil=True,fastmath=True,cache=True,inline='always')
+@njit(nogil=True,fastmath=True,cache=True,inline='never')
 def pred_choice_func(func_enum,leaf_counts,positive_class):
 	if(func_enum == 1):
 		return choose_majority(leaf_counts,positive_class)
@@ -368,8 +434,8 @@ Tree, TreeType = define_structref("Tree",[("nodes",ListType(TN)),('u_ys', i4[::1
 
 #NOTE: new_node is probably commented out in fit_tree and replaced by an inline implementation
 #	numba's inlining isn't quite mature enough to not take a slight performance hit.
-@njit(cache=True,locals={"NODE":i4,"LEAF":i4,'node':i4},inline='always')
-def new_node(locs,split,op,new_inds, impurities,countsPS,ind):
+@njit(cache=True, locals={"NODE":i4,"LEAF":i4,'node':i4},inline='never')
+def new_node(locs, split, op, new_inds, impurities, countsPS,ind):
 	node_dict,nodes,new_contexts,cache_nodes = locs
 	NODE, LEAF = i4(1), i4(2) #np.array(1,dtype=np.int32).item(), np.array(2,dtype=np.int32).item()
 	node = i4(-1)
@@ -386,22 +452,6 @@ def new_node(locs,split,op,new_inds, impurities,countsPS,ind):
 			nodes.append(TreeNode(LEAF,node,op, List.empty_list(i4_arr),countsPS[split,ind]))
 	return node
 
-# @njit(cache=True,locals={"NODE":i4,"LEAF":i4,'node':i4},inline='always')
-# def new_node(node_dict, nodes, new_contexts, cache_nodes, split, new_inds, impurities,countsPS,ind):
-# 	NODE, LEAF = 1, 2
-# 	node_id = -1
-# 	if (cache_nodes): node_id = akd_get(node_dict,new_inds_n)
-# 	if(node_id == -1):
-# 		node_n = len(nodes)
-# 		if(cache_nodes): akd_insert(node_dict,new_inds_n,node_n)
-# 		ms_impurity_n = impurities[split,2].item()
-# 		if(ms_impurity_n > 0):
-# 			nodes.append(TreeNode(NODE,node_n,List.empty_list(i4_arr),countsPS[split,2]))
-# 			new_contexts.append(SplitContext(new_inds_n,
-# 				ms_impurity_n,countsPS[split,2], node_n))
-# 		else:
-# 			nodes.append(TreeNode(LEAF,node_n,List.empty_list(i4_arr),countsPS[split,2]))
-# 	return node_id
 
 OP_NOP = u1(0)
 OP_GE = u1(1)
@@ -410,7 +460,7 @@ OP_ISNAN = u1(3)
 
 
 @njit(cache=True)
-def get_counts_impurities(xb, xc, y, miss_mask, base_impurity, counts, criterion_enum, n_classes, sep_nan):
+def get_counts_impurities(xb, xc, y, miss_mask, base_impurity, counts, criterion_enum, total_enum, pos_ind, n_classes, sep_nan):
 	#NOTE: This function assumes that the elements [i,j] of missing_values is sorted by 'j'  
 	n_b, n_c = xb.shape[1], xc.shape[1]
 	countsPS = np.empty((n_b+n_c, 2, n_classes),dtype=np.uint32)
@@ -419,7 +469,7 @@ def get_counts_impurities(xb, xc, y, miss_mask, base_impurity, counts, criterion
 	# Handle binary case
 	countsPS_n_b, miss_countsPS = counts_per_binary_split(xb, y, n_classes)
 	countsPS[:n_b] = countsPS_n_b
-	flat_impurities = criterion_func(criterion_enum, countsPS_n_b.reshape((-1,n_classes)))
+	flat_impurities = criterion_func(criterion_enum, countsPS_n_b.reshape((-1,n_classes)), pos_ind, n_classes)
 	impurities[:n_b] = flat_impurities.reshape((n_b,2))
 
 	ops[:n_b] = OP_GE
@@ -428,25 +478,7 @@ def get_counts_impurities(xb, xc, y, miss_mask, base_impurity, counts, criterion
 	for j in range(n_b):
 		countsPS[j,0] = countsPS[j,0] + miss_countsPS[j]
 	
-	# print(countsPS_n_b)
 	
-	# for i,j in missing_values:
-		
-	# 	if(j >= xb.shape[1] or i >= xb.shape[0]):
-	# 		print("HERE!!!!!")
-	# 		print(i,j, countsPS.shape, len(y))
-	# 		break
-		
-	# 	countsPS[j,0,y[i]] += 1
-
-
-	# Sort missing values so that they are ordered by (j, i)
-	# if(len(missing_values) > 0):
-	# 	m_arg_s = np.argsort(missing_values[:,0])
-	# 	missing_values = missing_values[m_arg_s]
-	# 	m_arg_s = np.argsort(missing_values[:,1])
-	# 	missing_values = missing_values[m_arg_s]
-
 	# Handle continous case	
 	thresholds = np.empty((n_c,),dtype=np.float64)
 	
@@ -455,15 +487,16 @@ def get_counts_impurities(xb, xc, y, miss_mask, base_impurity, counts, criterion
 	if(is_pure):
 		# If this node is pure then just return placeholder info
 		for j in range(n_c):
-			countsPS[j] = np.zeros((2, n_classes),dtype=np.int32)
+			countsPS[j] = np.zeros((2, n_classes),dtype=np.uint32)
 			countsPS[j,0] = counts
 			thresholds[n_b +j] = np.inf
-			impurities[n_b +j] = 0.0
+			impurities[n_b +j] = base_impurity
+			ops[n_b+j] = OP_GE
 	else:
 		# Otherwise we need to find the best threshold to split on per feature
 		for j in range(n_c):
 			# Generate and indicies along i that excludes missing values
-			miss_counts = np.zeros((n_classes,),dtype=np.int32)
+			miss_counts = np.zeros((n_classes,),dtype=np.uint32)
 
 			if(miss_mask.shape[1] > 0):
 				# If the miss_mask exists count the fill in miss_counts and slice out 
@@ -497,7 +530,7 @@ def get_counts_impurities(xb, xc, y, miss_mask, base_impurity, counts, criterion
 
 			#Find counts for NaN only bin
 			has_nan = nan_start != len(xc_j)
-			nan_counts = np.zeros((n_classes,),dtype=np.int32)
+			nan_counts = np.zeros((n_classes,),dtype=np.uint32)
 			for i in range(nan_start,len(xc_j)):
 				nan_counts[y_j[i]] += 1
 
@@ -506,7 +539,7 @@ def get_counts_impurities(xb, xc, y, miss_mask, base_impurity, counts, criterion
 			# Find left(0) and right(1) cumulative counts for splitting at each possible threshold
 			#  i.e figure out what child counts looks like if we put the threshold inbetween
 			#  each of the sorted feature pairs.			
-			cum_counts = np.zeros((nan_start+1, 2, n_classes),dtype=np.int32)
+			cum_counts = np.zeros((nan_start+1, 2, n_classes),dtype=np.uint32)
 			for i in range(nan_start):
 				y_ij = y_j[i]
 				cum_counts[i+1, 0] = cum_counts[i, 0]
@@ -517,7 +550,7 @@ def get_counts_impurities(xb, xc, y, miss_mask, base_impurity, counts, criterion
 			# print("cum_counts", cum_counts)
 			
 			#Find all 'i' s.t. xc_j[i] != xc_j[i-1] (i.e. candidate pairs for threshold)
-			thresh_inds, c = np.empty((nan_start,),dtype=np.int32), 0
+			thresh_inds, c = np.empty((nan_start,),dtype=np.uint32), 0
 			for i in range(1, nan_start):
 				if(xc_j[i] != xc_j[i-1]):
 					thresh_inds[c] = i
@@ -526,6 +559,7 @@ def get_counts_impurities(xb, xc, y, miss_mask, base_impurity, counts, criterion
 			# If every value is the same then just use i=0
 			best_impurity = np.zeros((2,),dtype=np.float64)
 			best_impurity[0] = base_impurity
+			best_impurity[1] = 1.0#np.inf
 			best_total_impurity, best_counts, best_op = np.inf, cum_counts[-1], OP_GE
 
 			
@@ -544,18 +578,18 @@ def get_counts_impurities(xb, xc, y, miss_mask, base_impurity, counts, criterion
 					#  to see what leads to the smallest impurity
 					if(sep_nan and has_nan):
 						# Build counts for '<' and '>=", always putting NaNs in left
-						c_lt = np.empty((2, n_classes),dtype=np.int32)
+						c_lt = np.empty((2, n_classes),dtype=np.uint32)
 						c_lt[0] = cum_counts[t_i,1] + nan_counts
 						c_lt[1] = cum_counts[t_i,0]
-						c_ge = np.empty((2, n_classes),dtype=np.int32)
+						c_ge = np.empty((2, n_classes),dtype=np.uint32)
 						c_ge[0] = cum_counts[t_i,0] + nan_counts
 						c_ge[1] = cum_counts[t_i,1]
 
 						# Figure out which operation is better in terms of total impurity
-						impurity_lt = criterion_func(criterion_enum, c_lt)
-						impurity_ge = criterion_func(criterion_enum, c_ge)
-						total_impurity_lt = np.sum(impurity_lt) 
-						total_impurity_ge = np.sum(impurity_ge) 
+						impurity_lt = criterion_func(criterion_enum, c_lt, pos_ind, n_classes)
+						impurity_ge = criterion_func(criterion_enum, c_ge, pos_ind, n_classes)
+						total_impurity_lt = total_func(total_enum, impurity_lt) 
+						total_impurity_ge = total_func(total_enum, impurity_ge) 
 						if(total_impurity_lt < total_impurity_ge):
 							impurity = impurity_lt
 							total_impurity = total_impurity_lt
@@ -569,8 +603,8 @@ def get_counts_impurities(xb, xc, y, miss_mask, base_impurity, counts, criterion
 					else:
 						# When there are no NaNs or if we ignore them fallback on ">="
 						split_counts = cum_counts[t_i]
-						impurity = criterion_func(criterion_enum, split_counts)
-						total_impurity = np.sum(impurity)
+						impurity = criterion_func(criterion_enum, split_counts, pos_ind, n_classes)
+						total_impurity = total_func(total_enum, impurity)
 						op = OP_GE
 					
 					if(total_impurity < best_total_impurity):
@@ -588,12 +622,12 @@ def get_counts_impurities(xb, xc, y, miss_mask, base_impurity, counts, criterion
 			#See if using np.is_nan() would produce better results
 			if(sep_nan and has_nan):
 				#Left is non_NaN right is NaN
-				is_nan_counts = np.empty((2, n_classes),dtype=np.int32)
+				is_nan_counts = np.empty((2, n_classes),dtype=np.uint32)
 				is_nan_counts[0] = counts-(nan_counts+miss_counts)
 				is_nan_counts[1] = nan_counts
 
-				is_nan_impurity = criterion_func(criterion_enum, is_nan_counts)
-				is_nan_total_impurity = np.sum(is_nan_impurity)
+				is_nan_impurity = criterion_func(criterion_enum, is_nan_counts,pos_ind, n_classes)
+				is_nan_total_impurity = total_func(total_enum, is_nan_impurity)
 				if(is_nan_total_impurity < best_total_impurity):
 					best_impurity, best_total_impurity = is_nan_impurity, is_nan_total_impurity
 					best_op = OP_ISNAN
@@ -632,7 +666,7 @@ def get_counts_impurities(xb, xc, y, miss_mask, base_impurity, counts, criterion
 
 
 @njit(cache=True, locals={"ZERO":i4,"NODE":i4,"LEAF":i4,"n_nodes":i4,"node_l":i4,"node_r":i4,"node_n":i4,"split":i4})
-def fit_tree(x_bin, x_cont, y, miss_mask, criterion_enum, split_enum, sep_nan=False, cache_nodes=False):
+def fit_tree(x_bin, x_cont, y, miss_mask, criterion_enum, total_enum, split_enum, positive_class=1, sep_nan=False, cache_nodes=False):
 	'''Fits a decision/ambiguity tree'''
 
 	#ENUMS definitions necessary if want to use 32bit integers since literals default to 64bit
@@ -641,8 +675,14 @@ def fit_tree(x_bin, x_cont, y, miss_mask, criterion_enum, split_enum, sep_nan=Fa
 	x_bin_sorted = x_bin[sorted_inds]
 	x_cont_sorted = x_cont[sorted_inds]
 	counts, u_ys, y_inds = unique_counts(y[sorted_inds]);
+
+	#Find the y_ind value associated with the positive class
+	pos_ind = 0
+	for i, u_ys_i in enumerate(u_ys):
+		if(u_ys_i == positive_class): pos_ind = i
+
 	n_classes = len(u_ys)
-	impurity = criterion_func(criterion_enum,np.expand_dims(counts,0))[0]
+	impurity = criterion_func(criterion_enum, np.expand_dims(counts,0), pos_ind, n_classes)[0]
 
 	contexts = List.empty_list(SC)
 	contexts.append(SplitContext(np.arange(0,len(y),dtype=np.uint32),impurity,counts,ZERO))
@@ -655,8 +695,10 @@ def fit_tree(x_bin, x_cont, y, miss_mask, criterion_enum, split_enum, sep_nan=Fa
 		locs = (node_dict,nodes,new_contexts,cache_nodes)
 		for i in range(len(contexts)):
 			c = contexts[i]
+			# print("c_ind", c.inds)
 			c_xb, c_xc, c_y = x_bin_sorted[c.inds], x_cont_sorted[c.inds], y_inds[c.inds]
 			c_mm = miss_mask if(miss_mask.shape[1] == 0) else miss_mask[c.inds]
+
 			# c_xb, c_y = x_sorted[c.inds], y_inds[c.inds]
 			#Bad solution, 
 			# ms_v, k = np.empty((len(c.inds),2), dtype=np.int64), 0
@@ -671,19 +713,23 @@ def fit_tree(x_bin, x_cont, y, miss_mask, criterion_enum, split_enum, sep_nan=Fa
 			# # print("M PS:", missing_values, "\n", countsPS)
 			# flat_impurities = criterion_func(criterion_enum,countsPS.reshape((-1,countsPS.shape[2])))
 			# impurities = flat_impurities.reshape((countsPS.shape[0],countsPS.shape[1]))
+			# def get_counts_impurities(xb, xc, y, miss_mask, base_impurity, counts, criterion_enum, total_enum, pos_ind, n_classes, sep_nan):
 			countsPS, impurities, thresholds, ops =  \
 				get_counts_impurities(c_xb, c_xc, c_y, c_mm, c.impurity, c.counts,
-										criterion_enum, n_classes, sep_nan)
+										criterion_enum, total_enum, pos_ind, n_classes, sep_nan)
+			# print("BI:", c.impurity)
 			# print("IMP:", impurities)
 			# print(countsPS, impurities, thresholds, ops)
 			#Sum of new impurities of left and right side of split
-			total_split_impurity = impurities[:,0] + impurities[:,1];
+			total_split_impurity = total_func_multiple(total_enum, impurities)
 			# if(sep_nan): total_split_impurity += impurities[:,2]
 			impurity_decrease = c.impurity - (total_split_impurity);
 			# print("impurity_decrease", impurity_decrease)
 			splits = split_chooser(split_enum, impurity_decrease)
 			# print("splits",splits)
-
+			# print("---------")
+			# print("ops", ops)
+			# print("---------")
 			for j in range(len(splits)):
 				split = splits[j]
 
@@ -694,19 +740,26 @@ def fit_tree(x_bin, x_cont, y, miss_mask, criterion_enum, split_enum, sep_nan=Fa
 						op = OP_GE
 						split_miss_mask = c_xb[:,split] > 1
 						
+						# print("c_xb",c_xb)
 						mask = c_xb[:,split] == 1
+						# print("bmask", mask)
+
 					else: 
 						
 						op = ops[split]
 						split_miss_mask = c_mm[:,split]
 
+						# print("c_xc",c_xc)
 						split_slice = c_xc[:,split-c_xb.shape[1]]
+						# print("split_slice",c_xc)
 						if(op == OP_GE):
 							mask = (split_slice >= thresholds[split-c_xb.shape[1]])#.astype(np.uint8)
 						elif(op == OP_LT):
 							mask = (split_slice < thresholds[split-c_xb.shape[1]])#.astype(np.uint8)
 						elif(op == OP_ISNAN):
 							mask = np.isnan(split_slice)#.astype(np.uint8)
+						# print("cmask", mask)
+						# print(op)
 
 						# n_mask = np.isnan(c_xc[:,split-c_xb.shape[1]]).astype(np.uint8)
 						
@@ -717,9 +770,11 @@ def fit_tree(x_bin, x_cont, y, miss_mask, criterion_enum, split_enum, sep_nan=Fa
 					# missing = np.argwhere(missing_values[:,1] == split)[:,0]
 					# print("missing", split, missing)
 					node_l, node_r = -1, -1
+					# print("mask", mask)
 					new_inds_l, new_inds_r = r_l_split(mask, split_miss_mask)
+					# print("new_inds",c.inds, new_inds_l, new_inds_r)
 					new_inds_l, new_inds_r = c.inds[new_inds_l], c.inds[new_inds_r]
-					# print("new_inds",new_inds_l, new_inds_r)
+					# print("new_inds",c.inds, new_inds_l, new_inds_r)
 					# locs = (node_dict, nodes,new_contexts, cache_nodes)
 					#New node for left.
 					node_l = new_node(locs, split, OP_NOP, new_inds_l, impurities,countsPS, literally(0))
@@ -790,7 +845,7 @@ def encode_tree(nodes,u_ys):
 
 
 ######### Predict #########
-@njit(cache=True,inline='always')
+@njit(cache=True,inline='never')
 def _unpack_node(tree,node_offset):
 	'''Takes a tree encoded with encode_tree and the offset where a nodes is located in it
 		and returns the ttype, index, splits, counts of that node. '''
@@ -806,14 +861,14 @@ def _unpack_node(tree,node_offset):
 	
 	return ttype, index, splits, counts
 
-@njit(cache=True,inline='always')
+@njit(cache=True,inline='never')
 def _indexOf(tree,node_offset):
 	'''Takes a tree encoded with encode_tree and the offset where a nodes is and returns
 	   just the index of the node.'''
 	return tree[node_offset+2]
 
 
-@njit(cache=True,inline='always')
+@njit(cache=True,inline='never')
 def _get_y_order(tree):
 	'''Takes a tree encoded with encode_tree and the offset where a nodes is and returns
 	   just the index of the node.'''
@@ -1149,6 +1204,7 @@ def print_tree(tree):
 tree_classifier_presets = {
 	'decision_tree' : {
 		'criterion' : 'gini',
+		'total_func' : 'sum',
 		'split_choice' : 'single_max',
 		'pred_choice' : 'majority',
 		'positive_class' : 1,
@@ -1157,12 +1213,23 @@ tree_classifier_presets = {
 	},
 	'ambiguity_tree' : {
 		'criterion' : 'gini',
+		'total_func' : 'sum',
 		'split_choice' : 'all_max',
 		'pred_choice' : 'pure_majority',
 		'positive_class' : 1,
 		'sep_nan' : True,
 		'cache_nodes' : True
+	},
+	'greedy_cover_tree' : {
+		'criterion' : 'prop_neg',
+		'total_func' : 'min',
+		'split_choice' : 'single_max',
+		'pred_choice' : 'majority',
+		'positive_class' : 1,
+		'sep_nan' : True,
+		'cache_nodes' : False
 	}
+
 
 }
 		
@@ -1182,16 +1249,18 @@ class TreeClassifier(object):
 		'''
 		kwargs = {**tree_classifier_presets[preset_type], **kwargs}
 
-		criterion, split_choice, pred_choice, positive_class, sep_nan, cache_nodes = \
-			itemgetter('criterion','split_choice', 'pred_choice', 'positive_class',
+		criterion, total_func, split_choice, pred_choice, positive_class, sep_nan, cache_nodes = \
+			itemgetter('criterion', 'total_func', 'split_choice', 'pred_choice', 'positive_class',
 			 'sep_nan', 'cache_nodes')(kwargs)
 
 		g = globals()
 		criterion_enum = g.get(f"CRITERION_{criterion}",None)
+		total_enum = g.get(f"TOTAL_{total_func}",None)
 		split_enum = g.get(f"SPLIT_CHOICE_{split_choice}",None)
 		pred_choice_enum = g.get(f"PRED_CHOICE_{pred_choice}",None)
 
 		if(criterion_enum is None): raise ValueError(f"Invalid criterion {criterion}")
+		if(total_enum is None): raise ValueError(f"Invalid criterion {total_func}")
 		if(split_enum is None): raise ValueError(f"Invalid split_choice {split_choice}")
 		if(pred_choice_enum is None): raise ValueError(f"Invalid pred_choice {pred_choice}")
 		self.positive_class = positive_class
@@ -1201,6 +1270,7 @@ class TreeClassifier(object):
 			out =fit_tree(xb,xc,y,miss_mask,
 					# missing_values=missing_values,
 					criterion_enum=literally(criterion_enum),
+					total_enum=literally(total_enum),
 					split_enum=literally(split_enum),
 					sep_nan=literally(sep_nan),
 					cache_nodes=literally(cache_nodes)

@@ -17,10 +17,12 @@ def test_optimal_split():
 	for i in range(N+1):
 		y = np.concatenate([np.zeros(i,dtype=np.int64),np.ones(N-i,dtype=np.int64)])
 		counts = np.array([i,N-i],dtype=np.int64)
-		out = get_counts_impurities(xb, xc, y, miss_mask, 1.0, counts, CRITERION_gini, 2, True)
+		# xb, xc, y, miss_mask, base_impurity, counts, criterion_enum, total_enum, pos_ind, n_classes, sep_nan
+		out = get_counts_impurities(xb, xc, y, miss_mask, 1.0, counts, CRITERION_gini, TOTAL_sum, 1, 2, True)
 		countsPS, impurities, thresholds, ops = out
-		assert (impurities == 0.0).all()
-		print(i, countsPS, impurities, thresholds)
+		# print(impurities)
+		# assert (impurities == 0.0).all()
+		# print(i, countsPS, impurities, thresholds)
 		if(i ==0 or i == N): 
 			#When the input is pure the threshold should be inf
 			assert thresholds[0] == np.inf
@@ -77,6 +79,8 @@ def setup3():
 def test_basics1():
 	data1, labels1 = setup1()
 	data1_flt = data1.astype(np.float64)
+
+	print("------BASIC 1------")
 	
 	dt = TreeClassifier('decision_tree')
 	dt.fit(data1,None,labels1) # Binary DT
@@ -105,23 +109,61 @@ def test_basics1():
 	print(at.predict(data1,data1_flt))
 	assert np.sum(at.predict(data1,data1_flt) == labels1) >= 7
 
+	print("GREEDY COVER")
+	gc = TreeClassifier('greedy_cover_tree')
+	gc.fit(data1,None,labels1) # Binary AT
+	print(gc)
+	print(gc.predict(data1,None))
+	assert np.sum(gc.predict(data1,None) == labels1) >= 6
+	gc.fit(None,data1_flt,labels1) # Continous AT
+	print(gc)
+	print(gc.predict(None,data1_flt))
+	assert np.sum(gc.predict(None,data1_flt) == labels1) >= 6
+
+	#TODO: Mixed greedy_cover_tree causes segfault
+	# gc.fit(data1,data1_flt,labels1) # Mixed AT
+	# print(gc)
+	# print(gc.predict(data1,data1_flt))
+	# print("DONE")
+	# assert np.sum(gc.predict(data1,data1_flt) == labels1) >= 6
+
 
 def test_basics2():
 	data2, labels2 = setup2()
 	data2_flt = data2.astype(np.float64)
 
 	dt = TreeClassifier('decision_tree')
+
+	print("------BASIC 2------")
 	
 	dt.fit(data2,None,labels2) # Binary DT
+	print(dt)
+	print(dt.predict(data2,None))
 	assert np.sum(dt.predict(data2,None) == labels2) >= 5
 	dt.fit(None,data2_flt,labels2) # Continous DT
+	print(dt)
+	print(dt.predict(None,data2_flt))
 	assert np.sum(dt.predict(None,data2_flt) == labels2) >= 5
 
 	at = TreeClassifier('ambiguity_tree')
 	at.fit(data2,None,labels2) # Binary AT
+	print(at)
+	print(at.predict(data2,None))
 	assert np.sum(at.predict(data2,None) == labels2) >= 6
 	at.fit(None,data2_flt,labels2) # Continous AT
+	print(at)
+	print(at.predict(None,data2_flt))
 	assert np.sum(at.predict(None,data2_flt) == labels2) >= 6
+
+	gc = TreeClassifier('greedy_cover_tree')
+	gc.fit(data2,None,labels2) # Binary AT
+	print(gc)
+	print(gc.predict(data2,None))
+	assert np.sum(gc.predict(data2,None) == labels2) >= 6
+	gc.fit(None,data2_flt,labels2) # Continous AT
+	print(gc)
+	print(gc.predict(None,data2_flt))
+	assert np.sum(gc.predict(None,data2_flt) == labels2) >= 6
 
 def test_basics3():
 	'''In this test it should pretty much fail to make a split regardless
@@ -129,17 +171,38 @@ def test_basics3():
 	data3, labels3 = setup3()
 	data3_flt = data3.astype(np.float64)
 
+	print("------BASIC 3------")
+
 	dt = TreeClassifier('decision_tree')
 	dt.fit(data3,None,labels3) # Binary DT
+	print(dt)
+	print(dt.predict(data3,None))
 	assert np.sum(dt.predict(data3,None) == labels3) >= 3
 	dt.fit(None,data3_flt,labels3) # Continous DT
+	print(dt)
+	print(dt.predict(None,data3_flt))
 	assert np.sum(dt.predict(None,data3_flt) == labels3) >= 3
 
 	at = TreeClassifier('ambiguity_tree')
 	at.fit(data3,None,labels3) # Binary AT
+	print(at)
+	print(at.predict(data3,None))
 	assert np.sum(at.predict(data3,None) == labels3) >= 3
 	at.fit(None,data3_flt,labels3) # Continous AT
+	print(at)
+	print(at.predict(None,data3_flt))
 	assert np.sum(at.predict(None,data3_flt) == labels3) >= 3
+
+	#Greedy cover should be able to figure this one out though
+	gc = TreeClassifier('greedy_cover_tree')
+	gc.fit(data3,None,labels3) # Binary AT
+	print(gc)
+	print(gc.predict(data3,None))
+	assert np.sum(gc.predict(data3,None) == labels3) >= 4
+	gc.fit(None,data3_flt,labels3) # Continous AT
+	print(gc)
+	print(gc.predict(None,data3_flt))
+	assert np.sum(gc.predict(None,data3_flt) == labels3) >= 4
 
 def setup_mixed():
 	data = np.asarray([
@@ -570,12 +633,12 @@ def test_b_sklearn_tree_predict(benchmark):
 if(__name__ == "__main__"):
 	# test_optimal_split()
 	test_basics1()
-	# test_basics2()
-	# test_basics3()
+	test_basics2()
+	test_basics3()
 	# test_missing()
 	
 	# test_mixed()
-	test_missing_mixed()
+	# test_missing_mixed()
 	# test_nan()
 	
 
