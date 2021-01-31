@@ -96,13 +96,33 @@ def prop_neg(counts, pos_ind, n_classes):
 
 	return out
 
+@njit(f8[::1](u4[:,:], u4, u4), cache=True, **optims1)
+def prop_pos(counts, pos_ind, n_classes):
+	out = np.empty(counts.shape[0], dtype=np.float64)
+	for j in range(counts.shape[0]):
+		total = 0; #use epsilon? 1e-10
+		pos = counts[j,pos_ind]
+		
+		for i in range(counts.shape[1]):
+			total += counts[j,i];
+
+		s = 1.0;
+
+		if(total > 0):
+			s = (pos)/float(total);
+		out[j] = s
+		# print(j, total, pos, ":", total-pos, s)
+
+	return out
 
 
 
-CRITERION_return_zero = 0
+
+CRITERION_none = 0
 CRITERION_gini = 1
 CRITERION_entropy = 2
 CRITERION_prop_neg = 3
+CRITERION_prop_pos = 4
 
 
 @njit(cache=True, inline='never')
@@ -115,6 +135,8 @@ def criterion_func(func_enum, counts, pos_ind, n_classes):
 		return return_zero(counts)
 	elif(func_enum == 3):
 		return prop_neg(counts, pos_ind, n_classes)
+	elif(func_enum == 4):
+		return prop_pos(counts, pos_ind, n_classes)
 
 	return gini(counts)
 
@@ -129,16 +151,20 @@ def total_sum(impurities):
 def total_min(impurities):
 	return np.min(impurities)
 
+@njit( f8(f8[:],),cache=True, inline='never')
+def total_inv_FOIL(impurities):
+	raise NotImplementedError()
 
 
-TOTAL_sum = 0
-TOTAL_min = 1
+TOTAL_none = 0
+TOTAL_sum = 1
+TOTAL_min = 2
 
 @njit(cache=True, inline='never')
 def total_func(func_enum, impurities):
-	if(func_enum == 0):
+	if(func_enum == 1):
 		return total_sum(impurities)		
-	elif(func_enum == 1):
+	elif(func_enum == 2):
 		return total_min(impurities)
 	return total_sum(impurities)
 
@@ -666,7 +692,7 @@ def get_counts_impurities(xb, xc, y, miss_mask, base_impurity, counts, criterion
 
 
 @njit(cache=True, locals={"ZERO":i4,"NODE":i4,"LEAF":i4,"n_nodes":i4,"node_l":i4,"node_r":i4,"node_n":i4,"split":i4})
-def fit_tree(x_bin, x_cont, y, miss_mask, criterion_enum, total_enum, split_enum, positive_class=1, sep_nan=False, cache_nodes=False):
+def fit_tree(x_bin, x_cont, y, miss_mask, criterion_enum, total_enum, split_enum, criterion_enum2=0, total_enum2=0, positive_class=1, sep_nan=False, cache_nodes=False):
 	'''Fits a decision/ambiguity tree'''
 
 	#ENUMS definitions necessary if want to use 32bit integers since literals default to 64bit
@@ -726,6 +752,20 @@ def fit_tree(x_bin, x_cont, y, miss_mask, criterion_enum, total_enum, split_enum
 			impurity_decrease = c.impurity - (total_split_impurity);
 			# print("impurity_decrease", impurity_decrease)
 			splits = split_chooser(split_enum, impurity_decrease)
+
+			print("ENUMS", criterion_enum2, total_enum2)
+			if(criterion_enum2 and total_enum2 and
+				np.max(impurity_decrease) <= 0.0 and c.impurity > 0.0):
+
+				print("OLD SPLIT", splits, np.max(impurity_decrease))
+				sec_c_impurity = criterion_func(criterion_enum2, c.counts.reshape(1,n_classes), pos_ind, n_classes)
+				flat_impurities = criterion_func(criterion_enum2, countsPS.reshape((-1,n_classes)), pos_ind, n_classes)
+				sec_impurities = flat_impurities.reshape((-1,2))
+
+				total_split_impurity = total_func_multiple(total_enum2, sec_impurities)
+				impurity_decrease = sec_c_impurity - (total_split_impurity);
+				splits = split_chooser(split_enum, impurity_decrease)
+				print("NEW SPLIT", splits, np.max(impurity_decrease))
 			# print("splits",splits)
 			# print("---------")
 			# print("ops", ops)
@@ -1208,6 +1248,19 @@ tree_classifier_presets = {
 		'split_choice' : 'single_max',
 		'pred_choice' : 'majority',
 		'positive_class' : 1,
+		"secondary_criterion" : 0,
+		"secondary_total_func" : 0,
+		'sep_nan' : True,
+		'cache_nodes' : False
+	},
+	'decision_tree_w_greedy_backup' : {
+		'criterion' : 'gini',
+		'total_func' : 'sum',
+		'split_choice' : 'single_max',
+		'pred_choice' : 'majority',
+		'positive_class' : 1,
+		"secondary_criterion" : 'prop_neg',
+		"secondary_total_func" : 'min',
 		'sep_nan' : True,
 		'cache_nodes' : False
 	},
@@ -1217,6 +1270,8 @@ tree_classifier_presets = {
 		'split_choice' : 'all_max',
 		'pred_choice' : 'pure_majority',
 		'positive_class' : 1,
+		"secondary_criterion" : 0,
+		"secondary_total_func" : 0,
 		'sep_nan' : True,
 		'cache_nodes' : True
 	},
@@ -1225,6 +1280,8 @@ tree_classifier_presets = {
 		'total_func' : 'min',
 		'split_choice' : 'single_max',
 		'pred_choice' : 'majority',
+		"secondary_criterion" : 0,
+		"secondary_total_func" : 0,
 		'positive_class' : 1,
 		'sep_nan' : True,
 		'cache_nodes' : False
@@ -1240,24 +1297,31 @@ class TreeClassifier(object):
 		TODO: Finish docs
 		kwargs:
 			preset_type: Specifies the values of the other kwargs
-
 			criterion: The name of the criterion function used 'entropy', 'gini', etc.
+			total_func: The function for combining the impurities for two splits, default 'sum'.
 			split_choice: The name of the split choice policy 'all_max', etc.
 			pred_choice: The prediction choice policy 'pure_majority_general' etc.
+			secondary_criterion: The name of the secondary criterion function used only if 
+			  no split can be found with the primary impurity.
+			secondary_total_func: The name of the secondary total_func, defaults to 'sum'
 			positive_class: The integer id for the positive class (used in prediction)
 			sep_nan: If set to True then use a ternary tree that treats nan's seperately 
 		'''
 		kwargs = {**tree_classifier_presets[preset_type], **kwargs}
 
-		criterion, total_func, split_choice, pred_choice, positive_class, sep_nan, cache_nodes = \
-			itemgetter('criterion', 'total_func', 'split_choice', 'pred_choice', 'positive_class',
-			 'sep_nan', 'cache_nodes')(kwargs)
+		criterion, total_func, split_choice, pred_choice, secondary_criterion, \
+		 secondary_total_func, positive_class, sep_nan, cache_nodes = \
+			itemgetter('criterion', 'total_func', 'split_choice', 'pred_choice', 
+				"secondary_criterion", 'secondary_total_func', 'positive_class',
+				'sep_nan', 'cache_nodes')(kwargs)
 
 		g = globals()
 		criterion_enum = g.get(f"CRITERION_{criterion}",None)
 		total_enum = g.get(f"TOTAL_{total_func}",None)
 		split_enum = g.get(f"SPLIT_CHOICE_{split_choice}",None)
 		pred_choice_enum = g.get(f"PRED_CHOICE_{pred_choice}",None)
+		criterion_enum2 = g.get(f"CRITERION_{secondary_criterion}",0)
+		total_enum2 = g.get(f"TOTAL_{secondary_total_func}", TOTAL_sum)
 
 		if(criterion_enum is None): raise ValueError(f"Invalid criterion {criterion}")
 		if(total_enum is None): raise ValueError(f"Invalid criterion {total_func}")
@@ -1272,6 +1336,9 @@ class TreeClassifier(object):
 					criterion_enum=literally(criterion_enum),
 					total_enum=literally(total_enum),
 					split_enum=literally(split_enum),
+					positive_class=positive_class,
+					criterion_enum2=literally(criterion_enum2),
+					total_enum2=literally(total_enum2),
 					sep_nan=literally(sep_nan),
 					cache_nodes=literally(cache_nodes)
 				 )
