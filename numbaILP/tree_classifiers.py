@@ -115,7 +115,9 @@ def prop_pos(counts, pos_ind, n_classes):
 
 	return out
 
-
+@njit(f8[::1](u4[:,:]), cache=True, **optims1)
+def weighted_gini(counts):
+	return np.sum(counts, axis=1)*gini(counts)
 
 
 CRITERION_none = 0
@@ -123,6 +125,7 @@ CRITERION_gini = 1
 CRITERION_entropy = 2
 CRITERION_prop_neg = 3
 CRITERION_prop_pos = 4
+CRITERION_weighted_gini = 5
 
 
 @njit(cache=True, inline='never')
@@ -137,6 +140,8 @@ def criterion_func(func_enum, counts, pos_ind, n_classes):
 		return prop_neg(counts, pos_ind, n_classes)
 	elif(func_enum == 4):
 		return prop_pos(counts, pos_ind, n_classes)
+	elif(func_enum == 5):
+		return weighted_gini(counts)
 
 	return gini(counts)
 
@@ -152,6 +157,10 @@ def total_min(impurities):
 	return np.min(impurities)
 
 @njit( f8(f8[:],),cache=True, inline='never')
+def total_average(impurities):
+	return np.sum(impurities) * .5
+
+@njit( f8(f8[:],),cache=True, inline='never')
 def total_inv_FOIL(impurities):
 	raise NotImplementedError()
 
@@ -159,6 +168,7 @@ def total_inv_FOIL(impurities):
 TOTAL_none = 0
 TOTAL_sum = 1
 TOTAL_min = 2
+TOTAL_average = 3
 
 @njit(cache=True, inline='never')
 def total_func(func_enum, impurities):
@@ -166,6 +176,8 @@ def total_func(func_enum, impurities):
 		return total_sum(impurities)		
 	elif(func_enum == 2):
 		return total_min(impurities)
+	elif(func_enum == 3):
+		return total_average(impurities)
 	return total_sum(impurities)
 
 @njit(cache=True)
@@ -753,7 +765,7 @@ def fit_tree(x_bin, x_cont, y, miss_mask, criterion_enum, total_enum, split_enum
 			# print("impurity_decrease", impurity_decrease)
 			splits = split_chooser(split_enum, impurity_decrease)
 
-			print("ENUMS", criterion_enum2, total_enum2)
+			# print("ENUMS", criterion_enum2, total_enum2)
 			if(criterion_enum2 and total_enum2 and
 				np.max(impurity_decrease) <= 0.0 and c.impurity > 0.0):
 
@@ -1253,9 +1265,20 @@ tree_classifier_presets = {
 		'sep_nan' : True,
 		'cache_nodes' : False
 	},
+	'decision_tree_weighted_gini' : {
+		'criterion' : 'weighted_gini',
+		'total_func' : 'sum',#sum', 
+		'split_choice' : 'single_max',
+		'pred_choice' : 'majority',
+		'positive_class' : 1,
+		"secondary_criterion" : 0,
+		"secondary_total_func" : 0,
+		'sep_nan' : True,
+		'cache_nodes' : False
+	},
 	'decision_tree_w_greedy_backup' : {
 		'criterion' : 'gini',
-		'total_func' : 'sum',
+		'total_func' : 'sum',#sum', 
 		'split_choice' : 'single_max',
 		'pred_choice' : 'majority',
 		'positive_class' : 1,
