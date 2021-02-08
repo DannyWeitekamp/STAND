@@ -704,7 +704,7 @@ def get_counts_impurities(xb, xc, y, miss_mask, base_impurity, counts, criterion
 
 
 @njit(cache=True, locals={"ZERO":i4,"NODE":i4,"LEAF":i4,"n_nodes":i4,"node_l":i4,"node_r":i4,"node_n":i4,"split":i4})
-def fit_tree(x_bin, x_cont, y, miss_mask, criterion_enum, total_enum, split_enum, criterion_enum2=0, total_enum2=0, positive_class=1, sep_nan=False, cache_nodes=False):
+def fit_tree(x_bin, x_cont, y, miss_mask, ft_weights, criterion_enum, total_enum, split_enum, criterion_enum2=0, total_enum2=0, positive_class=1, sep_nan=False, cache_nodes=False):
 	'''Fits a decision/ambiguity tree'''
 
 	#ENUMS definitions necessary if want to use 32bit integers since literals default to 64bit
@@ -762,6 +762,9 @@ def fit_tree(x_bin, x_cont, y, miss_mask, criterion_enum, total_enum, split_enum
 			total_split_impurity = total_func_multiple(total_enum, impurities)
 			# if(sep_nan): total_split_impurity += impurities[:,2]
 			impurity_decrease = c.impurity - (total_split_impurity);
+			# print("impurity_decrease", impurity_decrease)
+			# print("ft_weights", ft_weights)
+			if(len(ft_weights) > 0): impurity_decrease = impurity_decrease * ft_weights
 			# print("impurity_decrease", impurity_decrease)
 			splits = split_chooser(split_enum, impurity_decrease)
 
@@ -1353,8 +1356,9 @@ class TreeClassifier(object):
 		self.positive_class = positive_class
 
 		@njit(cache=True)
-		def _fit(xb,xc,y,miss_mask):	
+		def _fit(xb,xc,y,miss_mask,ft_weights):	
 			out =fit_tree(xb,xc,y,miss_mask,
+					ft_weights=ft_weights,
 					# missing_values=missing_values,
 					criterion_enum=literally(criterion_enum),
 					total_enum=literally(total_enum),
@@ -1379,16 +1383,18 @@ class TreeClassifier(object):
 		self._predict = _predict
 		self.tree = None
 		
-	def fit(self,xb,xc,y,miss_mask=None):
+	def fit(self,xb,xc,y,miss_mask=None, ft_weights=None):
 		if(xb is None): xb = np.empty((0,0), dtype=np.uint8)
 		if(xc is None): xc = np.empty((0,0), dtype=np.float64)
 		if(miss_mask is None): miss_mask = np.zeros_like(xc, dtype=np.bool)
+		if(ft_weights is None): ft_weights = np.empty(xb.shape[1]+xc.shape[1], dtype=np.float64)
 		xb = xb.astype(np.uint8)
 		xc = xc.astype(np.float64)
 		y = y.astype(np.int64)
 		miss_mask = miss_mask.astype(np.bool)
+		ft_weights = ft_weights.astype(np.float64)
 		# assert miss_mask.shape == xc.shape
-		self.tree = self._fit(xb, xc, y, miss_mask)
+		self.tree = self._fit(xb, xc, y, miss_mask, ft_weights)
 
 	def predict(self,xb,xc,positive_class=None):
 		if(self.tree is None): raise RuntimeError("TreeClassifier must be fit before predict() is called.")
