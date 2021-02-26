@@ -359,7 +359,7 @@ def build_root_context(X,Y):
 
 
 @njit(cache=True)
-def foo(X, Y):
+def fit_tree(X, Y,iterative=False):
     c = build_root_context(X,Y)
     stack = List.empty_list(SplitterContextType)
     stack.append(c)
@@ -444,8 +444,8 @@ def build_XY(N=1000,M=100):
 # X, Y = build_XY(10,10)
 X, Y = build_XY()
 # @njit(cache=True)
-def test_foo():
-    foo(X, Y)
+def test_fit_tree():
+    fit_tree(X, Y)
     
 
 def test_sklearn():
@@ -453,8 +453,8 @@ def test_sklearn():
     clf.fit(X,Y)
 
 
-# test_foo()
-print(time_ms(test_foo))
+# test_fit_tree()
+print(time_ms(test_fit_tree))
 print(time_ms(test_sklearn))
 
 
