@@ -447,7 +447,7 @@ treenode_fields = [
 	('counts', u4[::1])
 ]
 
-TreeNode, TN = define_structref("TreeNode",treenode_fields)			
+TreeNode, TN = define_structref("TreeNode",treenode_fields)	
 
 '''
 SplitContext: An object holding relevant local variables of the tree after a split.
@@ -699,6 +699,35 @@ def get_counts_impurities(xb, xc, y, miss_mask, base_impurity, counts, criterion
 #  -So it's
 
 
+@njit(cache=True)
+def inf_gain(x_bin, x_cont, y, miss_mask, ft_weights, criterion_enum, total_enum, positive_class=1):
+	sorted_inds = np.argsort(y)
+	x_bin_sorted = x_bin[sorted_inds]
+	x_cont_sorted = x_cont[sorted_inds]
+	counts, u_ys, y_inds = unique_counts(y[sorted_inds]);
+
+	#Find the y_ind value associated with the positive class
+	pos_ind = 0
+	for i, u_ys_i in enumerate(u_ys):
+		if(u_ys_i == positive_class): pos_ind = i
+
+	n_classes = len(u_ys)
+	impurity = criterion_func(criterion_enum, np.expand_dims(counts,0), pos_ind, n_classes)[0]
+
+	c_xb, c_xc, c_y = x_bin_sorted, x_cont_sorted, y_inds
+	c_mm = miss_mask 
+
+	countsPS, impurities, thresholds, ops =  \
+	get_counts_impurities(c_xb, c_xc, c_y, c_mm, impurity, counts,
+							criterion_enum, total_enum, pos_ind, n_classes, True)
+	# print("BI:", c.impurity)
+	# print("IMP:", impurities)
+	# print(countsPS, impurities, thresholds, ops)
+	#Sum of new impurities of left and right side of split
+	total_split_impurity = total_func_multiple(total_enum, impurities)
+	# if(sep_nan): total_split_impurity += impurities[:,2]
+	impurity_decrease = impurity - (total_split_impurity);
+	return np.where(impurity_decrease > 0, impurity_decrease, 0.0)
 
 
 
@@ -1291,7 +1320,7 @@ tree_classifier_presets = {
 		'cache_nodes' : False
 	},
 	'ambiguity_tree' : {
-		'criterion' : 'gini',
+		'criterion' : 'weighted_gini',
 		'total_func' : 'sum',
 		'split_choice' : 'all_max',
 		'pred_choice' : 'pure_majority',
@@ -1373,6 +1402,18 @@ class TreeClassifier(object):
 		self._fit = _fit
 
 		@njit(cache=True)
+		def _inf_gain(xb,xc,y,miss_mask,ft_weights):	
+			out =inf_gain(xb,xc,y,miss_mask,
+					ft_weights=ft_weights,
+					# missing_values=missing_values,
+					criterion_enum=literally(criterion_enum),
+					total_enum=literally(total_enum),
+					positive_class=positive_class,
+				 )
+			return out
+		self._inf_gain = _inf_gain
+
+		@njit(cache=True)
 		def _predict(tree, xb, xc, positive_class):	
 			out =predict_tree(tree,xb,xc,
 					pred_choice_enum=literally(pred_choice_enum),
@@ -1395,6 +1436,20 @@ class TreeClassifier(object):
 		ft_weights = ft_weights.astype(np.float64)
 		# assert miss_mask.shape == xc.shape
 		self.tree = self._fit(xb, xc, y, miss_mask, ft_weights)
+
+	def inf_gain(self,xb,xc,y,miss_mask=None, ft_weights=None):
+		if(xb is None): xb = np.empty((0,0), dtype=np.uint8)
+		if(xc is None): xc = np.empty((0,0), dtype=np.float64)
+		if(miss_mask is None): miss_mask = np.zeros_like(xc, dtype=np.bool)
+		if(ft_weights is None): ft_weights = np.empty(xb.shape[1]+xc.shape[1], dtype=np.float64)
+		xb = xb.astype(np.uint8)
+		xc = xc.astype(np.float64)
+		y = y.astype(np.int64)
+		miss_mask = miss_mask.astype(np.bool)
+		ft_weights = ft_weights.astype(np.float64)
+		# assert miss_mask.shape == xc.shape
+		return self._inf_gain(xb, xc, y, miss_mask, ft_weights)
+
 
 	def predict(self,xb,xc,positive_class=None):
 		if(self.tree is None): raise RuntimeError("TreeClassifier must be fit before predict() is called.")
