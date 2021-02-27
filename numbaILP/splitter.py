@@ -1,5 +1,5 @@
 from numbaILP.structref import define_structref
-from numbaILP.utils import _struct_from_pointer, _pointer_from_struct, _pointer_from_struct_incref, _decref_pointer
+from numbaILP.utils import _struct_from_pointer, _pointer_from_struct, _pointer_from_struct_incref, _decref_pointer, _decref_structref
 from numba.experimental.structref import new
 import numpy as np
 import numba
@@ -28,7 +28,7 @@ def time_ms(f):
     f() #warm start
     return " %0.6f ms" % (1000.0*(timeit.timeit(f, number=N)/float(N)))
 
-@njit(f8(u4,u4[:]), cache=True)
+@njit(f8(u4,u4[:]), cache=True)#,inline='always')
 def gini(total,counts):
     if(total > 0):
         s = 0.0
@@ -124,6 +124,7 @@ OP_NOP = u1(0)
 OP_GE = u1(1)
 OP_LT = u1(2) 
 OP_ISNAN = u1(3)
+OP_EQ = u1(4)
 
 i4_arr = i4[:]
 
@@ -160,6 +161,7 @@ splitter_context_fields = [
 
     #A pointer to the parent split context
     ('parent_ptr', i8),
+    ('node', TN),
 
     
 
@@ -257,10 +259,11 @@ def DataStats_ctor(X, Y):
 
 
 @njit(cache=True)
-def SplitterContext_ctor(parent_ptr, sample_inds, y_counts, impurity):
+def SplitterContext_ctor(parent_ptr, node, sample_inds, y_counts, impurity):
     st = new(SplitterContextType)
     # st.counts_cached = False
     st.parent_ptr = parent_ptr
+    st.node = node
     st.sample_inds = sample_inds
     # st.start = start
     # st.end = end
@@ -415,25 +418,16 @@ def build_root(X,Y):
     ds = DataStats_ctor(X,Y)
 
     impurity = gini(len(Y),ds.y_counts)
-
     
-    
-
-    c = SplitterContext_ctor(0, sample_inds , ds.y_counts, impurity)
-    # c.X = X
-    # c.Y = Y
-    # c.n_vals = (np.ones((X.shape[1],))*5).astype(np.int32)
-    # c.sample_inds = sample_inds
-    # c.n_classes = n_classes
-    # c.n_features = X.shape[1]
-    # c.feature_inds = np.arange(X.shape[1])
-
-    context_stack = List.empty_list(SplitterContextType)
-    context_stack.append(c)
 
     node_dict = Dict.empty(u4,BE_List)
     nodes = List.empty_list(TN)
-    nodes.append(TreeNode_ctor(TTYPE_NODE,i4(0),ds.y_counts))
+    node = TreeNode_ctor(TTYPE_NODE,i4(0),ds.y_counts)
+    nodes.append(node)
+
+    c = SplitterContext_ctor(0, node, sample_inds , ds.y_counts, impurity)
+    context_stack = List.empty_list(SplitterContextType)
+    context_stack.append(c)
 
 
 
@@ -487,23 +481,49 @@ def new_node(locs, c_ptr, sample_inds,y_counts,impurity):
     node_dict, nodes, context_stack, cache_nodes = locs
         # node_dict,nodes,new_contexts,cache_nodes = locs
         # NODE, LEAF = i4(1), i4(2) #np.array(1,dtype=np.int32).item(), np.array(2,dtype=np.int32).item()
-    node = i4(-1)
-    if (cache_nodes): node= akd_get(node_dict,sample_inds)
-    if(node == -1):
-        node = i4(len(nodes))
-        if(cache_nodes): akd_insert(node_dict,sample_inds,node)
+    node_id = i4(-1)
+    if (cache_nodes): node_id= akd_get(node_dict,sample_inds)
+    if(node_id == -1):
+        node_id = i4(len(nodes))
+        if(cache_nodes): akd_insert(node_dict,sample_inds,node_id)
         if(impurity > 0.0):
-            nodes.append(TreeNode_ctor(TTYPE_NODE,node,y_counts))
-            new_c = SplitterContext_ctor(c_ptr, sample_inds, y_counts, impurity)
+            node = TreeNode_ctor(TTYPE_NODE,node_id,y_counts)
+            nodes.append(node)
+            new_c = SplitterContext_ctor(c_ptr, node, sample_inds, y_counts, impurity)
             context_stack.append(new_c)
             # new_contexts.append(SplitContext(new_inds,
             #     impurity,countsPS[split,ind], node))
         else:
-            nodes.append(TreeNode_ctor(TTYPE_LEAF,node,y_counts))
-    return node
+            nodes.append(TreeNode_ctor(TTYPE_LEAF,node_id,y_counts))
+    return node_id
 
 
 Tree, TreeType = define_structref("Tree",[("nodes",ListType(TN)),('u_ys', i4[::1])])
+
+@njit(cache=True)
+def extract_nominal_split_info(data_stats, c, split):
+    bst_imps = c.impurities[split]
+    imp_tot, imp_l, imp_r = bst_imps[0], bst_imps[1], bst_imps[2]
+
+    splt_c = _struct_from_pointer(NominalSplitCacheType, c.nominal_split_cache_ptrs[split])
+    best_v = splt_c.best_v
+    y_counts_r = splt_c.y_counts_per_v[splt_c.best_v]
+    y_counts_l = c.y_counts - y_counts_r
+
+
+    inds_l = np.empty(np.sum(y_counts_l), dtype=np.uint32)
+    inds_r = np.empty(np.sum(y_counts_r), dtype=np.uint32)
+    p_l, p_r = 0, 0
+    for ind in c.sample_inds:
+        if (data_stats.X[ind, split]==splt_c.best_v):
+            inds_r[p_r] = ind
+            p_r += 1
+        else:
+            inds_l[p_l] = ind
+            p_l += 1
+
+    return inds_l, inds_r, y_counts_l, y_counts_r, imp_tot, imp_l, imp_r, best_v
+            
 
 
 
@@ -522,53 +542,27 @@ def fit_tree(X, Y,iterative=False):
         update_nominal_impurities(data_stats,c)
         # print(c.impurities[:,0],c.start,c.end)
         best_split = np.argmin(c.impurities[:,0])
-        bst_imps = c.impurities[best_split]
-        imp_tot, imp_l, imp_r = bst_imps[0], bst_imps[1], bst_imps[2]
-
-
-
-        splt_c = _struct_from_pointer(NominalSplitCacheType, c.nominal_split_cache_ptrs[best_split])
-        y_counts_r = splt_c.y_counts_per_v[splt_c.best_v]
-        y_counts_l = c.y_counts - y_counts_r
-        
-        # print(imp_l, imp_r)
-        # print(c.y_counts)
-        # print(c.y_counts, "->",y_counts_l,y_counts_r, n_l, n_r)
-        # print(c.sample_inds)
-
-        n_l = np.sum(y_counts_l)
-        n_r = np.sum(y_counts_r)
-        inds_l = np.empty(n_l, dtype=np.uint32)
-        inds_r = np.empty(n_r, dtype=np.uint32)
-        p_l, p_r = 0, 0
-
-        for ind in c.sample_inds:
-            if (data_stats.X[ind, best_split]==splt_c.best_v):
-                inds_r[p_r] = ind
-                p_r += 1
-            else:
-                inds_l[p_l] = ind
-                p_l += 1
-                
-
+        for split in [best_split]:
         
 
-        ptr = _pointer_from_struct_incref(c)
-        if(c.impurity - imp_tot > 0):
-            locs = (node_dict, nodes, context_stack, cache_nodes)
-            node_l = new_node(locs, ptr, inds_l, y_counts_l, imp_l)
-            node_r = new_node(locs, ptr, inds_r, y_counts_r, imp_r)
-            # if(imp_l > 0):
-            #     c_l = SplitterContext_ctor(ptr, inds_l, y_counts_l, imp_l)
-            #     context_stack.append(c_l)
-            # if(imp_r > 0):
-            #     c_r = SplitterContext_ctor(ptr, inds_r, y_counts_r, imp_r)
-            #     context_stack.append(c_r)
-        SplitterContext_dtor(c)
-        _decref_pointer(ptr)
+            inds_l, inds_r, y_counts_l, y_counts_r, imp_tot, imp_l, imp_r, val = \
+                extract_nominal_split_info(data_stats, c, split)
+            
+
+            if(c.impurity - imp_tot > 0):
+                ptr = _pointer_from_struct(c)
+                locs = (node_dict, nodes, context_stack, cache_nodes)
+                node_l = new_node(locs, ptr, inds_l, y_counts_l, imp_l)
+                node_r = new_node(locs, ptr, inds_r, y_counts_r, imp_r)
+
+                split_data = np.array([split, val, node_l, node_r, -1],dtype=np.int32)
+                c.node.split_data.append(split_data)
+                c.node.op_enum = OP_EQ
+            SplitterContext_dtor(c)
+        
         # _decref_pointer(ptr)
         
-    print("DONE")
+    # print("DONE")
     return Tree(nodes,data_stats.u_ys)
 
             
@@ -577,7 +571,7 @@ def fit_tree(X, Y,iterative=False):
 
     
 @njit(cache=True)
-def build_XY(N=1000,M=100):
+def build_XY(N=10,M=10):
     p0 = np.array([1,1,1,0,0],dtype=np.int32)
     p1 = np.array([0,1,1,1,0],dtype=np.int32)
     p2 = np.array([0,0,1,1,1],dtype=np.int32)
@@ -625,7 +619,17 @@ print(time_ms(test_sklearn))
 
 
 
-
+def str_op(op_enum):
+    if(op_enum == OP_EQ):
+        return "=="
+    if(op_enum == OP_LT):
+        return "<"
+    elif(op_enum == OP_GE):
+        return ">="
+    elif(op_enum == OP_ISNAN):
+        return "isNaN"
+    else:
+        return ""
 
 
 
@@ -646,7 +650,7 @@ def str_tree(tree):
                 if(split[1] == 1): #<-A threshold of 1 means it's binary
                     s += "(%s)[L:%s R:%s" % (split[0],split[2],split[3])
                 else:
-                    thresh = np.int32(split[1]).view(np.float32)
+                    thresh = np.int32(split[1]).view(np.float32) if op != OP_EQ else np.int32(split[1])
                     instr = str_op(op)+str(thresh) if op != OP_ISNAN else str_op(op)
                     s += "(%s,%s)[L:%s R:%s" % (split[0],instr,split[2],split[3])
                 s += "] " if(split[4] == -1) else ("NaN:" + str(split[4]) + "] ")
