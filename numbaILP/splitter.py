@@ -109,11 +109,20 @@ def expand_nominal_split_cache(st, n_vals,n_classes):
     return st
 
 
+split_data_fields = [
+    ('is_continous', u1),
+    ('split_ind', i4),
+    ('val', i4),
+    ('left', i4),
+    ('right', i4)
+]
+SplitData, SplitDataType = define_structref("SplitData", split_data_fields)
+
 treenode_fields = [
     ('ttype',u1),
     ('index',i4),
     ('op_enum', u1),
-    ('split_data',ListType(i4[:])),
+    ('split_data',ListType(SplitDataType)),
     ('counts', u4[:])
 ]
 
@@ -126,7 +135,7 @@ OP_LT = u1(2)
 OP_ISNAN = u1(3)
 OP_EQ = u1(4)
 
-i4_arr = i4[:]
+# i4_arr = i4[:]
 
 @njit(cache=True)
 def TreeNode_ctor(ttype, index, counts):
@@ -134,7 +143,7 @@ def TreeNode_ctor(ttype, index, counts):
     st.ttype = ttype
     st.index = index
     st.op_enum = OP_NOP
-    st.split_data = List.empty_list(i4_arr)
+    st.split_data = List.empty_list(SplitDataType)
     st.counts = counts
     return st
 
@@ -240,19 +249,34 @@ data_stats_fields = [
 ]
 
 DataStats, DataStatsType = define_structref("DataStats",data_stats_fields, define_constructor=False) 
+
 @njit(cache=True)
 def DataStats_ctor(X, Y):
     st = new(DataStatsType)
-    st.X = X
-    st.Y = Y
-    
+
     y_counts,u, inds = unique_counts(Y)
+    st.X = X
+    st.Y = inds
+    
+    
+
+    # for x in X:
+    #     x_sorted = np.sort(x)
+    #     y_counts,u, inds = unique_counts(Y)
+
+
+    n_vals = np.empty(X.shape[1],dtype=np.int32)
+
+    for j in range(X.shape[1]):
+        n_vals[j] = np.max(X[:,j])+1
+
+
 
     st.n_classes = len(u)
     st.u_ys = u
     st.y_counts = y_counts
 
-    st.n_vals = (np.ones((X.shape[1],))*5).astype(np.int32)
+    st.n_vals = n_vals#(np.ones((X.shape[1],))*5).astype(np.int32)
     st.n_samples = X.shape[0]
     st.n_features = X.shape[1]
     return st
@@ -333,7 +357,7 @@ def update_nominal_impurities(data_stats, splitter_context):
 
     # n_non_const = len(feature_inds)#-n_const_fts
     # print(len(feature_inds), n_const_fts, n_non_const)
-
+    # print("ZA")
     impurities = np.empty((X.shape[1],3),dtype=np.float64)
     # b_split, b_split_imp_total = 0, np.inf
     #Go through the samples in Fortran order (i.e. feature then sample)
@@ -355,7 +379,7 @@ def update_nominal_impurities(data_stats, splitter_context):
 
         # print(cache_ptr,sc.nominal_split_cache_ptrs[j])
 
-
+        # print("ZB")
         v_counts       = split_cache.v_counts
         y_counts_per_v = split_cache.y_counts_per_v
 
@@ -366,6 +390,7 @@ def update_nominal_impurities(data_stats, splitter_context):
 
         #Update the feature counts for labels and values
         # for k_i in range(start, end):
+        # print(Y,sample_inds)
         for i in sample_inds:
             # i = sample_inds[k_i]
             y_i = Y[i]
@@ -376,6 +401,7 @@ def update_nominal_impurities(data_stats, splitter_context):
 
         #If this feature is found to be constant then skip computing impurity
         if(np.sum(v_counts > 0) <= 1):
+            split_cache.best_v = 0
             impurities[k_j,0] = impurity
             impurities[k_j,1] = impurity
             impurities[k_j,2] = impurity
@@ -401,7 +427,7 @@ def update_nominal_impurities(data_stats, splitter_context):
 
     sc.impurities = impurities
     # print(impurities)
-    
+    # print("ZC")
     # print(best_ind)
 
 
@@ -504,12 +530,15 @@ Tree, TreeType = define_structref("Tree",[("nodes",ListType(TN)),('u_ys', i4[::1
 def extract_nominal_split_info(data_stats, c, split):
     bst_imps = c.impurities[split]
     imp_tot, imp_l, imp_r = bst_imps[0], bst_imps[1], bst_imps[2]
-
+    # print("Q")
     splt_c = _struct_from_pointer(NominalSplitCacheType, c.nominal_split_cache_ptrs[split])
     best_v = splt_c.best_v
+    # print(splt_c.y_counts_per_v)
+    # print(splt_c.best_v)
     y_counts_r = splt_c.y_counts_per_v[splt_c.best_v]
     y_counts_l = c.y_counts - y_counts_r
-
+    # print("P")
+    # print(c.y_counts,y_counts_l, y_counts_r)
 
     inds_l = np.empty(np.sum(y_counts_l), dtype=np.uint32)
     inds_r = np.empty(np.sum(y_counts_r), dtype=np.uint32)
@@ -522,6 +551,10 @@ def extract_nominal_split_info(data_stats, c, split):
             inds_l[p_l] = ind
             p_l += 1
 
+    # print(inds_l, inds_r)
+    # print("P")
+    # print(inds_l, inds_r)
+
     return inds_l, inds_r, y_counts_l, y_counts_r, imp_tot, imp_l, imp_r, best_v
             
 
@@ -529,11 +562,14 @@ def extract_nominal_split_info(data_stats, c, split):
 
 @njit(cache=True, locals={'y_counts_l' : u4[:], 'y_counts_r' : u4[:]})
 def fit_tree(X, Y,iterative=False):
+    '''
+        X : ndarray of i4, needs to start at 0 and 
+    '''
     cache_nodes = False
     # print("Z")
     data_stats, context_stack, node_dict, nodes = build_root(X,Y)
     
-
+    # print("A")
     
 
     while(len(context_stack) > 0):
@@ -543,22 +579,34 @@ def fit_tree(X, Y,iterative=False):
         # print(c.impurities[:,0],c.start,c.end)
         best_split = np.argmin(c.impurities[:,0])
         for split in [best_split]:
-        
+            # print("S", split)
 
             inds_l, inds_r, y_counts_l, y_counts_r, imp_tot, imp_l, imp_r, val = \
                 extract_nominal_split_info(data_stats, c, split)
+
+            # print("S1", split)
+
+            # if(impurity_decrease[split] <= 0.0):
             
 
-            if(c.impurity - imp_tot > 0):
+            if(c.impurity - imp_tot <= 0):
+                c.node.ttype = TTYPE_LEAF
+
+            else:
+                # print("S2", split)
                 ptr = _pointer_from_struct(c)
                 locs = (node_dict, nodes, context_stack, cache_nodes)
                 node_l = new_node(locs, ptr, inds_l, y_counts_l, imp_l)
                 node_r = new_node(locs, ptr, inds_r, y_counts_r, imp_r)
 
-                split_data = np.array([split, val, node_l, node_r, -1],dtype=np.int32)
+                split_data = SplitData(u1(False),i4(split), i4(val), i4(node_l), i4(node_r))
+                #np.array([split, val, node_l, node_r, -1],dtype=np.int32)
                 c.node.split_data.append(split_data)
                 c.node.op_enum = OP_EQ
+
+            # print("B")
             SplitterContext_dtor(c)
+            # print("C")
         
         # _decref_pointer(ptr)
         
@@ -567,11 +615,200 @@ def fit_tree(X, Y,iterative=False):
 
             
 
+######### Prediction Choice Functions #########
+# class PRED_CHOICE(IntEnum):
+#   majority = 1
+#   pure_majority = 2
+#   majority_general = 3
+#   pure_majority_general = 4
 
+
+
+@njit(nogil=True,fastmath=True,cache=True,inline='never')
+def get_pure_counts(leaf_counts):
+    pure_counts = List()
+    for count in leaf_counts:
+        if(np.count_nonzero(count) == 1):
+            pure_counts.append(count)
+    return pure_counts
+
+@njit(nogil=True,fastmath=True,cache=True,inline='never')
+def choose_majority(leaf_counts,positive_class):
+    ''' If multiple leaves on predict (i.e. ambiguity tree), choose 
+        the class predicted by the majority of leaves.''' 
+    predictions = np.empty((len(leaf_counts),),dtype=np.int32)
+    for i,count in enumerate(leaf_counts):
+        predictions[i] = np.argmax(count)
+    c,u, inds = unique_counts(predictions)
+    _i = np.argmax(c)
+    return u[_i]
+
+@njit(nogil=True,fastmath=True,cache=True,inline='never')
+def choose_pure_majority(leaf_counts,positive_class):
+    ''' If multiple leaves on predict (i.e. ambiguity tree), choose 
+        the class predicted by the majority pure of leaves.'''
+    pure_counts = get_pure_counts(leaf_counts)
+    leaf_counts = pure_counts if len(pure_counts) > 0 else leaf_counts
+    return choose_majority(leaf_counts,positive_class)
+
+@njit(nogil=True,fastmath=True,cache=True,inline='never')
+def choose_majority_general(leaf_counts,positive_class):
+    for i,count in enumerate(leaf_counts):
+        pred = np.argmax(count)
+        if(pred == positive_class):
+            return 1
+    return 0
+
+@njit(nogil=True,fastmath=True,cache=True,inline='never')
+def choose_pure_majority_general(leaf_counts,positive_class):   
+    pure_counts = get_pure_counts(leaf_counts)
+    leaf_counts = pure_counts if len(pure_counts) > 0 else leaf_counts
+    for i,count in enumerate(leaf_counts):
+        pred = np.argmax(count)
+        if(pred == positive_class):
+            return 1
+    return 0
+
+
+PRED_CHOICE_majority = 1
+PRED_CHOICE_pure_majority = 2
+PRED_CHOICE_majority_general = 3
+PRED_CHOICE_pure_majority_general = 4
+
+@njit(nogil=True,fastmath=True,cache=True,inline='never')
+def pred_choice_func(func_enum,leaf_counts,positive_class):
+    if(func_enum == 1):
+        return choose_majority(leaf_counts,positive_class)
+    elif(func_enum == 2):
+        return choose_pure_majority(leaf_counts,positive_class)
+    elif(func_enum == 3):
+        return choose_majority_general(leaf_counts,positive_class)
+    elif(func_enum == 4):
+        return choose_pure_majority_general(leaf_counts,positive_class)
+    return choose_majority(leaf_counts,positive_class)
+
+@njit(nogil=True,fastmath=True, cache=True, locals={"ZERO":u1, "VISIT":u1, "VISITED": u1, "_n":i4})
+def predict_tree(tree,x_nom,x_cont,pred_choice_enum,positive_class=0,decode_classes=True):
+    '''Predicts the class associated with an unlabelled sample using a fitted 
+        decision/ambiguity tree'''
+    ZERO, VISIT, VISITED = 0, 1, 2
+    L = max(len(x_nom),len(x_cont))
+    out = np.empty((L,),dtype=np.int64)
+    y_uvs = tree.u_ys#_get_y_order(tree)
+    for i in range(L):
+        # Use a mask instead of a list to avoid repeats that can blow up
+        #  if multiple splits are possible. Keep track of visited in case
+        #  of loops (Although there should not be any loops).
+        new_node_mask = np.zeros((len(tree.nodes),),dtype=np.uint8)
+        new_node_mask[0] = 1
+        node_inds = np.nonzero(new_node_mask==VISIT)[0]
+        leafs = List()
+
+        while len(node_inds) > 0:
+            #Mark all node_inds as visited so we don't mark them for a revisit
+            for ind in node_inds:
+                new_node_mask[ind] = VISITED
+
+            # Go through every node that has been queued for a visit. In a traditional
+            #  decision tree there should only ever be one next node.
+            for ind in node_inds:
+                node = tree.nodes[ind]
+                op = node.op_enum
+                if(node.ttype == TreeTypes_NODE):
+                    # Test every split in the node. Again in a traditional decision tree
+                    #  there should only be one split per node.
+                    for sd in node.split_data:
+                        # split_on, ithresh, left, right, nan  = s[0],s[1],s[2],s[3],s[4]
+
+                        # Determine if this sample should feed right, left, or nan (if ternary)
+                        if(not sd.is_continous):
+                            # Binary case
+                            j = split_on 
+                            if(xb[i,sd.split_ind]==sd.val):
+                                _n = sd.right
+                            else:
+                                _n = sd.left
+                        else:
+                            #Need to reimplement
+                            pass
+                        # else:
+                        #     # Continous case
+                        #     thresh = np.int32(ithresh).view(np.float32)
+                        #     j = split_on-xb.shape[1] 
+
+                        #     if(exec_op(op,x_cont[i,j],thresh)):
+                        #         _n = right
+                        #     else:
+                        #         _n = left
+                        if(new_node_mask[_n] != VISITED): new_node_mask[_n] = VISIT
+                            
+                else:
+                    leafs.append(node.counts)
+
+            node_inds = np.nonzero(new_node_mask==VISIT)[0]
+        # print(leafs)
+        # Since the leaf that the sample ends up in is ambiguous for an ambiguity
+        #   tree we need a subroutine that chooses how to classify the sample from the
+        #   various leaves that it could end up in. 
+        out_i = pred_choice_func(pred_choice_enum, leafs, positive_class)
+        if(decode_classes):out_i = y_uvs[out_i]
+        out[i] = out_i
+    return out
+
+
+
+
+
+def str_op(op_enum):
+    if(op_enum == OP_EQ):
+        return "=="
+    if(op_enum == OP_LT):
+        return "<"
+    elif(op_enum == OP_GE):
+        return ">="
+    elif(op_enum == OP_ISNAN):
+        return "isNaN"
+    else:
+        return ""
+
+
+
+def str_tree(tree):
+    '''A string representation of a tree usable for the purposes of debugging'''
+    
+    # l = ["TREE w/ classes: %s"%_get_y_order(tree)]
+    l = ["TREE w/ classes: %s"%tree.u_ys]
+    # node_offset = 1
+    # while node_offset < tree[0]:
+    for node in tree.nodes:
+        # node_width = tree[node_offset]
+        ttype, index, splits, counts = node.ttype, node.index, node.split_data, node.counts#_unpack_node(tree,node_offset)
+        op = node.op_enum
+        if(ttype == TTYPE_NODE):
+            s  = "NODE(%s) : " % (index)
+            for sd in splits:
+                if(not sd.is_continous): #<-A threshold of 1 means it's binary
+                    s += f"({sd.split_ind},=={sd.val})[L:{sd.left} R:{sd.right}"
+                else:
+                    thresh = np.int32(sd.val).view(np.float32) if op != OP_EQ else np.int32(sd.val)
+                    instr = str_op(op)+str(thresh) if op != OP_ISNAN else str_op(op)
+                    s += f"({sd.split_ind},{instr})[L:{sd.left} R:{sd.right}"
+                    # s += "(%s,%s)[L:%s R:%s" % (sd.split_ind,instr,sd.left,sd.right)
+                s += "] "# if(split[4] == -1) else ("NaN:" + str(split[4]) + "] ")
+            l.append(s)
+        else:
+            s  = "LEAF(%s) : %s" % (index,counts)
+            l.append(s)
+        # node_offset += node_width
+    return "\n".join(l)
+
+
+def print_tree(tree):
+    print(str_tree(tree))
 
     
 @njit(cache=True)
-def build_XY(N=10,M=10):
+def build_XY(N=1000,M=100):
     p0 = np.array([1,1,1,0,0],dtype=np.int32)
     p1 = np.array([0,1,1,1,0],dtype=np.int32)
     p2 = np.array([0,0,1,1,1],dtype=np.int32)
@@ -619,60 +856,64 @@ print(time_ms(test_sklearn))
 
 
 
-def str_op(op_enum):
-    if(op_enum == OP_EQ):
-        return "=="
-    if(op_enum == OP_LT):
-        return "<"
-    elif(op_enum == OP_GE):
-        return ">="
-    elif(op_enum == OP_ISNAN):
-        return "isNaN"
-    else:
-        return ""
+# tree = fit_tree(X, Y)
+# print_tree(tree)
 
 
+# print("PRINT")
 
-def str_tree(tree):
-    '''A string representation of a tree usable for the purposes of debugging'''
-    
-    # l = ["TREE w/ classes: %s"%_get_y_order(tree)]
-    l = ["TREE w/ classes: %s"%tree.u_ys]
-    # node_offset = 1
-    # while node_offset < tree[0]:
-    for node in tree.nodes:
-        # node_width = tree[node_offset]
-        ttype, index, splits, counts = node.ttype, node.index, node.split_data, node.counts#_unpack_node(tree,node_offset)
-        op = node.op_enum
-        if(ttype == TTYPE_NODE):
-            s  = "NODE(%s) : " % (index)
-            for split in splits:
-                if(split[1] == 1): #<-A threshold of 1 means it's binary
-                    s += "(%s)[L:%s R:%s" % (split[0],split[2],split[3])
-                else:
-                    thresh = np.int32(split[1]).view(np.float32) if op != OP_EQ else np.int32(split[1])
-                    instr = str_op(op)+str(thresh) if op != OP_ISNAN else str_op(op)
-                    s += "(%s,%s)[L:%s R:%s" % (split[0],instr,split[2],split[3])
-                s += "] " if(split[4] == -1) else ("NaN:" + str(split[4]) + "] ")
-            l.append(s)
-        else:
-            s  = "LEAF(%s) : %s" % (index,counts)
-            l.append(s)
-        # node_offset += node_width
-    return "\n".join(l)
+#### test_basics ####
 
+def setup1():
+    data1 = np.asarray([
+#    0 1 2 3 4 5 6 7 8 9 10111213141516
+    [0,0,1,0,1,1,1,1,1,1,1,0,0,1,1,1,1], #3
+    [0,0,0,0,0,0,1,1,1,1,1,0,0,0,0,0,0], #1
+    [0,0,0,0,1,0,1,1,1,1,1,0,0,0,0,0,0], #1
+    [0,0,1,0,1,0,1,1,1,1,1,0,0,0,0,0,0], #1
+    [1,0,1,0,1,0,1,1,1,1,1,0,0,0,0,0,1], #2
+    [0,0,1,0,1,1,1,1,1,1,1,0,0,0,0,1,0], #2
+    [1,0,1,0,1,0,1,1,1,1,1,0,0,0,0,1,0], #2
+    ],np.int32);
 
-def print_tree(tree):
-    print(str_tree(tree))
+    labels1 = np.asarray([3,1,1,1,2,2,2],np.int32);
+    return data1, labels1
 
+def setup2():
+    data2 = np.asarray([
+#    0 1 2 3 4 5 6 7 8 9 10111213141516
+    [0,0,0,0,0,0], #1
+    [0,0,1,0,0,0], #1
+    [0,1,1,0,0,0], #1
+    [1,1,1,0,0,1], #2
+    [0,1,1,1,1,0], #2
+    [1,1,1,0,1,0], #2
+    ],np.int32);
 
+    labels2 = np.asarray([1,1,1,2,2,2],np.int32);
+    data2 = data2[:,[1,0,2,3,4,5]]
+    return data2, labels2
 
-tree = fit_tree(X, Y)
-print_tree(tree)
+def setup3():
+    data3 = np.asarray([
+#    0 1 2 3 4 5 6 7 8 9 10111213141516
+    [0,0], #1
+    [1,0], #1
+    [0,1], #1
+    [1,1], #2
+    ],np.int32);
 
+    labels3 = np.asarray([1,1,1,2],np.int32);
+    return data3, labels3
 
+# print("PRINT")
 
-
+# X,Y = setup1()
+# print("PRINT")
+# tree = fit_tree(X, Y)
+# print(str_tree(tree))
+# print("PRINT")
+# predict_tree(tree,X, )
 
 
                 
