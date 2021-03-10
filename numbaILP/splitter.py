@@ -846,8 +846,8 @@ def test_sklearn():
 
 
 
-print(time_ms(test_fit_tree))
-print(time_ms(test_sklearn))
+# print(time_ms(test_fit_tree))
+# print(time_ms(test_sklearn))
 
 
 
@@ -908,12 +908,12 @@ def setup3():
 
 # print("PRINT")
 
-# X,Y = setup1()
-# print("PRINT")
-# tree = fit_tree(X, Y)
-# print(str_tree(tree))
-# print("PRINT")
-# predict_tree(tree,X, )
+X,Y = setup1()
+print("PRINT")
+tree = fit_tree(X, Y)
+print(str_tree(tree))
+print("PRINT")
+predict_tree(tree,X, )
 
 
                 
