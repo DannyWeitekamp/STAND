@@ -1,4 +1,4 @@
-from numbaILP.structref import define_structref
+from numbaILP.structref import define_structref, define_structref_template
 from numbaILP.utils import _struct_from_pointer, _pointer_from_struct, _pointer_from_struct_incref, _decref_pointer, _decref_structref
 from numba.experimental.structref import new
 import numpy as np
@@ -8,11 +8,12 @@ from numba import types, njit, guvectorize,vectorize,prange, jit, literally
 from numba import deferred_type, optional
 from numba import void,b1,u1,u2,u4,u8,i1,i2,i4,i8,f4,f8,c8,c16
 from numba.typed import List, Dict
-from numba.core.types import DictType,ListType, unicode_type, NamedTuple,NamedUniTuple,Tuple
+from numba.core.types import DictType,ListType, unicode_type, NamedTuple,NamedUniTuple,Tuple,literal
 from collections import namedtuple
 import timeit
 from sklearn import tree as SKTree
 import os 
+from operator import itemgetter
 
 from numba import config, njit, threading_layer
 from numba.np.ufunc.parallel import _get_thread_id
@@ -22,6 +23,19 @@ from numbaILP.fnvhash import hasharray#, AKD#, akd_insert,akd_get
 config.THREADING_LAYER = 'thread_safe'
 print("n threads", config.NUMBA_NUM_THREADS)
 # os.environ['NUMBA_PARALLEL_DIAGNOSTICS'] = '1'
+
+
+CRITERION_none = 0
+CRITERION_gini = 1
+CRITERION_entropy = 2
+
+SPLIT_CHOICE_single_max = 1
+SPLIT_CHOICE_all_max = 2
+
+PRED_CHOICE_majority = 1
+PRED_CHOICE_pure_majority = 2
+PRED_CHOICE_majority_general = 3
+PRED_CHOICE_pure_majority_general = 4
 
 N = 100
 def time_ms(f):
@@ -432,10 +446,10 @@ def update_nominal_impurities(data_stats, splitter_context):
 
 
 @njit(cache=True)
-def build_root(X,Y):
+def build_root(X_nom,x_cont,Y):
     sorted_inds = np.argsort(Y)
     # X = np.asfortranarray(X[sorted_inds])
-    X = X[sorted_inds]
+    X = X_nom[sorted_inds]
     Y = Y[sorted_inds]
 
     
@@ -561,13 +575,13 @@ def extract_nominal_split_info(data_stats, c, split):
 
 
 @njit(cache=True, locals={'y_counts_l' : u4[:], 'y_counts_r' : u4[:]})
-def fit_tree(X, Y,iterative=False):
+def fit_tree(X_nom, X_cont, Y, config,iterative=False):
     '''
         X : ndarray of i4, needs to start at 0 and 
     '''
     cache_nodes = False
     # print("Z")
-    data_stats, context_stack, node_dict, nodes = build_root(X,Y)
+    data_stats, context_stack, node_dict, nodes = build_root(X_nom, X_cont,Y)
     
     # print("A")
     
@@ -675,20 +689,20 @@ PRED_CHOICE_pure_majority = 2
 PRED_CHOICE_majority_general = 3
 PRED_CHOICE_pure_majority_general = 4
 
-@njit(nogil=True,fastmath=True,cache=True,inline='never')
-def pred_choice_func(func_enum,leaf_counts,positive_class):
-    if(func_enum == 1):
-        return choose_majority(leaf_counts,positive_class)
-    elif(func_enum == 2):
-        return choose_pure_majority(leaf_counts,positive_class)
-    elif(func_enum == 3):
-        return choose_majority_general(leaf_counts,positive_class)
-    elif(func_enum == 4):
-        return choose_pure_majority_general(leaf_counts,positive_class)
-    return choose_majority(leaf_counts,positive_class)
+@njit(nogil=True, fastmath=True,cache=True, inline='never')
+def pred_choice_func(leaf_counts, cfg):
+    if(cfg.pred_choice_enum == 1):
+        return choose_majority(leaf_counts, cfg.positive_class)
+    elif(cfg.pred_choice_enum == 2):
+        return choose_pure_majority(leaf_counts, cfg.positive_class)
+    elif(cfg.pred_choice_enum == 3):
+        return choose_majority_general(leaf_counts, cfg.positive_class)
+    elif(cfg.pred_choice_enum == 4):
+        return choose_pure_majority_general(leaf_counts, cfg.positive_class)
+    return choose_majority(leaf_counts, cfg.positive_class)
 
 @njit(nogil=True,fastmath=True, cache=True, locals={"ZERO":u1, "VISIT":u1, "VISITED": u1, "_n":i4})
-def predict_tree(tree,x_nom,x_cont,pred_choice_enum,positive_class=0,decode_classes=True):
+def predict_tree(tree, x_nom, x_cont, config):#, pred_choice_enum, positive_class=0,decode_classes=True):
     '''Predicts the class associated with an unlabelled sample using a fitted 
         decision/ambiguity tree'''
     ZERO, VISIT, VISITED = 0, 1, 2
@@ -714,7 +728,7 @@ def predict_tree(tree,x_nom,x_cont,pred_choice_enum,positive_class=0,decode_clas
             for ind in node_inds:
                 node = tree.nodes[ind]
                 op = node.op_enum
-                if(node.ttype == TreeTypes_NODE):
+                if(node.ttype == TTYPE_NODE):
                     # Test every split in the node. Again in a traditional decision tree
                     #  there should only be one split per node.
                     for sd in node.split_data:
@@ -722,9 +736,8 @@ def predict_tree(tree,x_nom,x_cont,pred_choice_enum,positive_class=0,decode_clas
 
                         # Determine if this sample should feed right, left, or nan (if ternary)
                         if(not sd.is_continous):
-                            # Binary case
-                            j = split_on 
-                            if(xb[i,sd.split_ind]==sd.val):
+                            # Nominal case
+                            if(x_nom[i,sd.split_ind]==sd.val):
                                 _n = sd.right
                             else:
                                 _n = sd.left
@@ -750,8 +763,9 @@ def predict_tree(tree,x_nom,x_cont,pred_choice_enum,positive_class=0,decode_clas
         # Since the leaf that the sample ends up in is ambiguous for an ambiguity
         #   tree we need a subroutine that chooses how to classify the sample from the
         #   various leaves that it could end up in. 
-        out_i = pred_choice_func(pred_choice_enum, leafs, positive_class)
-        if(decode_classes):out_i = y_uvs[out_i]
+        out_i = pred_choice_func(leafs, config)
+        # if(decode_classes):out_i = y_uvs[out_i]
+        out_i = y_uvs[out_i]
         out[i] = out_i
     return out
 
@@ -806,7 +820,223 @@ def str_tree(tree):
 def print_tree(tree):
     print(str_tree(tree))
 
-    
+tree_classifier_presets = {
+    'decision_tree' : {
+        'criterion' : 'gini',
+        'total_func' : 'sum',
+        'split_choice' : 'single_max',
+        'pred_choice' : 'majority',
+        'positive_class' : 1,
+        "secondary_criterion" : 0,
+        "secondary_total_func" : 0,
+        'sep_nan' : True,
+        'cache_nodes' : False
+    },
+    'decision_tree_weighted_gini' : {
+        'criterion' : 'weighted_gini',
+        'total_func' : 'sum',#sum', 
+        'split_choice' : 'single_max',
+        'pred_choice' : 'majority',
+        'positive_class' : 1,
+        "secondary_criterion" : 0,
+        "secondary_total_func" : 0,
+        'sep_nan' : True,
+        'cache_nodes' : False
+    },
+    'decision_tree_w_greedy_backup' : {
+        'criterion' : 'gini',
+        'total_func' : 'sum',#sum', 
+        'split_choice' : 'single_max',
+        'pred_choice' : 'majority',
+        'positive_class' : 1,
+        "secondary_criterion" : 'prop_neg',
+        "secondary_total_func" : 'min',
+        'sep_nan' : True,
+        'cache_nodes' : False
+    },
+    'ambiguity_tree' : {
+        'criterion' : 'weighted_gini',
+        'total_func' : 'sum',
+        'split_choice' : 'all_max',
+        'pred_choice' : 'pure_majority',
+        'positive_class' : 1,
+        "secondary_criterion" : 0,
+        "secondary_total_func" : 0,
+        'sep_nan' : True,
+        'cache_nodes' : True
+    },
+    'greedy_cover_tree' : {
+        'criterion' : 'prop_neg',
+        'total_func' : 'min',
+        'split_choice' : 'single_max',
+        'pred_choice' : 'majority',
+        "secondary_criterion" : 0,
+        "secondary_total_func" : 0,
+        'positive_class' : 1,
+        'sep_nan' : True,
+        'cache_nodes' : False
+    }
+
+
+}
+
+config_fields = [
+    ('criterion_enum', types.Any),
+    # ('total_enum', types.Any),
+    ('split_choice_enum', types.Any),
+    ('pred_choice_enum', types.Any),
+    ('cache_nodes', types.Any),
+    ('sep_nan', types.Any),
+    ('positive_class', i4),
+]
+
+TreeClassifierConfig, TreeClassifierConfigTemplate = define_structref_template("TreeClassifierConfig", config_fields, define_constructor=False)
+
+@njit(cache=True)
+def new_config(typ):
+    return new(typ)
+
+class TreeClassifier(object):
+    def __init__(self,preset_type='decision_tree', 
+                      **kwargs):
+        '''
+        TODO: Finish docs
+        kwargs:
+            preset_type: Specifies the values of the other kwargs
+            criterion: The name of the criterion function used 'entropy', 'gini', etc.
+            total_func: The function for combining the impurities for two splits, default 'sum'.
+            split_choice: The name of the split choice policy 'all_max', etc.
+            pred_choice: The prediction choice policy 'pure_majority_general' etc.
+            secondary_criterion: The name of the secondary criterion function used only if 
+              no split can be found with the primary impurity.
+            secondary_total_func: The name of the secondary total_func, defaults to 'sum'
+            positive_class: The integer id for the positive class (used in prediction)
+            sep_nan: If set to True then use a ternary tree that treats nan's seperately 
+        '''
+        kwargs = {**tree_classifier_presets[preset_type], **kwargs}
+
+        criterion, total_func, split_choice, pred_choice, secondary_criterion, \
+         secondary_total_func, positive_class, sep_nan, cache_nodes = \
+            itemgetter('criterion', 'total_func', 'split_choice', 'pred_choice', 
+                "secondary_criterion", 'secondary_total_func', 'positive_class',
+                'sep_nan', 'cache_nodes')(kwargs)
+
+        g = globals()
+        criterion_enum = g.get(f"CRITERION_{criterion}",None)
+        # total_enum = g.get(f"TOTAL_{total_func}",None)
+        split_choice_enum = g.get(f"SPLIT_CHOICE_{split_choice}",None)
+        pred_choice_enum = g.get(f"PRED_CHOICE_{pred_choice}",None)
+
+        if(criterion_enum is None): raise ValueError(f"Invalid criterion {criterion}")
+        # if(total_enum is None): raise ValueError(f"Invalid criterion {total_func}")
+        if(split_choice_enum is None): raise ValueError(f"Invalid split_choice {split_choice}")
+        if(pred_choice_enum is None): raise ValueError(f"Invalid pred_choice {pred_choice}")
+        self.positive_class = positive_class
+
+        config_dict = {k:v for k,v in config_fields}
+        config_dict['criterion_enum'] = literal(criterion_enum)
+        config_dict['split_choice_enum'] = literal(split_choice_enum)
+        config_dict['pred_choice_enum'] = literal(pred_choice_enum)
+
+        ConfigType = TreeClassifierConfigTemplate([(k,v) for k,v in config_dict.items()])
+
+        # print(config_dict)
+
+        # self.config = 
+
+        
+
+        self.config = new_config(ConfigType)
+        self.tree = None
+
+        # @njit(cache=True)
+        # def _fit(xb,xc,y,miss_mask,ft_weights): 
+        #     out =fit_tree(xb,xc,y,miss_mask,
+        #             ft_weights=ft_weights,
+        #             # missing_values=missing_values,
+        #             criterion_enum=literally(criterion_enum),
+        #             total_enum=literally(total_enum),
+        #             split_enum=literally(split_enum),
+        #             positive_class=positive_class,
+        #             criterion_enum2=literally(criterion_enum2),
+        #             total_enum2=literally(total_enum2),
+        #             sep_nan=literally(sep_nan),
+        #             cache_nodes=literally(cache_nodes)
+        #          )
+        #     return out
+        # self._fit = _fit
+
+        # @njit(cache=True)
+        # def _inf_gain(xb,xc,y,miss_mask,ft_weights):    
+        #     out =inf_gain(xb,xc,y,miss_mask,
+        #             ft_weights=ft_weights,
+        #             # missing_values=missing_values,
+        #             criterion_enum=literally(criterion_enum),
+        #             total_enum=literally(total_enum),
+        #             positive_class=positive_class,
+        #          )
+        #     return out
+        # self._inf_gain = _inf_gain
+
+        # @njit(cache=True)
+        # def _predict(tree, xb, xc, positive_class): 
+        #     out =predict_tree(tree,xb,xc,
+        #             pred_choice_enum=literally(pred_choice_enum),
+        #             positive_class=positive_class,
+        #             decode_classes=True
+        #          )
+        #     return out
+        # self._predict = _predict
+        
+        
+    def fit(self,X_nom,X_cont,Y,miss_mask=None, ft_weights=None):
+        if(X_nom is None): X_nom = np.empty((0,0), dtype=np.int32)
+        if(X_cont is None): X_cont = np.empty((0,0), dtype=np.float32)
+        # if(miss_mask is None): miss_mask = np.zeros_like(xc, dtype=np.bool)
+        # if(ft_weights is None): ft_weights = np.empty(xb.shape[1]+xc.shape[1], dtype=np.float64)
+        X_nom = X_nom.astype(np.int32)
+        X_cont = X_cont.astype(np.float32)
+        Y = Y.astype(np.int32)
+        # miss_mask = miss_mask.astype(np.bool)
+        # ft_weights = ft_weights.astype(np.float64)
+        # assert miss_mask.shape == xc.shape
+
+        # self.tree = self._fit(xb, xc, y, miss_mask, ft_weights)
+        self.tree = fit_tree(X_nom, X_cont, Y, self.config, False)
+
+    # def inf_gain(self,xb,xc,y,miss_mask=None, ft_weights=None):
+    #     if(xb is None): xb = np.empty((0,0), dtype=np.uint8)
+    #     if(xc is None): xc = np.empty((0,0), dtype=np.float64)
+    #     if(miss_mask is None): miss_mask = np.zeros_like(xc, dtype=np.bool)
+    #     if(ft_weights is None): ft_weights = np.empty(xb.shape[1]+xc.shape[1], dtype=np.float64)
+    #     xb = xb.astype(np.uint8)
+    #     xc = xc.astype(np.float64)
+    #     y = y.astype(np.int64)
+    #     miss_mask = miss_mask.astype(np.bool)
+    #     ft_weights = ft_weights.astype(np.float64)
+    #     # assert miss_mask.shape == xc.shape
+    #     return self._inf_gain(xb, xc, y, miss_mask, ft_weights)
+
+
+    def predict(self, X_nom, X_cont, positive_class=None):
+        if(self.tree is None): raise RuntimeError("TreeClassifier must be fit before predict() is called.")
+        if(positive_class is None): positive_class = self.positive_class
+        if(X_nom is None): X_nom = np.empty((0,0), dtype=np.int32)
+        if(X_cont is None): X_cont = np.empty((0,0), dtype=np.float32)
+        X_nom = X_nom.astype(np.int32)
+        X_cont = X_cont.astype(np.float32)
+        return predict_tree(self.tree,X_nom, X_cont,self.config)
+        # return self._predict(self.tree, xb, xc, positive_class)
+
+    def __str__(self):
+        return str_tree(self.tree)
+
+    def as_conditions(self,positive_class=None, only_pure_leaves=False):
+        if(positive_class is None): positive_class = self.positive_class
+        return tree_to_conditions(self.tree, positive_class, only_pure_leaves)
+
+TreeClassifier()
+
 @njit(cache=True)
 def build_XY(N=1000,M=100):
     p0 = np.array([1,1,1,0,0],dtype=np.int32)
@@ -833,11 +1063,16 @@ def build_XY(N=1000,M=100):
 
 # X, Y = build_XY(10,10)
 X, Y = build_XY()
+X_cont = np.zeros((0,0),dtype=np.float32)
 one_h_encoder = OneHotEncoder()
 X_oh = one_h_encoder.fit_transform(X).toarray()
 # @njit(cache=True)
+
+
 def test_fit_tree():
-    fit_tree(X, Y)
+    dt = TreeClassifier()
+    dt.fit(X, X_cont, Y)
+    # fit_tree(X, X_cont, Y)
     
 
 def test_sklearn():
@@ -855,8 +1090,9 @@ def test_sklearn():
 
 
 
-
-# tree = fit_tree(X, Y)
+dt = TreeClassifier()
+dt.fit(X, X_cont, Y)
+print(dt)
 # print_tree(tree)
 
 
@@ -909,11 +1145,19 @@ def setup3():
 # print("PRINT")
 
 X,Y = setup1()
-print("PRINT")
-tree = fit_tree(X, Y)
-print(str_tree(tree))
-print("PRINT")
-predict_tree(tree,X, )
+dt.fit(X, X_cont, Y)
+print(dt)
+print(dt.predict(X, X_cont)) #predict_tree(tree,X, X_cont, PRED_CHOICE_majority))
+
+X,Y = setup2()
+dt.fit(X, X_cont, Y)
+print(dt)
+print(dt.predict(X, X_cont)) #predict_tree(tree,X, X_cont, PRED_CHOICE_majority))
+
+X,Y = setup3()
+dt.fit(X, X_cont, Y)
+print(dt)
+print(dt.predict(X, X_cont)) #predict_tree(tree,X, X_cont, PRED_CHOICE_majority))
 
 
                 
@@ -930,5 +1174,204 @@ predict_tree(tree,X, )
 
 
 
+
+
+
+# class DecisionTree2(TreeClassifier):
+class DecisionTree2(object):
+    # def __init__(self, impl="decision_tree", use_missing=False):
+    def __init__(self, impl="decision_tree_w_greedy_backup", use_missing=False):
+        print("IMPL:",impl)
+        if(impl == "sklearn"):
+            self.x_format = "one_hot"
+            self.is_onehot = True
+            self.dt = DecisionTreeClassifier()
+        else:
+            self.x_format = "integer"
+            self.is_onehot = False
+            self.dt = TreeClassifier(impl)
+
+
+        
+        self.impl = impl
+        self.X = []
+        self.y = []
+        self.slots = {}
+        self.inverse = []
+        self.slots_count = 0
+        self.X_list = []
+        self.use_missing = use_missing
+        
+
+    def _designate_new_slots(self,x):
+        ''' Makes new slots for unseen keys and values'''
+        for k, v in x.items():
+            if(k not in self.slots):
+                slot = self.slots_count if self.is_onehot else 0
+                vocab = self.slots[k] = {chr(0) : slot}         
+                self.slots_count += 1
+                self.inverse.append(f'!{k}')
+            else:
+                vocab = self.slots[k]
+
+            if(v not in vocab): 
+                slot = self.slots_count if self.is_onehot else len(vocab)
+                vocab[v] = slot
+                self.slots_count += 1
+                self.inverse.append(f'{k}=={v}')
+
+    def _dict_to_onehot(self,x,silent_fail=False):
+        x_new = [0]*self.slots_count
+        for k, vocab in self.slots.items():
+            # print(k, vocab)
+            val = x.get(k,chr(0))
+            if(silent_fail):
+                if(val in vocab): x_new[vocab[val]] = 1
+            else:
+                x_new[vocab[val]] = 1
+        return np.asarray(x_new,dtype=np.bool)
+
+    def _dict_to_integer(self,x,silent_fail=False):
+        x_new = [0]*len(self.slots)
+        for i,(k, vocab) in enumerate(self.slots.items()):
+            # print(k, vocab)
+            val = x.get(k,chr(0))
+            if(silent_fail):
+                if(val in vocab): x_new[i] = vocab[val]
+            else:
+                x_new[i] = vocab[val]
+        return np.asarray(x_new,dtype=np.int32)
+
+    def _transform_dict(self,x,silent_fail=False):
+        if(self.is_onehot):
+            return self._dict_to_onehot(x,silent_fail)
+        else:
+            return self._dict_to_integer(x,silent_fail)
+
+    # def _gen_feature_weights(self, strength=1.0):
+    #     weights = [0]*(self.slots_count if self.x_format == "one_hot" else len(self.slots))
+    #     for k, vocab in self.slots.items():
+    #         # print(k, vocab)
+    #         val = (1.0/max(len(vocab)-1,1)) if self.x_format == "one_hot" else 1.0
+    #         w = (1.0-strength) + (strength * val)
+    #         for val,ind in vocab.items():
+    #             weights[ind] = w
+
+    #     return np.asarray(weights,dtype=np.float64)
+
+
+    def _compose_one_hots(self):
+        X = np.empty( (len(self.X_list), self.slots_count), dtype=np.uint8)
+        missing_vals = [None]*len(self.X_list)
+        for i, one_hot_x in enumerate(self.X_list):
+            X[i,:len(one_hot_x)] = one_hot_x
+            X[i,len(one_hot_x):] = 2 if self.use_missing else 0 # missing
+        return X
+
+    def _compose_integers(self):
+        X = np.empty( (len(self.X_list), len(self.slots)), dtype=np.int32)
+        # missing_vals = [None]*len(self.X_list)
+        for i, int_x in enumerate(self.X_list):
+            X[i,:len(int_x)] = int_x
+            X[i,len(int_x):] = 0
+        return X
+
+
+    
+
+    def _compose(self):
+        if(self.x_format == 'one_hot'):
+            return self._compose_one_hots()
+        else:
+            return self._compose_integers()
+
+
+
+
+
+    def ifit(self, x, y):
+        self._designate_new_slots(x)        
+        trans_x = self._transform_dict(x)
+
+
+        self.X_list.append(trans_x)
+        self.X = self._compose()
+
+        
+        self.y.append(int(y) if not isinstance(y, tuple) else y)
+        Y = np.asarray(self.y,dtype=np.int64)
+
+        self.fit(self.X,Y)
+
+    def fit(self, X, Y):
+        if(not isinstance(X, np.ndarray)):
+            self.X_list = []
+            for x in X:
+                self._designate_new_slots(x)
+                self.X_list.append(self._transform_dict(x))
+            self.X = X = self._compose()
+
+        Y = np.asarray(Y,dtype=np.int64)
+        print(X)
+        if(self.impl == "sklearn"):
+            return self.dt.fit(X, Y)
+        else:
+            # tree_str = str(self.dt) if getattr(self.dt, "tree",None) is not None else ''
+            # [n.split_on for n in self.dt.tree.nodes]
+            # inds = [int(x.split(" : (")[1].split(")")[0]) for x in re.findall(r'NODE.+',tree_str)]
+
+            # print()
+            # print("---", self.rhs, "---")
+            # tree_condition_inds(self.dt.tree)
+            # print(tree_str)
+
+            
+            # if(False):
+            #     # ft_weights = self._gen_feature_weights()
+            #     print(json.dumps({ind: str(self.inverse[ind])+f"(w:{ft_weights[ind]:.2f})" for ind in inds},indent=2)[2:-2])
+            # else:
+            #     ft_weights = np.ones((X.shape[1]),dtype=np.float64)
+            #     print(json.dumps({ind: str(self.inverse[ind]) for ind in inds},indent=2)[2:-2])
+            # print(json.dumps({ind: str(self.inverse[ind]) for ind in inds},indent=2)[2:-2])
+            
+
+            # return self.dt.fit(X, None, Y, None)
+            X_cont = np.zeros((0,0),dtype=np.float32)
+            return self.dt.fit(X, X_cont, Y)
+
+
+    def predict(self, X):
+        is_onehot = self.x_format == 'one_hot'
+        width = self.slots_count if is_onehot else len(self.slots)
+        dtype = np.bool if is_onehot else np.int32
+        encoded_X = np.empty((len(X), width),dtype=dtype)
+
+        for i, x in enumerate(X):
+            encoded_x = self._transform_dict(x,silent_fail=True)
+            encoded_X[i] = encoded_x
+
+        if(self.impl == "sklearn"):
+            pred = self.dt.predict(encoded_X)
+        else:
+            # print("PRED:",self.rhs, self.dt.predict(onehot_X,None))
+            pred = self.dt.predict(encoded_X,None)
+
+        return pred
+
+
+dt2 = DecisionTree2()
+
+dt2.ifit({'A': 0, 'B' : 0},0)
+dt2.ifit({'A': 0, 'B' : 1},0)
+dt2.ifit({'A': 1, 'B' : 0},0)
+dt2.ifit({'A': 1, 'B' : 1},1)
+
+
+print(dt2.predict([{'A': 0, 'B' : 0}]))
+print(dt2.predict([{'A': 0, 'B' : 1}]))
+print(dt2.predict([{'A': 1, 'B' : 0}]))
+print(dt2.predict([{'A': 1, 'B' : 1}]))
+
+print(dt2.dt)
 
 
