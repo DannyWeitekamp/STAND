@@ -1312,7 +1312,7 @@ class DecisionTree2(object):
             self.X = X = self._compose()
 
         Y = np.asarray(Y,dtype=np.int64)
-        print(X)
+        # print(X)
         if(self.impl == "sklearn"):
             return self.dt.fit(X, Y)
         else:
