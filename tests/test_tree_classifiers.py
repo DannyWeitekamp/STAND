@@ -33,7 +33,7 @@ def test_optimal_split():
 	
 
 #### test_basics ####
-
+ 
 def setup1():
 	data1 = np.asarray([
 #	 0 1 2 3 4 5 6 7 8 9 10111213141516
