@@ -58,6 +58,9 @@ data_stats_fields = [
 
     ### Summary Stats ###
 
+    # A list of unique classes
+    ('u_ys', i4[::1]),
+
     # The counts of each class
     ('y_counts', u4[::1]),
 
@@ -110,6 +113,7 @@ def DataStats_ctor(nom_v_contiguous=False, y_contiguous=False, ifit_enabled=Fals
     st.nom_v_maps = List.empty_list(i4_i4_dict)
     st.nom_v_inv_maps = List.empty_list(i4_i4_dict)
     st.X_cont_ft_sort_data = List.empty_list(SortDataType)
+    st.u_ys = np.empty(0, dtype=np.int32)
     st.y_counts = np.zeros(1,dtype=np.uint32)
     st.is_initialized = False
     st.y_contiguous = y_contiguous
@@ -121,9 +125,6 @@ def DataStats_ctor(nom_v_contiguous=False, y_contiguous=False, ifit_enabled=Fals
     st.Y = st.Y_buffer = np.empty(0,dtype=np.int32)
     st.n_vals = np.empty(0,dtype=np.int32)
 
-
-
- 
     return st
 
 @njit(cache=True)
@@ -184,6 +185,15 @@ def _update_summary_stats_reinit(ds):
     ds.n_nom_features = ds.X_nom.shape[1]
     ds.n_cont_features = ds.X_cont.shape[1]
 
+    ds.n_classes = len(ds.y_counts)
+
+    if(ds.y_contiguous):
+        ds.u_ys = np.arange(ds.n_classes, dtype=np.int32)
+    else:
+        ds.u_ys = np.empty(ds.n_classes, dtype=np.int32)
+        for i, v in enumerate(ds.y_map.keys()):
+            ds.u_ys[i] = v
+
 
 @njit(cache=True)
 def _assign_buffers(ds):
@@ -193,17 +203,17 @@ def _assign_buffers(ds):
 
 
 @njit(cache=True)
-def reinit_data_stats(ds, X_nom, X_cont, Y):
-    ''' Initialize the data stats for a fit() '''
+def reinit_datastats(ds, X_nom, X_cont, Y):
+    ''' Initialize the data stats for a fit()  '''
 
     # print(X_nom, X_cont, Y)
     for j in range(X_nom.shape[1]):
         ds.nom_v_maps.append(Dict.empty(i4,i4))
         ds.nom_v_inv_maps.append(Dict.empty(i4,i4))
 
-
     if(ds.nom_v_contiguous):
-        ds.X_nom = X_nom.astype(np.int32)
+        # Not sure why but need to copy to avoid error
+        ds.X_nom = X_nom.copy()
     else:
         ds.X_nom = np.empty(X_nom.shape,dtype=np.int32)
 
@@ -248,7 +258,6 @@ def _expand_buffers(ds, x_nom, x_cont, y):
         ds.X_nom_buffer[:l,w:] = 0
     ds.X_nom = ds.X_nom_buffer[:l+1]
     # print((l,w), "-==>", ds.X_nom.shape)
-
 
     l,w = ds.X_cont.shape
     if(len(ds.X_cont_buffer) <= l or
@@ -295,6 +304,7 @@ def _update_summary_stats_update(ds):
     ds.n_samples = len(ds.Y)
     ds.n_nom_features = ds.X_nom.shape[1]
     ds.n_cont_features = ds.X_cont.shape[1]
+    ds.n_classes = len(ds.y_counts)
 
 @njit(cache=True)
 def update_data_stats(ds, x_nom, x_cont, y):

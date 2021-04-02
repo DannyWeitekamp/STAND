@@ -1,10 +1,13 @@
 from numbaILP.structref import define_structref, define_structref_template
+from numbaILP.utils import _struct_from_pointer, _pointer_from_struct, _pointer_from_struct_incref, _decref_pointer, _decref_structref
 from numba import njit
 from numba import optional
 from numba import void,b1,u1,u2,u4,u8,i1,i2,i4,i8,f4,f8,c8,c16
 from numba.typed import List, Dict
-from numba.core.types import DictType, ListType, unicode_type
-
+from numba.core.types import DictType, ListType, unicode_type, literal
+from .data_stats import DataStatsType, DataStats_ctor, reinit_datastats
+from numba.experimental.structref import new
+import numpy as np
 
 #### SplitData ####
 
@@ -56,46 +59,43 @@ def TreeNode_ctor(ttype, index, counts):
 #### SplitterContext ####
 
 splitter_context_fields = [
-    #The time of the most recent update to this context
-    ('t_last_update', i4),
+    
 
     #A pointer to the parent split context
-    ('parent_ptr', i8),
+    # ('parent_ptr', i8),
+
+    ('split_chain', i8[::1]),
+
+    ### Attributes inserted at initialization ###
+
+    # The node in the output tree associated with this context
     ('node', TreeNodeType),
-
-    
-    # Idea borrowed from sklearn, sample_inds are preallocated and 
-    #  kept contiguous in each node by swapping left and right indicies 
-    #  then only 'start' and 'end' need to be passed instead of copying the indicies
+    # The indicies of all samples that filter into this node
     ('sample_inds', u4[::1]),
-    # ('start',i8),
-    # ('end', i8),
-
-    
-
     # The counts of each class label in this node
-    ('y_counts',u4[:]),
-    # The number of unique class labels 
-    ('n_classes',i4),
-    
-    #The impurity of the node before splitting
+    ('y_counts',u4[:]),    
+    # The impurity of the node before splitting
     ('impurity', f8),
-    #The total, left, and right impurities of all the splits f8[n_features,3]
-    ('impurities', f8[:,:]),
-    #The impurity of the node after the best split
-    ('best_split_impurity', f8),
-
-    #Whether the best split is nominal 0 or continuous 1
-    ('best_is_continous', u1),
-    ('best_split', i4),
     
+    ### Attributes resolved after impurities computed ###
 
+    # The total, left, and right impurities of all the splits f8[n_features,3]
+    ('impurities', f8[:,:]),
+    # The impurity of the node after the best split
+    ('best_split_impurity', f8),
+    # Whether the best split is nominal 0 or continuous 1
+    ('best_is_continous', u1),
+    # The index of the best split 
+    ('best_split', i4),
     # In the nominal case the value of the best literal
     ('best_val', i4),
     # In the continous case the value of the best threshold
     ('best_thresh', f4),
 
+    ### Data meant to be reused between calls to ifit() ### 
 
+    #The time of the most recent update to this context
+    ('t_last_update', i4),
     # Whether or not the y_counts associated with selecting on each nominal
     #  value are cached
     ('nominal_split_cache_ptrs', i8[:]),
@@ -118,37 +118,27 @@ splitter_context_fields = [
 SplitterContext, SplitterContextType = define_structref("SplitterContext",splitter_context_fields, define_constructor=False) 
 
 @njit(cache=True)
-def SplitterContext_ctor(parent_ptr, node, sample_inds, y_counts, impurity):
-    st = new(SplitterContextType)
-    # st.counts_cached = False
-    st.parent_ptr = parent_ptr
-    st.node = node
-    st.sample_inds = sample_inds
-    # st.start = start
-    # st.end = end
-    # st.n_samples = len(sample_inds)
-    # st.n_samples = end-start
+def SplitterContext_ctor(split_chain):
+    st = new(SplitterContextType)    
 
-    # st.n_classes = n_classes
-    st.y_counts = y_counts
-
-    st.impurity = impurity
-    st.best_split_impurity = np.inf
-
+    st.split_chain = split_chain
+    st.t_last_update = 0 
     st.nominal_split_cache_ptrs = np.zeros((32,),dtype=np.int64)
     st.continous_split_cache_ptrs = np.zeros((32,),dtype=np.int64)
-    # st.counts_imps = np.zeros(n_features, ((n_classes)*2)+6,dtype=np.int32)
-    # if(parent_ptr != 0):
-    #     parent = _struct_from_pointer(SplitterContextType, parent_ptr)
-    #     st.n_vals = parent.n_vals
-    #     # st.sample_inds = parent.sample_inds
-    #     st.n_classes = parent.n_classes
-    #     st.n_features = parent.n_features
-    #     # st.feature_inds = parent.feature_inds
-    #     st.X = parent.X
-    #     st.Y = parent.Y
-        # st.n_vals = parent.n_vals
+    
     return st
+
+@njit(cache=True)
+def reinit_splittercontext(c, node, sample_inds, y_counts, impurity):
+    c.node = node
+    c.sample_inds = sample_inds
+    c.y_counts = y_counts
+    c.impurity = impurity
+
+    c.best_split_impurity = np.inf
+
+
+
 
 
 @njit(cache=True)
@@ -168,14 +158,15 @@ tree_fields = [
 
     # A list of the actual nodes of the tree.
     ('nodes',ListType(TreeNodeType)),
-    ('u_ys', i4[::1]),
+    # ('u_ys', i4[::1]),
 
     # A cache of split contexts keyed by the sequence of splits so far
-    #  this is where split statistics are held between runs.
-    ('context_cache', DictType(i8[::1],SplitContext)),
+    #  this is where split statistics are held between calls to ifit().
+    ('context_cache', DictType(i8[::1],SplitterContextType)),
 
-    # The data stats for this tree. This is kept around be between iterative fits.
-    ('data_stats', optional(DataStatsType)),
+    # The data stats for this tree. This is kept around be between calls 
+    #  to ifit() and replaced with each call to fit().
+    ('data_stats', DataStatsType),
 
     # Whether or not iterative fitting is enabled
     ('ifit_enabled', literal(False)),
@@ -190,7 +181,14 @@ Tree, TreeTypeTemplate = define_structref_template("Tree", tree_fields, define_c
 def Tree_ctor(tree_type):
     st = new(tree_type)
     st.nodes = List.empty_list(TreeNodeType)
-    st.u_ys = np.zeros(0,dtype=np.int32)
-    st.context_cache = Dict.empty(i8_arr, SplitterContext)
-    st.data_stats = None
+    # st.u_ys = np.zeros(0,dtype=np.int32)
+    st.context_cache = Dict.empty(i8_arr, SplitterContextType)
+    st.data_stats = DataStats_ctor()
+    return st
     
+@njit(cache=True)
+def reinit_tree_datastats(tree, X_nom, X_cont, Y):
+    ds = tree.data_stats = DataStats_ctor()
+    reinit_datastats(ds, X_nom, X_cont, Y)
+
+

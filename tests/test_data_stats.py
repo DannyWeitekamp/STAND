@@ -23,7 +23,7 @@ Y_unorder_contig = np.array([3,3,0,1,2,0,1,2], dtype=np.int32)
 @njit(cache=False)
 def do_init(X_nom, X_cont, Y, v_contig, y_contig):
     ds = DataStats_ctor(nom_v_contiguous=v_contig, y_contiguous=y_contig)
-    err = reinit_data_stats(ds, X_nom, X_cont, Y)
+    err = reinit_datastats(ds, X_nom, X_cont, Y)
     return err, ds
 
 @njit(cache=False)
@@ -48,11 +48,13 @@ def _test_contiguous(iterative, as_py):
     assert list(ds.y_counts) == [3,2,2,1]
     # print(ds.n_vals)
     assert list(ds.n_vals) == [8,2,3,4,8,1]
+    assert ds.n_classes == 4
 
     #Test that it doesn't fail in a segfaulty way when Y isn't actually contiguous
     Y_not_contig = (Y_contig+2).astype(np.int32)
     err, ds = do_it(iterative, as_py, X_nom_contig, X_cont, Y_not_contig, True, True)
     assert len(ds.y_counts) == 6
+    assert ds.n_classes == 6
 
     #TODO: what about negative classes? 
 
@@ -87,6 +89,7 @@ def _test_not_contiguous(iterative, as_py):
     # print(ds.X_nom)
     assert np.array_equal(ds.X_nom[:,0], X_nom_contig[:,0])
     assert np.array_equal(ds.Y , Y_contig)
+    assert ds.n_classes == 4
 
 
  

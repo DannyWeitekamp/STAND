@@ -1,9 +1,12 @@
 from numbaILP.structref import define_structref, define_structref_template
+from numbaILP.utils import _struct_from_pointer, _pointer_from_struct, _pointer_from_struct_incref, _decref_pointer, _decref_structref
 from numba import njit
 from numba import optional
 from numba import void,b1,u1,u2,u4,u8,i1,i2,i4,i8,f4,f8,c8,c16
 from numba.typed import List, Dict
 from numba.core.types import DictType, ListType, unicode_type
+from numba.experimental.structref import new
+import numpy as np
 
 
 ''' A split cache is responsible for storing information about candidate splits
