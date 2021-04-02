@@ -242,7 +242,7 @@ def update_nominal_impurities(tree, splitter_context, iterative):
     # print(best_ind)
 
 u4_arr = u4[:]
-empty_u8 = np.zeros(0,dtype=np.uint64)
+# empty_u8 = np.zeros(0,dtype=np.uint64)
 
 @njit(cache=True)
 def build_root(tree, iterative=False):
@@ -259,6 +259,7 @@ def build_root(tree, iterative=False):
     nodes.append(node)
     tree.nodes = nodes
 
+    empty_u8 = np.zeros(0,dtype=np.uint64)
     #Make Root Context
     if(iterative and empty_u8 in tree.context_cache):
         c = tree.context_cache[empty_u8]
@@ -321,7 +322,7 @@ def next_split_chain(c, is_right, is_cont, split, val):
     l = len(c.split_chain)
     split_chain = np.empty(l+1,dtype=np.uint64)
     split_chain[:l] = c.split_chain
-    split_chain[l] = (is_cont << 63) | (is_right << 62) | (split << 32) | val
+    split_chain[l] = u8((is_cont << 63) | (is_right << 62) | (split << 32) | val)
     return split_chain
 
 

@@ -125,6 +125,8 @@ def DataStats_ctor(nom_v_contiguous=False, y_contiguous=False, ifit_enabled=Fals
     st.Y = st.Y_buffer = np.empty(0,dtype=np.int32)
     st.n_vals = np.empty(0,dtype=np.int32)
 
+    st.n_classes = 0
+
     return st
 
 @njit(cache=True)
@@ -135,7 +137,7 @@ def _insert_w_ds_maps(i, ds, x_nom, y):
         ds.y_counts[y] += 1
     else:
         if(y not in ds.y_map):
-            l = len(ds.y_map)
+            l = i4(len(ds.y_map))
             ds.y_map[y] = l
             ds.y_inv_map[l] = y
 
@@ -213,7 +215,7 @@ def reinit_datastats(ds, X_nom, X_cont, Y):
 
     if(ds.nom_v_contiguous):
         # Not sure why but need to copy to avoid error
-        ds.X_nom = X_nom.copy()
+        ds.X_nom = X_nom.astype(np.int32).copy()
     else:
         ds.X_nom = np.empty(X_nom.shape,dtype=np.int32)
 
@@ -304,7 +306,16 @@ def _update_summary_stats_update(ds):
     ds.n_samples = len(ds.Y)
     ds.n_nom_features = ds.X_nom.shape[1]
     ds.n_cont_features = ds.X_cont.shape[1]
+    prev_n_classes = ds.n_classes
     ds.n_classes = len(ds.y_counts)
+
+    if(prev_n_classes != ds.n_classes):
+        if(ds.y_contiguous):
+            ds.u_ys = np.arange(ds.n_classes, dtype=np.int32)
+        else:
+            ds.u_ys = np.empty(ds.n_classes, dtype=np.int32)
+            for i, v in enumerate(ds.y_map.keys()):
+                ds.u_ys[i] = v
 
 @njit(cache=True)
 def update_data_stats(ds, x_nom, x_cont, y):
