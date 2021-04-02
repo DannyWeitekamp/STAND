@@ -7,6 +7,7 @@ from numba.typed import List, Dict
 from numba.core.types import DictType, ListType, unicode_type, literal
 from .data_stats import DataStatsType, DataStats_ctor, reinit_datastats
 from numba.experimental.structref import new
+from numbaILP.akd import new_akd, AKDType
 import numpy as np
 
 #### SplitData ####
@@ -64,7 +65,7 @@ splitter_context_fields = [
     #A pointer to the parent split context
     # ('parent_ptr', i8),
 
-    ('split_chain', i8[::1]),
+    ('split_chain', u8[::1]),
 
     ### Attributes inserted at initialization ###
 
@@ -95,7 +96,7 @@ splitter_context_fields = [
     ### Data meant to be reused between calls to ifit() ### 
 
     #The time of the most recent update to this context
-    ('t_last_update', i4),
+    ('n_last_update', i4),
     # Whether or not the y_counts associated with selecting on each nominal
     #  value are cached
     ('nominal_split_cache_ptrs', i8[:]),
@@ -122,7 +123,7 @@ def SplitterContext_ctor(split_chain):
     st = new(SplitterContextType)    
 
     st.split_chain = split_chain
-    st.t_last_update = 0 
+    st.n_last_update = 0 
     st.nominal_split_cache_ptrs = np.zeros((32,),dtype=np.int64)
     st.continous_split_cache_ptrs = np.zeros((32,),dtype=np.int64)
     
@@ -162,7 +163,8 @@ tree_fields = [
 
     # A cache of split contexts keyed by the sequence of splits so far
     #  this is where split statistics are held between calls to ifit().
-    ('context_cache', DictType(i8[::1],SplitterContextType)),
+    # ('context_cache', DictType(u8[::1],SplitterContextType)),
+    ('context_cache', AKDType(u8,SplitterContextType)),
 
     # The data stats for this tree. This is kept around be between calls 
     #  to ifit() and replaced with each call to fit().
@@ -182,7 +184,7 @@ def Tree_ctor(tree_type):
     st = new(tree_type)
     st.nodes = List.empty_list(TreeNodeType)
     # st.u_ys = np.zeros(0,dtype=np.int32)
-    st.context_cache = Dict.empty(i8_arr, SplitterContextType)
+    st.context_cache = new_akd(u8,SplitterContextType)#Dict.empty(i8_arr, SplitterContextType)
     st.data_stats = DataStats_ctor()
     return st
     

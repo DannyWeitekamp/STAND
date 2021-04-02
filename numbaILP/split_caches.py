@@ -45,12 +45,15 @@ def expand_nominal_split_cache(st, n_vals,n_classes):
     v_counts[len(st.v_counts):] = 0
     st.v_counts = v_counts
 
+
+    # print("EXPAND", st.y_counts_per_v)
     y_counts_per_v = np.empty((n_vals,n_classes),dtype=np.uint32)
     shp = st.y_counts_per_v.shape
     y_counts_per_v[:shp[0],:shp[1]] = st.y_counts_per_v
     y_counts_per_v[:shp[0],shp[1]:] = 0
-    y_counts_per_v[:shp[0]] = 0
+    y_counts_per_v[shp[0]:] = 0
     st.y_counts_per_v = y_counts_per_v
+    # print("AFTER", st.y_counts_per_v)
     return st
 
 

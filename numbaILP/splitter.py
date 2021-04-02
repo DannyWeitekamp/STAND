@@ -23,10 +23,12 @@ from numbaILP.fnvhash import hasharray#, AKD#, akd_insert,akd_get
 from numbaILP.tree_structs import *
 from numbaILP.data_stats import *
 from numbaILP.split_caches import *
-from numbaILP.m_patch_array_hash import *
+# from numbaILP.m_patch_array_hash import *
+from numbaILP.akd import new_akd, AKDType
 
 
 import logging
+import time
 
 
 # numba_logger = logging.getLogger('numba')
@@ -101,7 +103,7 @@ def unique_counts(inp):
 
 
 @njit(cache=True,parallel=False)
-def update_nominal_impurities(tree, splitter_context):
+def update_nominal_impurities(tree, splitter_context, iterative):
     #Make various variables local
     ds = tree.data_stats
     sc = splitter_context
@@ -118,6 +120,24 @@ def update_nominal_impurities(tree, splitter_context):
     # n_const_fts = sc.n_const_fts
     sample_inds = sc.sample_inds
     n_samples = len(sc.sample_inds)
+
+
+    # If in iterative mode then only update from where left off 
+    if(iterative):
+        # print("last_update", sc.n_last_update, n_samples)
+        
+        if(sc.n_last_update == n_samples): return
+        # print("BEF",sample_inds)
+        sample_inds = sample_inds[sc.n_last_update:]
+        # last_update_ind = 0
+        # for i in range(0, n_samples,-1):
+        #     if(sample_inds[i] < sc.n_last_update):
+        #         last_update_ind = i+1
+        #         break
+        # print(last_update_ind)
+        # sample_inds = sample_inds[last_update_ind:]
+        # print("AFT", sample_inds, sc.n_last_update)
+
     y_counts = sc.y_counts
     impurity = sc.impurity
     
@@ -145,12 +165,15 @@ def update_nominal_impurities(tree, splitter_context):
         j = k_j#feature_inds[k_j]
         n_vals_j = n_vals[j]
         cache_ptr = sc.nominal_split_cache_ptrs[j]
-        # print(cache_ptr, n_vals_j, n_classes)
+        # print(k_j, cache_ptr, n_vals_j, n_classes)
         if(cache_ptr != 0):
+
             split_cache = _struct_from_pointer(NominalSplitCacheType, cache_ptr)
             split_cache_shape = split_cache.y_counts_per_v.shape
             if(split_cache_shape[0] != n_vals_j or split_cache_shape[1] != n_classes):
+                # print("EXPAND")
                 expand_nominal_split_cache(split_cache, n_vals_j, n_classes)
+            # print("reusing", k_j, split_cache.v_counts)
         else:
             split_cache = NominalSplitCache_ctor(n_vals_j, n_classes)
             sc.nominal_split_cache_ptrs[j] = _pointer_from_struct_incref(split_cache)
@@ -160,7 +183,7 @@ def update_nominal_impurities(tree, splitter_context):
         # print("ZB")
         v_counts       = split_cache.v_counts
         y_counts_per_v = split_cache.y_counts_per_v
-        # print(y_counts_per_v, v_counts)
+        # print("BEF", y_counts_per_v, v_counts)
         # else:
         # y_counts_per_feature = np.zeros((n_vals_j,n_classes),dtype=np.uint32)
         # v_counts_per_feature = np.zeros((n_vals_j),dtype=np.uint32)
@@ -213,12 +236,13 @@ def update_nominal_impurities(tree, splitter_context):
         # print("ZZC")
 
     sc.impurities = impurities
+    sc.n_last_update = n_samples
     # print(impurities)
     # print("ZC")
     # print(best_ind)
 
 u4_arr = u4[:]
-empty_i8 = np.zeros(0,dtype=np.int64)
+empty_u8 = np.zeros(0,dtype=np.uint64)
 
 @njit(cache=True)
 def build_root(tree, iterative=False):
@@ -229,20 +253,20 @@ def build_root(tree, iterative=False):
     impurity = gini(len(Y), ds.y_counts)
     
     #Make Root Node
-    node_dict = Dict.empty(u4_arr,i4)
+    node_dict = new_akd(u4,i4)
     nodes = List.empty_list(TreeNodeType)
     node = TreeNode_ctor(TTYPE_NODE,i4(0),ds.y_counts)
     nodes.append(node)
     tree.nodes = nodes
 
     #Make Root Context
-    if(iterative and empty_i8 in tree.context_cache):
-        c = tree.context_cache[empty_i8]
+    if(iterative and empty_u8 in tree.context_cache):
+        c = tree.context_cache[empty_u8]
     else:
-        c = SplitterContext_ctor(empty_i8)
+        c = SplitterContext_ctor(empty_u8)
     
     reinit_splittercontext(c, node, sample_inds, ds.y_counts, impurity)    
-    if(tree.ifit_enabled): tree.context_cache[empty_i8] = c
+    if(tree.ifit_enabled): tree.context_cache[empty_u8] = c
 
     context_stack = List.empty_list(SplitterContextType)
     context_stack.append(c)
@@ -293,18 +317,18 @@ TTYPE_NODE = u1(1)
 TTYPE_LEAF = u1(2)
 
 @njit(cache=True)
-def next_split_chain(c, split, val):
+def next_split_chain(c, is_right, is_cont, split, val):
     l = len(c.split_chain)
-    split_chain = np.empty(l+1,dtype=np.int64)
+    split_chain = np.empty(l+1,dtype=np.uint64)
     split_chain[:l] = c.split_chain
-    split_chain[l] = (split << 32) & val
+    split_chain[l] = (is_cont << 63) | (is_right << 62) | (split << 32) | val
     return split_chain
 
 
 
 @njit(cache=True)
-def new_node(locs, tree, sample_inds, y_counts, impurity):
-    c, best_split, iterative,  node_dict, context_stack, cache_nodes = locs
+def new_node(locs, tree, sample_inds, y_counts, impurity, is_right):
+    c, best_split, best_val,  iterative,  node_dict, context_stack, cache_nodes = locs
     nodes = tree.nodes
         # node_dict,nodes,new_contexts,cache_nodes = locs
         # NODE, LEAF = i4(1), i4(2) #np.array(1,dtype=np.int32).item(), np.array(2,dtype=np.int32).item()
@@ -319,15 +343,24 @@ def new_node(locs, tree, sample_inds, y_counts, impurity):
             node = TreeNode_ctor(TTYPE_NODE, node_id, y_counts)
             nodes.append(node)
 
-            split_chain = next_split_chain(c, best_split, 0)
+            split_chain = next_split_chain(c, is_right, 0, best_split, best_val)
+            # print('split_chain', split_chain, best_split)
             if(iterative and split_chain in tree.context_cache):
                 new_c = tree.context_cache[split_chain]
+                # print(new_c)
+                ok = np.array_equal(new_c.split_chain, split_chain)
+                # print("ALL OK", ok)
+                # if(not ok):
+                #     print(new_c.split_chain)
+                #     print(split_chain)
+                #     print(hash(new_c.split_chain), hash(split_chain))
+                
             else:     
                 new_c = SplitterContext_ctor(split_chain)
+                if(tree.ifit_enabled): tree.context_cache[split_chain] = new_c
 
             reinit_splittercontext(new_c, node, sample_inds, y_counts, impurity)
             context_stack.append(new_c)
-
         else:
             nodes.append(TreeNode_ctor(TTYPE_LEAF, node_id, y_counts))
     return node_id
@@ -351,12 +384,13 @@ def extract_nominal_split_info(tree, c, split):
     y_counts_r = splt_c.y_counts_per_v[splt_c.best_v]
     y_counts_l = c.y_counts - y_counts_r
     # print("P")
-    # print(c.y_counts,y_counts_l, y_counts_r)
+    # print(tree.data_stats.n_samples,c.y_counts,y_counts_l, y_counts_r)
 
     inds_l = np.empty(np.sum(y_counts_l), dtype=np.uint32)
     inds_r = np.empty(np.sum(y_counts_r), dtype=np.uint32)
     p_l, p_r = 0, 0
     for ind in c.sample_inds:
+        # print(ind)
         if (ds.X_nom[ind, split]==splt_c.best_v):
             inds_r[p_r] = ind
             p_r += 1
@@ -389,7 +423,7 @@ def fit_tree(tree, config, iterative=False):
     while(len(context_stack) > 0):
         # print("AZ")
         c = context_stack.pop()
-        update_nominal_impurities(tree,c)
+        update_nominal_impurities(tree, c ,iterative)
         # print("BZ")
         # print(c.impurities[:,0],c.start,c.end)
         best_split = np.argmin(c.impurities[:,0])
@@ -410,9 +444,9 @@ def fit_tree(tree, config, iterative=False):
             else:
                 # print("S2", split)
                 ptr = _pointer_from_struct(c)
-                locs = (c, best_split, iterative, node_dict, context_stack, cache_nodes)
-                node_l = new_node(locs, tree, inds_l, y_counts_l, imp_l)
-                node_r = new_node(locs, tree, inds_r, y_counts_r, imp_r)
+                locs = (c, best_split, val, iterative, node_dict, context_stack, cache_nodes)
+                node_l = new_node(locs, tree, inds_l, y_counts_l, imp_l, 0)
+                node_r = new_node(locs, tree, inds_r, y_counts_r, imp_r, 1)
 
                 split_data = SplitData(u1(False),i4(split), i4(val), i4(node_l), i4(node_r))
                 #np.array([split, val, node_l, node_r, -1],dtype=np.int32)
@@ -425,7 +459,7 @@ def fit_tree(tree, config, iterative=False):
             # print("C")
         
         # _decref_pointer(ptr)
-        
+    return 0
     # print("DONE")
     # return Tree(nodes,data_stats.u_ys)
 
@@ -752,7 +786,7 @@ class TreeClassifier(object):
         self.config = new_config(ConfigType)
         self.tree = Tree_ctor(self.tree_type)
 
-        print(self.tree)
+        # print(self.tree)
 
         # @njit(cache=True)
         # def _fit(xb,xc,y,miss_mask,ft_weights): 
@@ -799,6 +833,10 @@ class TreeClassifier(object):
         if(X_cont is None): X_cont = np.empty((0,0), dtype=np.float32)
         # if(miss_mask is None): miss_mask = np.zeros_like(xc, dtype=np.bool)
         # if(ft_weights is None): ft_weights = np.empty(xb.shape[1]+xc.shape[1], dtype=np.float64)
+        if(X_nom.ndim != 2): raise ValueError(f"X_nom shoud be 2 dimensional, got shape {X_nom.shape}")
+        if(X_cont.ndim != 2): raise ValueError(f"X_cont shoud be 2 dimensional, got shape {X_cont.shape}")
+        if(Y.ndim != 1): raise ValueError(f"Y shoud be 1 dimensional, got shape {Y.shape}")
+
         X_nom = X_nom.astype(np.int32)
         X_cont = X_cont.astype(np.float32)
         Y = Y.astype(np.int32)
@@ -810,11 +848,11 @@ class TreeClassifier(object):
         # self.tree.data_stats = DataStats_ctor()
         # clear_tree_datastats(self.tree)
         # print("A")
-        print(X_nom,X_nom.dtype)
+        # print(X_nom,X_nom.dtype)
         reinit_tree_datastats(self.tree, X_nom, X_cont, Y)
-        print("B")
+        # print("B")
         fit_tree(self.tree, self.config, False)
-        print("C")
+        # print("C")
 
     # def inf_gain(self,xb,xc,y,miss_mask=None, ft_weights=None):
     #     if(xb is None): xb = np.empty((0,0), dtype=np.uint8)
@@ -993,15 +1031,32 @@ print(dt.predict(X, X_cont)) #predict_tree(tree,X, X_cont, PRED_CHOICE_majority)
 
 print("------------------------------------")
 
+X,Y = build_XY(N=1000,M=100)
 dt = TreeClassifier()
 x_c = np.zeros((0,),dtype=np.float32)
-for x_n, y in zip(X, Y):
+for i,(x_n, y) in enumerate(zip(X, Y)):
+    print(i)
+    t = time.time_ns()
     dt.ifit(x_n, x_c, y)
-    # break
+    
+    print(f"{(time.time_ns()-t)/1e6} ms")
 
+
+
+    # break
+print("iFIT DONE")
 print(dt)
-print(dt.tree.data_stats.X_nom)
-print(dt.tree.data_stats.Y)
+# print(dt.tree.data_stats.X_nom)
+# print(dt.tree.data_stats.Y)
+
+dt_f = TreeClassifier()
+dt_f.fit(X,X_cont,Y)
+print(dt_f)
+
+print(dt.predict(X,X_cont))
+print(dt_f.predict(X,X_cont))
+
+print(dt_f.predict(X,X_cont) == dt.predict(X,X_cont))
 
 
 

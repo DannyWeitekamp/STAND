@@ -20,6 +20,7 @@ from numbaILP.structref import define_structref
 
 
 
+
 optims1 = {"nogil":True,"fastmath":True,"inline":'never'}
 optims0 = {"inline":'never'}
 
