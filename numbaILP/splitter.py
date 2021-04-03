@@ -200,16 +200,17 @@ def update_nominal_impurities(tree, splitter_context, iterative):
             # for c in range(n_vals_j):
         # print("ZZB")
 
+        b_ft_val = 0 
         #If this feature is found to be constant then skip computing impurity
         if(np.sum(v_counts > 0) <= 1):
             # print("ZZAB")
-            split_cache.best_v = 0
+            # split_cache.best_v = 0
             impurities[k_j,0] = impurity
             impurities[k_j,1] = impurity
             impurities[k_j,2] = impurity
         else:
             # print("ZZBB")
-            b_imp_tot, b_imp_l, b_imp_r, b_ft_val = np.inf, 0, 0, 0
+            b_imp_tot, b_imp_l, b_imp_r = np.inf, 0, 0,
             for ft_val in range(n_vals_j):
                 counts_r = y_counts_per_v[ft_val]
                 total_r = np.sum(counts_r)
@@ -228,12 +229,15 @@ def update_nominal_impurities(tree, splitter_context, iterative):
                 imp_tot = ((total_l/n_samples) * imp_l) + ((total_r/n_samples) * imp_r)
                 if(imp_tot < b_imp_tot):
                     b_imp_tot, b_imp_l, b_imp_r, b_ft_val = imp_tot, imp_l, imp_r, ft_val
-            # print("ZZCB")
-            split_cache.best_v = b_ft_val
+            # print("ZZCB")            
             impurities[k_j,0] = b_imp_tot
             impurities[k_j,1] = b_imp_l
             impurities[k_j,2] = b_imp_r
+
         # print("ZZC")
+        # split_cache.prev_best_v = split_cache.best_v
+        split_cache.best_v = b_ft_val
+
 
     sc.impurities = impurities
     sc.n_last_update = n_samples
@@ -275,43 +279,43 @@ def build_root(tree, iterative=False):
     return context_stack, node_dict, nodes
 
 
-@njit(cache=True)
-def choose_next_splits():
-    pass
+# @njit(cache=True)
+# def choose_next_splits():
+#     pass
 
 
-###### Array Keyed Dictionaries ######
+# ###### Array Keyed Dictionaries ######
 
-# BE = Tuple([u1[::1],i4])
-# BE_List = ListType(BE)
+# # BE = Tuple([u1[::1],i4])
+# # BE_List = ListType(BE)
 
-@njit(nogil=True,fastmath=True)
-def akd_insert(akd,_arr,item,h=None):
-    '''Inserts an i4 item into the dictionary keyed by an array _arr'''
-    arr = _arr.view(np.uint8)
-    if(h is None): h = hasharray(arr)
-    elems = akd.get(h,List.empty_list(BE))
-    is_in = False
-    for elem in elems:
-        if(len(elem[0]) == len(arr) and
-            (elem[0] == arr).all()): 
-            is_in = True
-            break
-    if(not is_in):
-        elems.append((arr,item))
-        akd[h] = elems
+# @njit(nogil=True,fastmath=True)
+# def akd_insert(akd,_arr,item,h=None):
+#     '''Inserts an i4 item into the dictionary keyed by an array _arr'''
+#     arr = _arr.view(np.uint8)
+#     if(h is None): h = hasharray(arr)
+#     elems = akd.get(h,List.empty_list(BE))
+#     is_in = False
+#     for elem in elems:
+#         if(len(elem[0]) == len(arr) and
+#             (elem[0] == arr).all()): 
+#             is_in = True
+#             break
+#     if(not is_in):
+#         elems.append((arr,item))
+#         akd[h] = elems
 
-@njit(nogil=True,fastmath=True)
-def akd_get(akd,_arr,h=None):
-    '''Gets an i4 from a dictionary keyed by an array _arr'''
-    arr = _arr.view(np.uint8)
-    if(h is None): h = hasharray(arr) 
-    if(h in akd):
-        for elem in akd[h]:
-            if(len(elem[0]) == len(arr) and
-                (elem[0] == arr).all()): 
-                return elem[1]
-    return -1
+# @njit(nogil=True,fastmath=True)
+# def akd_get(akd,_arr,h=None):
+#     '''Gets an i4 from a dictionary keyed by an array _arr'''
+#     arr = _arr.view(np.uint8)
+#     if(h is None): h = hasharray(arr) 
+#     if(h in akd):
+#         for elem in akd[h]:
+#             if(len(elem[0]) == len(arr) and
+#                 (elem[0] == arr).all()): 
+#                 return elem[1]
+#     return -1
 
 
 TTYPE_NODE = u1(1)
@@ -319,6 +323,10 @@ TTYPE_LEAF = u1(2)
 
 @njit(cache=True)
 def next_split_chain(c, is_right, is_cont, split, val):
+    ''' Make a new split chain by adding an encoding of 
+        'is_right', 'is_cont', 'split', and 'val' to the 
+        end of the previous split chain.
+    '''
     l = len(c.split_chain)
     split_chain = np.empty(l+1,dtype=np.uint64)
     split_chain[:l] = c.split_chain
@@ -329,6 +337,7 @@ def next_split_chain(c, is_right, is_cont, split, val):
 
 @njit(cache=True)
 def new_node(locs, tree, sample_inds, y_counts, impurity, is_right):
+    ''' Creates a new node and a new context to compute its child nodes'''
     c, best_split, best_val,  iterative,  node_dict, context_stack, cache_nodes = locs
     nodes = tree.nodes
         # node_dict,nodes,new_contexts,cache_nodes = locs
@@ -373,12 +382,15 @@ def new_node(locs, tree, sample_inds, y_counts, impurity, is_right):
 
 
 @njit(cache=True)
-def extract_nominal_split_info(tree, c, split):
+def extract_nominal_split_info(tree, c, split, iterative=False):
     ds = tree.data_stats
     bst_imps = c.impurities[split]
     imp_tot, imp_l, imp_r = bst_imps[0], bst_imps[1], bst_imps[2]
-    # print("Q")
+    # print("\nQ", split, c.nominal_split_cache_ptrs[split])
+    # print(c.split_chain)
+
     splt_c = _struct_from_pointer(NominalSplitCacheType, c.nominal_split_cache_ptrs[split])
+
     best_v = splt_c.best_v
     # print(splt_c.y_counts_per_v)
     # print(splt_c.best_v)
@@ -386,12 +398,61 @@ def extract_nominal_split_info(tree, c, split):
     y_counts_l = c.y_counts - y_counts_r
     # print("P")
     # print(tree.data_stats.n_samples,c.y_counts,y_counts_l, y_counts_r)
+    n_l = np.sum(y_counts_l)
+    n_r = np.sum(y_counts_r)
 
-    inds_l = np.empty(np.sum(y_counts_l), dtype=np.uint32)
-    inds_r = np.empty(np.sum(y_counts_r), dtype=np.uint32)
-    p_l, p_r = 0, 0
-    for ind in c.sample_inds:
+    # print("POOP", splt_c.best_v, splt_c.prev_best_v)
+
+    recalc_all = (splt_c.best_v != splt_c.prev_best_v)
+
+    prev_n_l, prev_n_r = 0,0
+    if(not tree.ifit_enabled):
+        inds_l = np.empty(n_l, dtype=np.uint32)
+        inds_r = np.empty(n_r, dtype=np.uint32)
+    else:
+        if(recalc_all):
+            # print("INIT", splt_c.prev_best_v, "->", splt_c.best_v)
+            splt_c.l_inds_buffer = np.empty(max(8,n_l*2),dtype=np.uint32)
+            splt_c.r_inds_buffer = np.empty(max(8,n_r*2),dtype=np.uint32)
+        else:
+            # print("UPD", splt_c.best_v)
+            prev_n_l = len(splt_c.l_inds)
+            prev_n_r = len(splt_c.r_inds)
+
+
+
+            if(n_l > len(splt_c.l_inds_buffer)):
+                buff = np.empty(n_l*2,dtype=np.uint32)
+                buff[:prev_n_l] = splt_c.l_inds
+                splt_c.l_inds_buffer = buff
+
+            if(n_r > len(splt_c.r_inds_buffer)):
+                buff = np.empty(n_r*2,dtype=np.uint32)
+                buff[:prev_n_r] = splt_c.r_inds
+                splt_c.r_inds_buffer = buff
+
+        inds_l = splt_c.l_inds = splt_c.l_inds_buffer[:n_l]
+        inds_r = splt_c.r_inds = splt_c.r_inds_buffer[:n_r]
+
+    # print("GOOP")
+
+    if(not iterative):
+        sample_inds = c.sample_inds
+        p_l, p_r = 0, 0
+    else:
+        # print(splt_c.n_last_update, len(c.sample_inds))
+        sample_inds = c.sample_inds if(recalc_all) \
+                        else c.sample_inds[splt_c.n_last_update:]
+        p_l, p_r = prev_n_l, prev_n_r
+
+    # print("BE", p_l,":", n_l,",", p_r,":", n_r, len(splt_c.l_inds_buffer), len(splt_c.r_inds_buffer))
+    # print("UPDATED", splt_c.n_last_update, len(sample_inds), len(c.sample_inds))
+    # print("XXX", n_l, n_r, inds_l, inds_r)
+    # print(splt_c.best_v, splt_c.prev_best_v)
+
+    for ind in sample_inds:
         # print(ind)
+        # print(ds.X_nom[ind, split])
         if (ds.X_nom[ind, split]==splt_c.best_v):
             inds_r[p_r] = ind
             p_r += 1
@@ -399,7 +460,18 @@ def extract_nominal_split_info(tree, c, split):
             inds_l[p_l] = ind
             p_l += 1
 
-    # print(inds_l, inds_r)
+    # print("AF", p_l ,":", n_l, ",", p_r,":", n_r)
+
+    # print(c.sample_inds)
+    # print(sample_inds)
+            
+    if(p_l != n_l or p_r != n_r):
+        raise RuntimeError()
+    splt_c.n_last_update = len(c.sample_inds)
+    splt_c.prev_best_v = splt_c.best_v
+
+    
+    
     # print("P")
     # print(inds_l, inds_r)
 
@@ -432,7 +504,7 @@ def fit_tree(tree, config, iterative=False):
             # print("S", split)
 
             inds_l, inds_r, y_counts_l, y_counts_r, imp_tot, imp_l, imp_r, val = \
-                extract_nominal_split_info(tree, c, split)
+                extract_nominal_split_info(tree, c, split, iterative)
 
             # print("S1", split)
 

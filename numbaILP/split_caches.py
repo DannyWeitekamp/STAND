@@ -17,9 +17,33 @@ import numpy as np
 #### NominalSplitCache ####
 
 nominal_split_cache_fields = [
+    ### Core Cache Info ###
+
+    # The best value to split on
     ('best_v', i4),
+    # The counts for each value
     ('v_counts', u4[:]),
+    # The counts for each label by selecting on each value
     ('y_counts_per_v', u4[:,:]),
+
+    ### Cache info for left and right indicies ###
+
+    # The best value to split on the previous time this was updated
+    ('prev_best_v', i4),
+    # Cache of the indicies for the samples going into the left and right 
+    ('l_inds', u4[::1]),
+    ('r_inds', u4[::1]),
+    # Buffer for l_inds and r_inds to help reduce frequency of resizing
+    ('l_inds_buffer', u4[::1]),
+    ('r_inds_buffer', u4[::1]),
+
+    # The number of samples in the previous update
+    ('n_last_update', i4),
+    # The number of samples that went to the left and right in the previous
+    #  update
+    # ('n_l_last_update', i4),
+    # ('n_r_last_update', i4),
+    
 ]
 
 NominalSplitCache, NominalSplitCacheType = \
@@ -36,6 +60,11 @@ def NominalSplitCache_ctor(n_vals, n_classes):
     st.best_v = -1
     st.v_counts = np.zeros((n_vals,),dtype=np.uint32)
     st.y_counts_per_v = np.zeros((n_vals,n_classes),dtype=np.uint32)
+
+    st.prev_best_v = -1
+    st.n_last_update = 0
+    # st.n_l_last_update = 0
+    # st.n_r_last_update = 0
     return st
 
 @njit(cache=True)
