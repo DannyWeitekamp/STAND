@@ -100,6 +100,52 @@ def unique_counts(inp):
 # ]
 
 
+@njit(cache=True)
+def _fill_nominal_impurities(tree, splitter_context, split_cache, n_vals_j, k_j):
+    b_ft_val = 0 
+    v_counts       = split_cache.v_counts
+    y_counts_per_v = split_cache.y_counts_per_v
+
+    impurity = splitter_context.impurity
+    impurities = splitter_context.impurities
+    y_counts = splitter_context.y_counts
+    n_samples = len(splitter_context.sample_inds)
+    #If this feature is found to be constant then skip computing impurity
+    if(np.sum(v_counts > 0) <= 1):
+        # print("ZZAB")
+        # split_cache.best_v = 0
+        impurities[k_j,0] = impurity
+        impurities[k_j,1] = impurity
+        impurities[k_j,2] = impurity
+    else:
+        # print("ZZBB")
+        b_imp_tot, b_imp_l, b_imp_r = np.inf, 0, 0,
+        for ft_val in range(n_vals_j):
+            counts_r = y_counts_per_v[ft_val]
+            total_r = np.sum(counts_r)
+            # print("Z",ft_val, y_counts, counts_r)
+
+            counts_l = y_counts-counts_r
+            total_l = n_samples-total_r
+
+            # print("Z",total_l, counts_l)
+
+            imp_l = gini(total_l, counts_l)
+            imp_r = gini(total_r, counts_r)
+
+            # print("Z1",ft_val)
+
+            imp_tot = ((total_l/n_samples) * imp_l) + ((total_r/n_samples) * imp_r)
+            if(imp_tot < b_imp_tot):
+                b_imp_tot, b_imp_l, b_imp_r, b_ft_val = imp_tot, imp_l, imp_r, ft_val
+        # print("ZZCB")            
+        impurities[k_j,0] = b_imp_tot
+        impurities[k_j,1] = b_imp_l
+        impurities[k_j,2] = b_imp_r
+
+    # print("ZZC")
+    # split_cache.prev_best_v = split_cache.best_v
+    split_cache.best_v = b_ft_val
 
 
 @njit(cache=True,parallel=False)
@@ -156,7 +202,7 @@ def update_nominal_impurities(tree, splitter_context, iterative):
     # n_non_const = len(feature_inds)#-n_const_fts
     # print(len(feature_inds), n_const_fts, n_non_const)
     # print("ZA")
-    impurities = np.empty((X.shape[1],3),dtype=np.float64)
+    sc.impurities = impurities = np.empty((X.shape[1],3),dtype=np.float64)
     # b_split, b_split_imp_total = 0, np.inf
     #Go through the samples in Fortran order (i.e. feature then sample)
     # for k_j in prange(0,n_non_const):
@@ -200,46 +246,10 @@ def update_nominal_impurities(tree, splitter_context, iterative):
             # for c in range(n_vals_j):
         # print("ZZB")
 
-        b_ft_val = 0 
-        #If this feature is found to be constant then skip computing impurity
-        if(np.sum(v_counts > 0) <= 1):
-            # print("ZZAB")
-            # split_cache.best_v = 0
-            impurities[k_j,0] = impurity
-            impurities[k_j,1] = impurity
-            impurities[k_j,2] = impurity
-        else:
-            # print("ZZBB")
-            b_imp_tot, b_imp_l, b_imp_r = np.inf, 0, 0,
-            for ft_val in range(n_vals_j):
-                counts_r = y_counts_per_v[ft_val]
-                total_r = np.sum(counts_r)
-                # print("Z",ft_val, y_counts, counts_r)
-
-                counts_l = y_counts-counts_r
-                total_l = n_samples-total_r
-
-                # print("Z",total_l, counts_l)
-
-                imp_l = gini(total_l, counts_l)
-                imp_r = gini(total_r, counts_r)
-
-                # print("Z1",ft_val)
-
-                imp_tot = ((total_l/n_samples) * imp_l) + ((total_r/n_samples) * imp_r)
-                if(imp_tot < b_imp_tot):
-                    b_imp_tot, b_imp_l, b_imp_r, b_ft_val = imp_tot, imp_l, imp_r, ft_val
-            # print("ZZCB")            
-            impurities[k_j,0] = b_imp_tot
-            impurities[k_j,1] = b_imp_l
-            impurities[k_j,2] = b_imp_r
-
-        # print("ZZC")
-        # split_cache.prev_best_v = split_cache.best_v
-        split_cache.best_v = b_ft_val
+        _fill_nominal_impurities(tree, sc, split_cache, n_vals_j, j)
 
 
-    sc.impurities = impurities
+     # = impurities
     sc.n_last_update = n_samples
     # print(impurities)
     # print("ZC")
@@ -1103,54 +1113,34 @@ print(dt)
 print(dt.predict(X, X_cont)) #predict_tree(tree,X, X_cont, PRED_CHOICE_majority))
 
 print("------------------------------------")
-
-X,Y = build_XY(N=1000,M=100)
-dt = TreeClassifier()
-x_c = np.zeros((0,),dtype=np.float32)
-for i,(x_n, y) in enumerate(zip(X, Y)):
-    print(i)
-    t = time.time_ns()
-    dt.ifit(x_n, x_c, y)
+#KEEP 
+# X,Y = build_XY(N=1000,M=100)
+# dt = TreeClassifier()
+# x_c = np.zeros((0,),dtype=np.float32)
+# for i,(x_n, y) in enumerate(zip(X, Y)):
+#     print(i)
+#     t = time.time_ns()
+#     dt.ifit(x_n, x_c, y)
     
-    print(f"{(time.time_ns()-t)/1e6} ms")
+#     print(f"{(time.time_ns()-t)/1e6} ms")
 
 
 
-    # break
-print("iFIT DONE")
-print(dt)
-# print(dt.tree.data_stats.X_nom)
-# print(dt.tree.data_stats.Y)
+# print("iFIT DONE")
+# print(dt)
 
-dt_f = TreeClassifier()
-dt_f.fit(X,X_cont,Y)
-print(dt_f)
+# dt_f = TreeClassifier()
+# dt_f.fit(X,X_cont,Y)
+# print(dt_f)
 
-print(dt.predict(X,X_cont))
-print(dt_f.predict(X,X_cont))
+# print(dt.predict(X,X_cont))
+# print(dt_f.predict(X,X_cont))
 
-print(dt_f.predict(X,X_cont) == dt.predict(X,X_cont))
-
-
-
-                
-
-
-            # counts_imps[0+c+y_j] += 1
+# print(dt_f.predict(X,X_cont) == dt.predict(X,X_cont))
 
 
 
 
-
-
-
-
-
-
-
-
-
-# class DecisionTree2(TreeClassifier):
 class DecisionTree2(object):
     # def __init__(self, impl="decision_tree", use_missing=False):
     def __init__(self, impl="decision_tree_w_greedy_backup", use_missing=False):
