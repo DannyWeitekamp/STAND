@@ -16,7 +16,7 @@ import os
 from operator import itemgetter
 
 from numba import config, njit, threading_layer
-from numba.np.ufunc.parallel import _get_thread_id
+# from numba.np.ufunc.parallel import _get_thread_id
 from sklearn.preprocessing import OneHotEncoder
 from numbaILP.fnvhash import hasharray#, AKD#, akd_insert,akd_get
 
@@ -156,6 +156,7 @@ def update_nominal_impurities(tree, splitter_context, iterative):
 
     # n_samples, start, end = sc.n_samples, sc.start, sc.end
     X, Y = ds.X_nom, ds.Y
+    # print("??", X.shape)
     n_vals = ds.n_vals
     # n_samples = ds.n_samples
     n_classes = ds.n_classes
@@ -245,7 +246,7 @@ def update_nominal_impurities(tree, splitter_context, iterative):
             v_counts[X[i,j]] += 1
             # for c in range(n_vals_j):
         # print("ZZB")
-
+        # print(k_j, "::", v_counts, y_counts_per_v)
         _fill_nominal_impurities(tree, sc, split_cache, n_vals_j, j)
 
 
@@ -267,7 +268,7 @@ def build_root(tree, iterative=False):
     impurity = gini(len(Y), ds.y_counts)
     
     #Make Root Node
-    node_dict = new_akd(u4,i4)
+    node_dict = new_akd(u4_arr,i4)
     nodes = List.empty_list(TreeNodeType)
     node = TreeNode_ctor(TTYPE_NODE,i4(0),ds.y_counts)
     nodes.append(node)
@@ -415,6 +416,7 @@ def extract_nominal_split_info(tree, c, split, iterative=False):
 
     recalc_all = (splt_c.best_v != splt_c.prev_best_v)
 
+    # Ensure inds_l and inds_r are large enough
     prev_n_l, prev_n_r = 0,0
     if(not tree.ifit_enabled):
         inds_l = np.empty(n_l, dtype=np.uint32)
@@ -428,8 +430,6 @@ def extract_nominal_split_info(tree, c, split, iterative=False):
             # print("UPD", splt_c.best_v)
             prev_n_l = len(splt_c.l_inds)
             prev_n_r = len(splt_c.r_inds)
-
-
 
             if(n_l > len(splt_c.l_inds_buffer)):
                 buff = np.empty(n_l*2,dtype=np.uint32)
@@ -446,6 +446,7 @@ def extract_nominal_split_info(tree, c, split, iterative=False):
 
     # print("GOOP")
 
+    # Find sample_inds, the set of instance inds we need to update counts for. 
     if(not iterative):
         sample_inds = c.sample_inds
         p_l, p_r = 0, 0
@@ -460,6 +461,9 @@ def extract_nominal_split_info(tree, c, split, iterative=False):
     # print("XXX", n_l, n_r, inds_l, inds_r)
     # print(splt_c.best_v, splt_c.prev_best_v)
 
+    # Append to inds_l and inds_r
+    # print(ds.X_nom)
+    # print("<<", split, '==', splt_c.best_v, sample_inds, ds.X_nom[sample_inds, split])
     for ind in sample_inds:
         # print(ind)
         # print(ds.X_nom[ind, split])
@@ -474,9 +478,10 @@ def extract_nominal_split_info(tree, c, split, iterative=False):
 
     # print(c.sample_inds)
     # print(sample_inds)
-            
+    
+    # NOTE: Can problably delete     
     if(p_l != n_l or p_r != n_r):
-        raise RuntimeError()
+        raise RuntimeError("Failed to fully update counts.")
     splt_c.n_last_update = len(c.sample_inds)
     splt_c.prev_best_v = splt_c.best_v
 
@@ -516,7 +521,7 @@ def fit_tree(tree, config, iterative=False):
             inds_l, inds_r, y_counts_l, y_counts_r, imp_tot, imp_l, imp_r, val = \
                 extract_nominal_split_info(tree, c, split, iterative)
 
-            # print("S1", split)
+            # print("S1", split, inds_l, inds_r, val, "\n")
 
             # if(impurity_decrease[split] <= 0.0):
             
@@ -620,31 +625,30 @@ def pred_choice_func(leaf_counts, cfg):
         return choose_pure_majority_general(leaf_counts, cfg.positive_class)
     return choose_majority(leaf_counts, cfg.positive_class)
 
-@njit(nogil=True,fastmath=True, cache=True, locals={"ZERO":u1, "VISIT":u1, "VISITED": u1, "_n":i4})
+@njit(nogil=True,fastmath=True, cache=True, locals={"ZERO":u1, "TO_VISIT":u1, "VISITED": u1, "_n":i4})
 def predict_tree(tree, x_nom, x_cont, config):#, pred_choice_enum, positive_class=0,decode_classes=True):
     '''Predicts the class associated with an unlabelled sample using a fitted 
         decision/ambiguity tree'''
-    ZERO, VISIT, VISITED = 0, 1, 2
+    ZERO, TO_VISIT, VISITED = 0, 1, 2
     L = max(len(x_nom),len(x_cont))
     out = np.empty((L,),dtype=np.int64)
     y_uvs = tree.data_stats.u_ys#_get_y_order(tree)
+    nom_v_maps = tree.data_stats.nom_v_maps
     for i in range(L):
         # Use a mask instead of a list to avoid repeats that can blow up
         #  if multiple splits are possible. Keep track of visited in case
         #  of loops (Although there should not be any loops).
         new_node_mask = np.zeros((len(tree.nodes),),dtype=np.uint8)
-        new_node_mask[0] = 1
-        node_inds = np.nonzero(new_node_mask==VISIT)[0]
+        new_node_mask[0] = TO_VISIT
+        nodes_to_visit = np.nonzero(new_node_mask==TO_VISIT)[0]
+        # print(node_inds)
         leafs = List()
 
-        while len(node_inds) > 0:
-            #Mark all node_inds as visited so we don't mark them for a revisit
-            for ind in node_inds:
-                new_node_mask[ind] = VISITED
-
+        while len(nodes_to_visit) > 0:
             # Go through every node that has been queued for a visit. In a traditional
             #  decision tree there should only ever be one next node.
-            for ind in node_inds:
+            # print(nodes_to_visit)
+            for ind in nodes_to_visit:
                 node = tree.nodes[ind]
                 op = node.op_enum
                 if(node.ttype == TTYPE_NODE):
@@ -656,7 +660,8 @@ def predict_tree(tree, x_nom, x_cont, config):#, pred_choice_enum, positive_clas
                         # Determine if this sample should feed right, left, or nan (if ternary)
                         if(not sd.is_continous):
                             # Nominal case
-                            if(x_nom[i,sd.split_ind]==sd.val):
+                            mapped_val = nom_v_maps[sd.split_ind][x_nom[i,sd.split_ind]]
+                            if(mapped_val==sd.val):
                                 _n = sd.right
                             else:
                                 _n = sd.left
@@ -672,16 +677,21 @@ def predict_tree(tree, x_nom, x_cont, config):#, pred_choice_enum, positive_clas
                         #         _n = right
                         #     else:
                         #         _n = left
-                        if(new_node_mask[_n] != VISITED): new_node_mask[_n] = VISIT
+                        if(new_node_mask[_n] != VISITED): new_node_mask[_n] = TO_VISIT
                             
                 else:
                     leafs.append(node.counts)
 
-            node_inds = np.nonzero(new_node_mask==VISIT)[0]
+            #Mark all nodes_to_visit as visited so we don't mark them for a revisit
+            for ind in nodes_to_visit:
+                new_node_mask[ind] = VISITED
+
+            nodes_to_visit = np.nonzero(new_node_mask==TO_VISIT)[0]
         # print(leafs)
         # Since the leaf that the sample ends up in is ambiguous for an ambiguity
         #   tree we need a subroutine that chooses how to classify the sample from the
         #   various leaves that it could end up in. 
+        # print(i, leafs)
         out_i = pred_choice_func(leafs, config)
         # if(decode_classes):out_i = y_uvs[out_i]
         out_i = y_uvs[out_i]
@@ -711,6 +721,7 @@ def str_tree(tree):
     
     # l = ["TREE w/ classes: %s"%_get_y_order(tree)]
     l = ["TREE w/ classes: %s"%tree.data_stats.u_ys]
+    nom_v_inv_maps = tree.data_stats.nom_v_inv_maps
     # node_offset = 1
     # while node_offset < tree[0]:
     for node in tree.nodes:
@@ -721,7 +732,8 @@ def str_tree(tree):
             s  = "NODE(%s) : " % (index)
             for sd in splits:
                 if(not sd.is_continous): #<-A threshold of 1 means it's binary
-                    s += f"({sd.split_ind},=={sd.val})[L:{sd.left} R:{sd.right}"
+                    inv_map = nom_v_inv_maps[sd.split_ind]
+                    s += f"({sd.split_ind},=={inv_map[sd.val]})[L:{sd.left} R:{sd.right}"
                 else:
                     thresh = np.int32(sd.val).view(np.float32) if op != OP_EQ else np.int32(sd.val)
                     instr = str_op(op)+str(thresh) if op != OP_ISNAN else str_op(op)
@@ -978,7 +990,7 @@ class TreeClassifier(object):
         if(positive_class is None): positive_class = self.positive_class
         return tree_to_conditions(self.tree, positive_class, only_pure_leaves)
 
-TreeClassifier()
+# TreeClassifier()
 
 @njit(cache=True)
 def build_XY(N=1000,M=100):
@@ -1024,8 +1036,8 @@ def test_sklearn():
 
 
 
-# print(time_ms(test_fit_tree))
-# print(time_ms(test_sklearn))
+print(time_ms(test_fit_tree))
+print(time_ms(test_sklearn))
 
 
 
@@ -1034,9 +1046,9 @@ def test_sklearn():
 
 
 dt = TreeClassifier()
-dt.fit(X, X_cont, Y)
-print(dt)
-print("printed")
+# dt.fit(X, X_cont, Y)
+# print(dt)
+# print("printed")
 # print_tree(tree)
 
 
@@ -1047,13 +1059,13 @@ print("printed")
 def setup1():
     data1 = np.asarray([
 #    0 1 2 3 4 5 6 7 8 9 10111213141516
-    [0,0,1,0,1,1,1,1,1,1,1,0,0,1,1,1,1], #3
-    [0,0,0,0,0,0,1,1,1,1,1,0,0,0,0,0,0], #1
-    [0,0,0,0,1,0,1,1,1,1,1,0,0,0,0,0,0], #1
-    [0,0,1,0,1,0,1,1,1,1,1,0,0,0,0,0,0], #1
-    [1,0,1,0,1,0,1,1,1,1,1,0,0,0,0,0,1], #2
-    [0,0,1,0,1,1,1,1,1,1,1,0,0,0,0,1,0], #2
-    [1,0,1,0,1,0,1,1,1,1,1,0,0,0,0,1,0], #2
+    [0,0,1,0,1,1,1,1,1,1,1,0,0,1,1,1,1], #3 0
+    [0,0,0,0,0,0,1,1,1,1,1,0,0,0,0,0,0], #1 1
+    [0,0,0,0,1,0,1,1,1,1,1,0,0,0,0,0,0], #1 2
+    [0,0,1,0,1,0,1,1,1,1,1,0,0,0,0,0,0], #1 3
+    [1,0,1,0,1,0,1,1,1,1,1,0,0,0,0,0,1], #2 4
+    [0,0,1,0,1,1,1,1,1,1,1,0,0,0,0,1,0], #2 5
+    [1,0,1,0,1,0,1,1,1,1,1,0,0,0,0,1,0], #2 6
     ],np.int32);
 
     labels1 = np.asarray([3,1,1,1,2,2,2],np.int32);
@@ -1094,16 +1106,14 @@ print("PRINT")
 
 X,Y = setup1()
 dt.fit(X, X_cont, Y)
-print("Pred")
 print(dt)
-print("Pred")
-print(dt.predict(X, X_cont)) #predict_tree(tree,X, X_cont, PRED_CHOICE_majority))
-print("Pred")
+print("Pred:", dt.predict(X, X_cont)) #predict_tree(tree,X, X_cont, PRED_CHOICE_majority))
+# raise ValueError()
 X,Y = setup2()
 dt.fit(X, X_cont, Y)
-print("SQUIB")
+# print("SQUIB")
 print(dt)
-print(dt.predict(X, X_cont)) #predict_tree(tree,X, X_cont, PRED_CHOICE_majority))
+print("Pred:", dt.predict(X, X_cont)) #predict_tree(tree,X, X_cont, PRED_CHOICE_majority))
 
 
 
@@ -1114,15 +1124,17 @@ print(dt.predict(X, X_cont)) #predict_tree(tree,X, X_cont, PRED_CHOICE_majority)
 
 print("------------------------------------")
 #KEEP 
-# X,Y = build_XY(N=1000,M=100)
-# dt = TreeClassifier()
-# x_c = np.zeros((0,),dtype=np.float32)
-# for i,(x_n, y) in enumerate(zip(X, Y)):
-#     print(i)
-#     t = time.time_ns()
-#     dt.ifit(x_n, x_c, y)
+X,Y = build_XY(N=1000,M=100)
+dt = TreeClassifier()
+x_c = np.zeros((0,),dtype=np.float32)
+
+t0 = time.time_ns()
+for i,(x_n, y) in enumerate(zip(X, Y)):
+    # print(i)
+    # t = time.time_ns()
+    dt.ifit(x_n, x_c, y)
     
-#     print(f"{(time.time_ns()-t)/1e6} ms")
+print(f"avg {((time.time_ns()-t0)/1e6) / len(X)} ms")
 
 
 

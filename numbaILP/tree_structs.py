@@ -164,7 +164,7 @@ tree_fields = [
     # A cache of split contexts keyed by the sequence of splits so far
     #  this is where split statistics are held between calls to ifit().
     # ('context_cache', DictType(u8[::1],SplitterContextType)),
-    ('context_cache', AKDType(u8,SplitterContextType)),
+    ('context_cache', AKDType(u8[::1],SplitterContextType)),
 
     # The data stats for this tree. This is kept around be between calls 
     #  to ifit() and replaced with each call to fit().
@@ -179,12 +179,13 @@ tree_fields = [
 
 Tree, TreeTypeTemplate = define_structref_template("Tree", tree_fields, define_constructor=False)
 
+u8_arr = u8[::1]
 @njit(cache=True)
 def Tree_ctor(tree_type):
     st = new(tree_type)
     st.nodes = List.empty_list(TreeNodeType)
     # st.u_ys = np.zeros(0,dtype=np.int32)
-    st.context_cache = new_akd(u8,SplitterContextType)#Dict.empty(i8_arr, SplitterContextType)
+    st.context_cache = new_akd(u8_arr,SplitterContextType)#Dict.empty(i8_arr, SplitterContextType)
     st.data_stats = DataStats_ctor()
     return st
     

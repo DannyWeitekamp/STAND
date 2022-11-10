@@ -1342,8 +1342,6 @@ tree_classifier_presets = {
 		'sep_nan' : True,
 		'cache_nodes' : False
 	}
-
-
 }
 		
 class TreeClassifier(object):
