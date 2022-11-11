@@ -20,6 +20,7 @@ split_data_fields = [
     ('right', i4)
 ]
 SplitData, SplitDataType = define_structref("SplitData", split_data_fields)
+SplitDataType.__str__ = lambda self: "SplitDataType"
 
 
 #### TreeNode ####
@@ -33,6 +34,7 @@ treenode_fields = [
 ]
 
 TreeNode, TreeNodeType = define_structref("TreeNode",treenode_fields,define_constructor=False) 
+TreeNodeType.__str__ = lambda self: "TreeNodeType"
 
 
 OP_NOP = u1(0)
@@ -163,8 +165,7 @@ tree_fields = [
 
     # A cache of split contexts keyed by the sequence of splits so far
     #  this is where split statistics are held between calls to ifit().
-    # ('context_cache', DictType(u8[::1],SplitterContextType)),
-    ('context_cache', AKDType(u8[::1],SplitterContextType)),
+    ('context_cache', AKDType(u8[::1], SplitterContextType)),
 
     # The data stats for this tree. This is kept around be between calls 
     #  to ifit() and replaced with each call to fit().

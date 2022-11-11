@@ -11,7 +11,7 @@ from numba.typed import List, Dict
 from numba.core.types import DictType,ListType, unicode_type, NamedTuple,NamedUniTuple,Tuple,literal
 from collections import namedtuple
 import timeit
-from sklearn import tree as SKTree
+# from sklearn import tree as SKTree
 import os 
 from operator import itemgetter
 
@@ -35,7 +35,7 @@ import time
 # numba_logger.setLevel(logging.DEBUG)
 
 config.THREADING_LAYER = 'thread_safe'
-print("n threads", config.NUMBA_NUM_THREADS)
+# print("n threads", config.NUMBA_NUM_THREADS)
 # os.environ['NUMBA_PARALLEL_DIAGNOSTICS'] = '1'
 
 
@@ -244,12 +244,12 @@ def update_nominal_impurities(tree, splitter_context, iterative):
     # b_split, b_split_imp_total = 0, np.inf
     #Go through the samples in Fortran order (i.e. feature then sample)
     # for k_j in prange(0,n_non_const):
-    for k_j in prange(X.shape[1]):
+    for j in prange(X.shape[1]):
         # print(_get_thread_id(),k_j)
-        j = k_j#feature_inds[k_j]
+        # j = k_j#feature_inds[k_j]
         n_vals_j = n_vals[j]
         cache_ptr = sc.nominal_split_cache_ptrs[j]
-        # print(k_j, cache_ptr, n_vals_j, n_classes)
+        # print(j, cache_ptr, n_vals_j, n_classes)
         if(cache_ptr != 0):
 
             split_cache = _struct_from_pointer(NominalSplitCacheType, cache_ptr)
@@ -257,7 +257,7 @@ def update_nominal_impurities(tree, splitter_context, iterative):
             if(split_cache_shape[0] != n_vals_j or split_cache_shape[1] != n_classes):
                 # print("EXPAND")
                 expand_nominal_split_cache(split_cache, n_vals_j, n_classes)
-            # print("reusing", k_j, split_cache.v_counts)
+            # print("reusing", j, split_cache.v_counts)
         else:
             split_cache = NominalSplitCache_ctor(n_vals_j, n_classes)
             sc.nominal_split_cache_ptrs[j] = _pointer_from_struct_incref(split_cache)
@@ -557,7 +557,7 @@ def fit_tree(tree, config, iterative=False):
         # best_split = np.argmin(c.impurity-c.impurities[:,0])
         # print("---")
         for split in best_splits:
-            # print("S", split)
+            # print("S", split)q
 
             inds_l, inds_r, y_counts_l, y_counts_r, imp_tot, imp_l, imp_r, val = \
                 extract_nominal_split_info(tree, c, split, iterative)
@@ -569,7 +569,7 @@ def fit_tree(tree, config, iterative=False):
 
             if(c.impurity - imp_tot <= 0):
                 c.node.ttype = TTYPE_LEAF
-
+                # print("LEAF")
             else:
                 # print("S2", split)
                 ptr = _pointer_from_struct(c)
@@ -581,6 +581,7 @@ def fit_tree(tree, config, iterative=False):
                 #np.array([split, val, node_l, node_r, -1],dtype=np.int32)
                 c.node.split_data.append(split_data)
                 c.node.op_enum = OP_EQ
+                # print("DONE NODE")
 
         # print("B")
         if(not iterative):
@@ -1034,149 +1035,89 @@ class TreeClassifier(object):
 
 # TreeClassifier()
 
-@njit(cache=True)
-def build_XY(N=1000,M=100):
-    p0 = np.array([1,1,1,0,0],dtype=np.int32)
-    p1 = np.array([0,1,1,1,0],dtype=np.int32)
-    p2 = np.array([0,0,1,1,1],dtype=np.int32)
-    p3 = np.array([1,0,1,1,0],dtype=np.int32)
-    p4 = np.array([1,0,1,0,1],dtype=np.int32)
-    X = np.random.randint(0,5,(N,M)).astype(np.int32)
-    Y = np.random.randint(0,3,(N,)).astype(np.int32)
 
-    for x, y in zip(X,Y):
-        if(y == 0): 
-            x[:5] = np.where(p0,p0,x[:5])
-        elif(y==1):
-            x[:5] = np.where(p1,p1,x[:5])
-        elif(y==2):
-            x[:5] = np.where(p2,p2,x[:5])
-        elif(y==3):
-            x[:5] = np.where(p3,p3,x[:5])
-        elif(y==4):
-            x[:5] = np.where(p4,p4,x[:5])
-    return X, Y
+if __name__ == "__main__":
+
+    # X, Y = build_XY(10,10)
+    X, Y = build_XY()
+    X_cont = np.zeros((0,0),dtype=np.float32)
+    one_h_encoder = OneHotEncoder()
+    X_oh = one_h_encoder.fit_transform(X).toarray()
+    # @njit(cache=True)
 
 
-# X, Y = build_XY(10,10)
-X, Y = build_XY()
-X_cont = np.zeros((0,0),dtype=np.float32)
-one_h_encoder = OneHotEncoder()
-X_oh = one_h_encoder.fit_transform(X).toarray()
-# @njit(cache=True)
+    def test_fit_tree():
+        dt = TreeClassifier(preset_type='decision_tree')
+        dt.fit(X, X_cont, Y)
+        # fit_tree(X, X_cont, Y)
+        
+
+    def test_sklearn():
+        clf = SKTree.DecisionTreeClassifier()
+        clf.fit(X_oh,Y)
 
 
-def test_fit_tree():
-    dt = TreeClassifier(preset_type='option_tree')
+
+    print(time_ms(test_fit_tree))
+    print(time_ms(test_sklearn))
+
+
+
+
+
+
+
+    dt = TreeClassifier()#(preset_type='option_tree')
+    # dt.fit(X, X_cont, Y)
+    # print(dt)
+    # print("printed")
+    # print_tree(tree)
+
+
+    # print("PRINT")
+
+    #### test_basics ####
+
+
+
+    import logging
+
+    numba_logger = logging.getLogger('numba')
+    numba_logger.setLevel(logging.WARNING)
+    print("PRINT")
+
+    X,Y = setup1()
     dt.fit(X, X_cont, Y)
-    # fit_tree(X, X_cont, Y)
-    
-
-def test_sklearn():
-    clf = SKTree.DecisionTreeClassifier()
-    clf.fit(X_oh,Y)
-
-
-
-print(time_ms(test_fit_tree))
-print(time_ms(test_sklearn))
+    print(dt)
+    print("Pred:", dt.predict(X, X_cont)) #predict_tree(tree,X, X_cont, PRED_CHOICE_majority))
+    # raise ValueError()
+    X,Y = setup2()
+    dt.fit(X, X_cont, Y)
+    # print("SQUIB")
+    print(dt)
+    print("Pred:", dt.predict(X, X_cont)) #predict_tree(tree,X, X_cont, PRED_CHOICE_majority))
 
 
 
+    X,Y = setup3()
+    dt.fit(X, X_cont, Y)
+    print(dt)
+    print(dt.predict(X, X_cont)) #predict_tree(tree,X, X_cont, PRED_CHOICE_majority))
 
+    print("------------------------------------")
+    #KEEP 
+    X,Y = build_XY(N=1000,M=100)
+    dt = TreeClassifier()#(preset_type='option_tree')
+    x_c = np.zeros((0,),dtype=np.float32)
 
-
-
-dt = TreeClassifier(preset_type='option_tree')
-# dt.fit(X, X_cont, Y)
-# print(dt)
-# print("printed")
-# print_tree(tree)
-
-
-# print("PRINT")
-
-#### test_basics ####
-
-def setup1():
-    data1 = np.asarray([
-#    0 1 2 3 4 5 6 7 8 9 10111213141516
-    [0,0,1,0,1,1,1,1,1,1,1,0,0,1,1,1,1], #3 0
-    [0,0,0,0,0,0,1,1,1,1,1,0,0,0,0,0,0], #1 1
-    [0,0,0,0,1,0,1,1,1,1,1,0,0,0,0,0,0], #1 2
-    [0,0,1,0,1,0,1,1,1,1,1,0,0,0,0,0,0], #1 3
-    [1,0,1,0,1,0,1,1,1,1,1,0,0,0,0,0,1], #2 4
-    [0,0,1,0,1,1,1,1,1,1,1,0,0,0,0,1,0], #2 5
-    [1,0,1,0,1,0,1,1,1,1,1,0,0,0,0,1,0], #2 6
-    ],np.int32);
-
-    labels1 = np.asarray([3,1,1,1,2,2,2],np.int32);
-    return data1, labels1
-
-def setup2():
-    data2 = np.asarray([
-#    0 1 2 3 4 5 6 7 8 9 10111213141516
-    [0,0,0,0,0,0], #1
-    [0,0,1,0,0,0], #1
-    [0,1,1,0,0,0], #1
-    [1,1,1,0,0,1], #2
-    [0,1,1,1,1,0], #2
-    [1,1,1,0,1,0], #2
-    ],np.int32);
-
-    labels2 = np.asarray([1,1,1,2,2,2],np.int32);
-    data2 = data2[:,[1,0,2,3,4,5]]
-    return data2, labels2
-
-def setup3():
-    data3 = np.asarray([
-#    0 1 2 3 4 5 6 7 8 9 10111213141516
-    [0,0], #1
-    [1,0], #1
-    [0,1], #1
-    [1,1], #2
-    ],np.int32);
-
-    labels3 = np.asarray([1,1,1,2],np.int32);
-    return data3, labels3
-
-import logging
-
-numba_logger = logging.getLogger('numba')
-numba_logger.setLevel(logging.WARNING)
-print("PRINT")
-
-X,Y = setup1()
-dt.fit(X, X_cont, Y)
-print(dt)
-print("Pred:", dt.predict(X, X_cont)) #predict_tree(tree,X, X_cont, PRED_CHOICE_majority))
-# raise ValueError()
-X,Y = setup2()
-dt.fit(X, X_cont, Y)
-# print("SQUIB")
-print(dt)
-print("Pred:", dt.predict(X, X_cont)) #predict_tree(tree,X, X_cont, PRED_CHOICE_majority))
-
-
-
-X,Y = setup3()
-dt.fit(X, X_cont, Y)
-print(dt)
-print(dt.predict(X, X_cont)) #predict_tree(tree,X, X_cont, PRED_CHOICE_majority))
-
-print("------------------------------------")
-#KEEP 
-X,Y = build_XY(N=1000,M=100)
-dt = TreeClassifier()
-x_c = np.zeros((0,),dtype=np.float32)
-
-t0 = time.time_ns()
-for i,(x_n, y) in enumerate(zip(X, Y)):
-    # print(i)
-    # t = time.time_ns()
-    dt.ifit(x_n, x_c, y)
-    
-print(f"avg {((time.time_ns()-t0)/1e6) / len(X)} ms")
+    t0 = time.time_ns()
+    for i,(x_n, y) in enumerate(zip(X, Y)):
+        # print(i)
+        # t = time.time_ns()
+        dt.ifit(x_n, x_c, y)
+        # print(f"{(time.time_ns()-t)/1e6} ms")
+        
+    print(f"avg {((time.time_ns()-t0)/1e6) / len(X)} ms")
 
 
 
