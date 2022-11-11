@@ -1,4 +1,3 @@
-
 # This file simply forces pytest_benchmark to use milliseconds as units
 import pytest
 @pytest.hookspec(firstresult=True)

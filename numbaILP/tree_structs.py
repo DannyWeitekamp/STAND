@@ -56,9 +56,6 @@ def TreeNode_ctor(ttype, index, counts):
     return st
 
 
-
-
-
 #### SplitterContext ####
 
 splitter_context_fields = [
@@ -103,6 +100,7 @@ splitter_context_fields = [
     #  value are cached
     ('nominal_split_cache_ptrs', i8[:]),
     ('continous_split_cache_ptrs', i8[:]),
+
     # ('val_y_counts_cached', u1),
     # # Whether or not the left and right y_counts are cached 
     # ('split_y_counts_cached', u1),
@@ -123,12 +121,10 @@ SplitterContext, SplitterContextType = define_structref("SplitterContext",splitt
 @njit(cache=True)
 def SplitterContext_ctor(split_chain):
     st = new(SplitterContextType)    
-
     st.split_chain = split_chain
     st.n_last_update = 0 
     st.nominal_split_cache_ptrs = np.zeros((32,),dtype=np.int64)
     st.continous_split_cache_ptrs = np.zeros((32,),dtype=np.int64)
-    
     return st
 
 @njit(cache=True)
@@ -137,11 +133,7 @@ def reinit_splittercontext(c, node, sample_inds, y_counts, impurity):
     c.sample_inds = sample_inds
     c.y_counts = y_counts
     c.impurity = impurity
-
     c.best_split_impurity = np.inf
-
-
-
 
 
 @njit(cache=True)
@@ -151,17 +143,13 @@ def SplitterContext_dtor(sc):
             _decref_pointer(ptr)
 
 
-
-
 #### Tree ####
 
 i8_arr = i8[::1]
 
 tree_fields = [
-
     # A list of the actual nodes of the tree.
     ('nodes',ListType(TreeNodeType)),
-    # ('u_ys', i4[::1]),
 
     # A cache of split contexts keyed by the sequence of splits so far
     #  this is where split statistics are held between calls to ifit().
@@ -174,23 +162,30 @@ tree_fields = [
     # Whether or not iterative fitting is enabled
     ('ifit_enabled', literal(False)),
 
-    ('split_chooser', types.FunctionType(i8[::1](f8[::1])))
+    # Decides which feature(s) to split on based on an array of impurities.
+    ('split_chooser', types.FunctionType(i8[::1](f8[::1]))),
+
+    # Decides which class to predict based on a list of leaves that an example falls into.
+    ('pred_chooser', types.FunctionType(i8(ListType(TreeNodeType)))),
+
+    # Calculates the impurity of a distribution of classes selected by a node.
+    ('impurity_func', types.FunctionType(f8(u4,u4[:]))),
 
 ]
-
-
 
 Tree, TreeTypeTemplate = define_structref_template("Tree", tree_fields, define_constructor=False)
 
 u8_arr = u8[::1]
 @njit(cache=True)
-def Tree_ctor(tree_type, split_chooser):
+def Tree_ctor(tree_type, split_chooser, pred_chooser, impurity_func):
     st = new(tree_type)
     st.nodes = List.empty_list(TreeNodeType)
     # st.u_ys = np.zeros(0,dtype=np.int32)
     st.context_cache = new_akd(u8_arr,SplitterContextType)#Dict.empty(i8_arr, SplitterContextType)
     st.data_stats = DataStats_ctor()
     st.split_chooser = split_chooser
+    st.pred_chooser = pred_chooser
+    st.impurity_func = impurity_func
     return st
     
 @njit(cache=True)
