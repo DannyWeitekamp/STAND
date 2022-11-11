@@ -1,6 +1,6 @@
 from numbaILP.structref import define_structref, define_structref_template
 from numbaILP.utils import _struct_from_pointer, _pointer_from_struct, _pointer_from_struct_incref, _decref_pointer, _decref_structref
-from numba import njit
+from numba import njit, types
 from numba import optional
 from numba import void,b1,u1,u2,u4,u8,i1,i2,i4,i8,f4,f8,c8,c16
 from numba.typed import List, Dict
@@ -173,6 +173,8 @@ tree_fields = [
     # Whether or not iterative fitting is enabled
     ('ifit_enabled', literal(False)),
 
+    ('split_chooser', types.FunctionType(i8[::1](f8[::1])))
+
 ]
 
 
@@ -181,12 +183,13 @@ Tree, TreeTypeTemplate = define_structref_template("Tree", tree_fields, define_c
 
 u8_arr = u8[::1]
 @njit(cache=True)
-def Tree_ctor(tree_type):
+def Tree_ctor(tree_type, split_chooser):
     st = new(tree_type)
     st.nodes = List.empty_list(TreeNodeType)
     # st.u_ys = np.zeros(0,dtype=np.int32)
     st.context_cache = new_akd(u8_arr,SplitterContextType)#Dict.empty(i8_arr, SplitterContextType)
     st.data_stats = DataStats_ctor()
+    st.split_chooser = split_chooser
     return st
     
 @njit(cache=True)

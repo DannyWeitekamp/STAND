@@ -216,7 +216,7 @@ SPLIT_CHOICE_all_max = 2
 
 
 @njit(cache=True,inline='never')
-def split_chooser(func_enum,impurity_decrease):
+def split_chooser(func_enum, impurity_decrease):
 	if(func_enum == 1):
 		return choose_single_max(impurity_decrease)
 	elif(func_enum == 2):

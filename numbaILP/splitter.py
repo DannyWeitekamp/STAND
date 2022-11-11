@@ -43,8 +43,45 @@ CRITERION_none = 0
 CRITERION_gini = 1
 CRITERION_entropy = 2
 
-SPLIT_CHOICE_single_max = 1
-SPLIT_CHOICE_all_max = 2
+
+######### Split Choosers ##########
+
+# class SPLIT_CHOICE(IntEnum):
+#   single_max = 1
+#   all_max = 2
+
+@njit(i8[::1](f8[::1]),nogil=True,fastmath=True,cache=True)
+# @njit(i8[::1](f4[::1]),nogil=True,fastmath=True,cache=True,inline='never')
+def choose_single_max(impurity_decrease):
+    '''A split chooser that expands greedily by max impurity 
+        (i.e. this is the chooser for typical decision trees)'''
+    return np.asarray([np.argmax(impurity_decrease)])
+
+@njit(i8[::1](f8[::1]),nogil=True,fastmath=True,cache=True)
+# @njit(i8[::1](f4[::1]),nogil=True,fastmath=True,cache=True,inline='never')
+def choose_all_max(impurity_decrease):
+    '''A split chooser that expands every decision tree 
+        (i.e. this chooser forces to build whole option tree)'''
+    m = np.max(impurity_decrease)
+    return np.where(impurity_decrease==m)[0]
+
+
+split_choosers = {
+    "single_max" : choose_single_max,
+    "all_max"  : choose_all_max
+}
+
+
+# SPLIT_CHOICE_single_max = 1
+# SPLIT_CHOICE_all_max = 2
+
+# @njit(cache=True,inline='never')
+# def split_chooser(func_enum,impurity_decrease):
+#     if(func_enum == 1):
+#         return choose_single_max(impurity_decrease)
+#     elif(func_enum == 2):
+#         return choose_all_max(impurity_decrease)
+#     return choose_single_max(impurity_decrease)
 
 PRED_CHOICE_majority = 1
 PRED_CHOICE_pure_majority = 2
@@ -514,8 +551,12 @@ def fit_tree(tree, config, iterative=False):
         update_nominal_impurities(tree, c ,iterative)
         # print("BZ")
         # print(c.impurities[:,0],c.start,c.end)
-        best_split = np.argmin(c.impurities[:,0])
-        for split in [best_split]:
+
+        best_splits = tree.split_chooser(c.impurity-c.impurities[:,0])
+
+        # best_split = np.argmin(c.impurity-c.impurities[:,0])
+        # print("---")
+        for split in best_splits:
             # print("S", split)
 
             inds_l, inds_r, y_counts_l, y_counts_r, imp_tot, imp_l, imp_r, val = \
@@ -532,7 +573,7 @@ def fit_tree(tree, config, iterative=False):
             else:
                 # print("S2", split)
                 ptr = _pointer_from_struct(c)
-                locs = (c, best_split, val, iterative, node_dict, context_stack, cache_nodes)
+                locs = (c, split, val, iterative, node_dict, context_stack, cache_nodes)
                 node_l = new_node(locs, tree, inds_l, y_counts_l, imp_l, 0)
                 node_r = new_node(locs, tree, inds_r, y_counts_r, imp_r, 1)
 
@@ -541,10 +582,10 @@ def fit_tree(tree, config, iterative=False):
                 c.node.split_data.append(split_data)
                 c.node.op_enum = OP_EQ
 
-            # print("B")
-            if(not iterative):
-                SplitterContext_dtor(c)
-            # print("C")
+        # print("B")
+        if(not iterative):
+            SplitterContext_dtor(c)
+        # print("C")
         
         # _decref_pointer(ptr)
     return 0
@@ -572,7 +613,7 @@ def get_pure_counts(leaf_counts):
 
 @njit(nogil=True,fastmath=True,cache=True,inline='never')
 def choose_majority(leaf_counts,positive_class):
-    ''' If multiple leaves on predict (i.e. ambiguity tree), choose 
+    ''' If multiple leaves on predict (i.e. option tree), choose 
         the class predicted by the majority of leaves.''' 
     predictions = np.empty((len(leaf_counts),),dtype=np.int32)
     for i,count in enumerate(leaf_counts):
@@ -583,7 +624,7 @@ def choose_majority(leaf_counts,positive_class):
 
 @njit(nogil=True,fastmath=True,cache=True,inline='never')
 def choose_pure_majority(leaf_counts,positive_class):
-    ''' If multiple leaves on predict (i.e. ambiguity tree), choose 
+    ''' If multiple leaves on predict (i.e. option tree), choose 
         the class predicted by the majority pure of leaves.'''
     pure_counts = get_pure_counts(leaf_counts)
     leaf_counts = pure_counts if len(pure_counts) > 0 else leaf_counts
@@ -628,7 +669,7 @@ def pred_choice_func(leaf_counts, cfg):
 @njit(nogil=True,fastmath=True, cache=True, locals={"ZERO":u1, "TO_VISIT":u1, "VISITED": u1, "_n":i4})
 def predict_tree(tree, x_nom, x_cont, config):#, pred_choice_enum, positive_class=0,decode_classes=True):
     '''Predicts the class associated with an unlabelled sample using a fitted 
-        decision/ambiguity tree'''
+        decision/option tree'''
     ZERO, TO_VISIT, VISITED = 0, 1, 2
     L = max(len(x_nom),len(x_cont))
     out = np.empty((L,),dtype=np.int64)
@@ -785,8 +826,8 @@ tree_classifier_presets = {
         'sep_nan' : True,
         'cache_nodes' : False
     },
-    'ambiguity_tree' : {
-        'criterion' : 'weighted_gini',
+    'option_tree' : {
+        'criterion' : 'gini',
         'total_func' : 'sum',
         'split_choice' : 'all_max',
         'pred_choice' : 'pure_majority',
@@ -855,18 +896,18 @@ class TreeClassifier(object):
         g = globals()
         criterion_enum = g.get(f"CRITERION_{criterion}",None)
         # total_enum = g.get(f"TOTAL_{total_func}",None)
-        split_choice_enum = g.get(f"SPLIT_CHOICE_{split_choice}",None)
+        # split_choice_enum = g.get(f"SPLIT_CHOICE_{split_choice}",None)
         pred_choice_enum = g.get(f"PRED_CHOICE_{pred_choice}",None)
 
         if(criterion_enum is None): raise ValueError(f"Invalid criterion {criterion}")
         # if(total_enum is None): raise ValueError(f"Invalid criterion {total_func}")
-        if(split_choice_enum is None): raise ValueError(f"Invalid split_choice {split_choice}")
+        # if(split_choice_enum is None): raise ValueError(f"Invalid split_choice {split_choice}")
         if(pred_choice_enum is None): raise ValueError(f"Invalid pred_choice {pred_choice}")
         self.positive_class = positive_class
 
         config_dict = {k:v for k,v in config_fields}
         config_dict['criterion_enum'] = literal(criterion_enum)
-        config_dict['split_choice_enum'] = literal(split_choice_enum)
+        config_dict['split_choice_enum'] = literal(1)
         config_dict['pred_choice_enum'] = literal(pred_choice_enum)
 
         ConfigType = TreeClassifierConfigTemplate([(k,v) for k,v in config_dict.items()])
@@ -879,7 +920,8 @@ class TreeClassifier(object):
         tf = [(k,v) for k,v in {**tf_dict, **{"ifit_enabled": literal(True)}}.items()]
         self.tree_type = TreeTypeTemplate(tf)
         self.config = new_config(ConfigType)
-        self.tree = Tree_ctor(self.tree_type)
+
+        self.tree = Tree_ctor(self.tree_type, split_choosers[split_choice])
 
         # print(self.tree)
 
@@ -1025,7 +1067,7 @@ X_oh = one_h_encoder.fit_transform(X).toarray()
 
 
 def test_fit_tree():
-    dt = TreeClassifier()
+    dt = TreeClassifier(preset_type='option_tree')
     dt.fit(X, X_cont, Y)
     # fit_tree(X, X_cont, Y)
     
@@ -1045,7 +1087,7 @@ print(time_ms(test_sklearn))
 
 
 
-dt = TreeClassifier()
+dt = TreeClassifier(preset_type='option_tree')
 # dt.fit(X, X_cont, Y)
 # print(dt)
 # print("printed")
