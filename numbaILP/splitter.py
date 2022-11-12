@@ -274,7 +274,7 @@ def build_root(tree, iterative=False):
     #Make Root Node
     node_dict = new_akd(u4_arr,i4)
     nodes = List.empty_list(TreeNodeType)
-    node = TreeNode_ctor(TTYPE_NODE,i4(0),ds.y_counts)
+    node = TreeNode_ctor(TTYPE_NODE,i4(0),i4(-1),ds.y_counts)
     nodes.append(node)
     tree.nodes = nodes
 
@@ -314,19 +314,17 @@ def next_split_chain(c, is_right, is_cont, split, val):
 @njit(cache=True)
 def new_node(locs, tree, sample_inds, y_counts, impurity, is_right):
     ''' Creates a new node and a new context to compute its child nodes'''
-    c, best_split, best_val,  iterative,  node_dict, context_stack, cache_nodes = locs
+    c, best_split, best_val,  iterative,  node_dict, context_stack = locs
     nodes = tree.nodes
-        # node_dict,nodes,new_contexts,cache_nodes = locs
-        # NODE, LEAF = i4(1), i4(2) #np.array(1,dtype=np.int32).item(), np.array(2,dtype=np.int32).item()
     node_id = i4(-1)
-    if (cache_nodes): node_id = node_dict.get(sample_inds,-1)
-    # if (cache_nodes): node_id= akd_get(node_dict, sample_inds)
+    if (tree.cache_nodes): node_id = node_dict.get(sample_inds,-1)
+    # print(node_id, "<<", sample_inds)
     if(node_id == -1):
         node_id = i4(len(nodes))
         # if(cache_nodes): akd_insert(node_dict, sample_inds, node_id)
-        if(cache_nodes): node_dict[sample_inds] = node_id
+        if(tree.cache_nodes): node_dict[sample_inds] = node_id
         if(impurity > 0.0):
-            node = TreeNode_ctor(TTYPE_NODE, node_id, y_counts)
+            node = TreeNode_ctor(TTYPE_NODE, node_id, c.node.index, y_counts)
             nodes.append(node)
 
             split_chain = next_split_chain(c, is_right, 0, best_split, best_val)
@@ -348,7 +346,9 @@ def new_node(locs, tree, sample_inds, y_counts, impurity, is_right):
             reinit_splittercontext(new_c, node, sample_inds, y_counts, impurity)
             context_stack.append(new_c)
         else:
-            nodes.append(TreeNode_ctor(TTYPE_LEAF, node_id, y_counts))
+            leaf = TreeNode_ctor(TTYPE_LEAF, node_id, c.node.index, y_counts)
+            tree.nodes.append(leaf)
+            tree.leaves.append(leaf)
     return node_id
 
 
@@ -445,8 +445,8 @@ def extract_nominal_split_info(tree, c, split, iterative=False):
     # print(sample_inds)
     
     # NOTE: Can problably delete     
-    if(p_l != n_l or p_r != n_r):
-        raise RuntimeError("Failed to fully update counts.")
+    # if(p_l != n_l or p_r != n_r):
+    #     raise RuntimeError("Failed to fully update counts.")
     splt_c.n_last_update = len(c.sample_inds)
     splt_c.prev_best_v = splt_c.best_v
 
@@ -465,8 +465,6 @@ def fit_tree(tree, iterative=False):
     '''
     Refits the tree from its DataStats
     '''
-    cache_nodes = False
-    # print("Z")
     context_stack, node_dict, nodes =  \
         build_root(tree)
     
@@ -497,15 +495,16 @@ def fit_tree(tree, iterative=False):
 
             if(c.impurity - imp_tot <= 0):
                 c.node.ttype = TTYPE_LEAF
+                tree.leaves.append(c.node)
                 # print("LEAF")
             else:
                 # print("S2", split)
                 ptr = _pointer_from_struct(c)
-                locs = (c, split, val, iterative, node_dict, context_stack, cache_nodes)
+                locs = (c, split, val, iterative, node_dict, context_stack)
                 node_l = new_node(locs, tree, inds_l, y_counts_l, imp_l, 0)
                 node_r = new_node(locs, tree, inds_r, y_counts_r, imp_r, 1)
 
-                split_data = SplitData(u1(False),i4(split), i4(val), i4(node_l), i4(node_r))
+                split_data = SplitData(i4(split), i4(val), i4(node_l), i4(node_r), u1(False))
                 #np.array([split, val, node_l, node_r, -1],dtype=np.int32)
                 c.node.split_data.append(split_data)
                 c.node.op_enum = OP_EQ
@@ -562,75 +561,99 @@ pred_choosers = {
     "pure_majority" : choose_pure_majority,
 }
 
+@njit(cache=True,locals={"ZERO":u1, "TO_VISIT":u1, "VISITED": u1, "_n":i4})
+def filter_leaves(tree, x_nom, x_cont):
+    ZERO, TO_VISIT, VISITED = 0, 1, 2
+    nom_v_maps = tree.data_stats.nom_v_maps
+    # Use a mask instead of a list to avoid repeats that can blow up
+    #  if multiple splits are possible. Keep track of visited in case
+    #  of loops (Although there should not be any loops).
+    new_node_mask = np.zeros((len(tree.nodes),),dtype=np.uint8)
+    new_node_mask[0] = TO_VISIT
+    nodes_to_visit = np.nonzero(new_node_mask==TO_VISIT)[0]
+    leaves = List()
 
-@njit(nogil=True,fastmath=True, cache=True, locals={"ZERO":u1, "TO_VISIT":u1, "VISITED": u1, "_n":i4})
-def predict_tree(tree, x_nom, x_cont):#, pred_choice_enum, positive_class=0,decode_classes=True):
+    while len(nodes_to_visit) > 0:
+        # Go through every node that has been queued for a visit. In a traditional
+        #  decision tree there should only ever be one next node.
+        # print(nodes_to_visit)
+        for ind in nodes_to_visit:
+            node = tree.nodes[ind]
+            op = node.op_enum
+            if(node.ttype == TTYPE_NODE):
+                # Test every split in the node. Again in a traditional decision tree
+                #  there should only be one split per node.
+                for sd in node.split_data:
+                    # Determine if this sample should feed right, left, or nan (if ternary)
+                    if(not sd.is_continous):
+                        # Nominal case
+                        mapped_val = nom_v_maps[sd.split_ind][x_nom[sd.split_ind]]
+                        _n = sd.right if(mapped_val==sd.val) else sd.left
+                    else:
+                        # Continous case : Need to reimplement
+                        pass
+                    # else:
+                    #     # Continous case
+                    #     thresh = np.int32(ithresh).view(np.float32)
+                    #     j = split_on-xb.shape[1] 
+
+                    #     if(exec_op(op,x_cont[i,j],thresh)):
+                    #         _n = right
+                    #     else:
+                    #         _n = left
+                    if(new_node_mask[_n] != VISITED): new_node_mask[_n] = TO_VISIT
+                        
+            else:
+                leaves.append(node)
+
+        #Mark all nodes_to_visit as visited so we don't mark them for a revisit
+        for ind in nodes_to_visit:
+            new_node_mask[ind] = VISITED
+
+        nodes_to_visit = np.nonzero(new_node_mask==TO_VISIT)[0]
+    return leaves
+
+
+
+@njit(cache=True)
+def predict_tree(tree, X_nom, X_cont):
     '''Predicts the class associated with an unlabelled sample using a fitted 
         decision/option tree'''
-    ZERO, TO_VISIT, VISITED = 0, 1, 2
-    L = max(len(x_nom),len(x_cont))
+    
+    L = max(len(X_nom),len(X_cont))
+    if(len(X_nom) == 0): X_nom = np.empty((L,0), dtype=np.int32)
+    if(len(X_cont) == 0): X_cont = np.empty((L,0), dtype=np.float32)
+
     out = np.empty((L,),dtype=np.int64)
-    y_uvs = tree.data_stats.u_ys#_get_y_order(tree)
-    nom_v_maps = tree.data_stats.nom_v_maps
+    y_uvs = tree.data_stats.u_ys    
     for i in range(L):
-        # Use a mask instead of a list to avoid repeats that can blow up
-        #  if multiple splits are possible. Keep track of visited in case
-        #  of loops (Although there should not be any loops).
-        new_node_mask = np.zeros((len(tree.nodes),),dtype=np.uint8)
-        new_node_mask[0] = TO_VISIT
-        nodes_to_visit = np.nonzero(new_node_mask==TO_VISIT)[0]
-        # print(node_inds)
-        leaves = List()
+        leaves = filter_leaves(tree, X_nom[i], X_cont[i])
 
-        while len(nodes_to_visit) > 0:
-            # Go through every node that has been queued for a visit. In a traditional
-            #  decision tree there should only ever be one next node.
-            # print(nodes_to_visit)
-            for ind in nodes_to_visit:
-                node = tree.nodes[ind]
-                op = node.op_enum
-                if(node.ttype == TTYPE_NODE):
-                    # Test every split in the node. Again in a traditional decision tree
-                    #  there should only be one split per node.
-                    for sd in node.split_data:
-                        # Determine if this sample should feed right, left, or nan (if ternary)
-                        if(not sd.is_continous):
-                            # Nominal case
-                            mapped_val = nom_v_maps[sd.split_ind][x_nom[i,sd.split_ind]]
-                            if(mapped_val==sd.val):
-                                _n = sd.right
-                            else:
-                                _n = sd.left
-                        else:
-                            # Continous case : Need to reimplement
-                            pass
-                        # else:
-                        #     # Continous case
-                        #     thresh = np.int32(ithresh).view(np.float32)
-                        #     j = split_on-xb.shape[1] 
-
-                        #     if(exec_op(op,x_cont[i,j],thresh)):
-                        #         _n = right
-                        #     else:
-                        #         _n = left
-                        if(new_node_mask[_n] != VISITED): new_node_mask[_n] = TO_VISIT
-                            
-                else:
-                    leaves.append(node)
-
-            #Mark all nodes_to_visit as visited so we don't mark them for a revisit
-            for ind in nodes_to_visit:
-                new_node_mask[ind] = VISITED
-
-            nodes_to_visit = np.nonzero(new_node_mask==TO_VISIT)[0]
-        # Since the leaf that the sample ends up in is ambiguous for an ambiguity
-        #   tree we need a subroutine that chooses how to classify the sample from the
-        #   various leaves that it could end up in. 
+        # In an option tree the leaf that the instance ends up  is ambiguous 
+        #   so we need a subroutine that for choosing how to classify the instance 
+        #   from among the leaves it is filtered into. 
         out_i = tree.pred_chooser(leaves)
-        # if(decode_classes):out_i = y_uvs[out_i]
         out_i = y_uvs[out_i]
         out[i] = out_i
     return out
+
+# -------------------------------------------------------------------------------
+# : instance ambiguity
+
+@njit(cache=True)
+def instance_ambiguity(tree, x_nom, x_cont):    
+    if(len(x_nom) == 0): x_nom = np.empty(0, dtype=np.int32)
+    if(len(x_cont) == 0): x_cont = np.empty(0, dtype=np.float32)
+
+    leaves = filter_leaves(tree, x_nom, x_cont)
+
+    for leaf in leaves:
+        print(leaf.index, leaf.counts)
+
+    print(tree.context_cache)
+
+# -------------------------------------------------------------------------------
+# : str_tree()
 
 
 def str_op(op_enum):
@@ -732,6 +755,7 @@ class TreeClassifier(object):
             split_choosers[split_choice],
             pred_choosers[pred_choice],
             impurity_funcs[impurity_func],
+            cache_nodes
         )
         
         
@@ -798,9 +822,9 @@ class TreeClassifier(object):
     def __str__(self):
         return str_tree(self.tree)
 
-    def as_conditions(self,positive_class=None, only_pure_leaves=False):
-        if(positive_class is None): positive_class = self.positive_class
-        return tree_to_conditions(self.tree, positive_class, only_pure_leaves)
+    # def as_conditions(self,positive_class=None, only_pure_leaves=False):
+    #     if(positive_class is None): positive_class = self.positive_class
+    #     return tree_to_conditions(self.tree, positive_class, only_pure_leaves)
 
 
 

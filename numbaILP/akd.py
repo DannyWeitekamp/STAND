@@ -1,9 +1,9 @@
 import numpy as np
 import operator
 
-from numba import njit, u8, i8, generated_jit
+from numba import njit, u8, i8, generated_jit, objmode
 from numba.core import types
-from numba.types import ListType, DictType, Tuple
+from numba.types import ListType, DictType, Tuple, unicode_type
 from numba.experimental import structref
 from numba.experimental.structref import new
 from numba.typed.dictobject import _dict_lookup, DKIX, _nonoptional, _cast
@@ -48,6 +48,9 @@ class AKD(structref.StructRefProxy):
 
     def __contains__(self, key):
         return akd_contains(self, key)
+
+    def __str__(self):
+        return akd_str(self)
 
 structref.define_proxy(AKD, AKDType, ["dict"])
 # structref.define_boxing(AKDType, AKD)
@@ -183,6 +186,30 @@ def akd_get(akd, _arr_key, default=None):
             return _nonoptional(val)
         return default
     return impl
+
+@generated_jit(nopython=True)
+@overload(str)
+def akd_str(akd):
+    if not isinstance(akd, AKDType):
+        return
+    def impl(akd):
+        s = "{\n"
+        for i, (h, val_lst) in enumerate(akd.dict.items()):
+            # print(h)
+            # print(val_lst)
+            for j, (arr_key, val) in enumerate(val_lst):
+                # print(arr_key, val)
+                with objmode(s='unicode_type'):
+                    s += f'  {arr_key} : {val}'
+                if(i < len(akd.dict)-1 or j < len(val_lst)-1):
+                    s += ",\n"
+
+        return  s + "\n}"
+        # return "BOB"
+    return impl
+
+
+
 
 
 

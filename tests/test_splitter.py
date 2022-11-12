@@ -1,6 +1,6 @@
 import numpy as np
 from numba import njit
-from numbaILP.splitter import TreeClassifier
+from numbaILP.splitter import TreeClassifier, instance_ambiguity
 from numba.core.runtime.nrt import rtsys
 
 
@@ -242,5 +242,21 @@ def test_b_ifit_option_tree_rand_1x100(benchmark):
 
 if __name__ == "__main__":
     # test_memleaks()
-    test_decision_tree()
-    test_option_tree()
+    # test_decision_tree()
+    # test_option_tree()
+
+    dt = TreeClassifier('option_tree')
+    X_nom, Y = make_data1()
+    # X_nom, Y = random_XY()
+    dt.fit(X_nom, None, Y)
+    print(dt)
+
+    x_nom = np.asarray([0,0,1,0,1,1,1,1,1,1,1,0,0,0,0,1,0],np.int32)
+
+    # x_nom = np.random.randint(0,5,(100,),dtype=np.int32)
+    x_cont = np.empty(0,dtype=np.float32)
+
+    instance_ambiguity(dt.tree, x_nom, x_cont)
+    print(x_nom)
+
+    

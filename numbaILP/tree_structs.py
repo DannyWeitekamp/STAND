@@ -13,11 +13,11 @@ import numpy as np
 #### SplitData ####
 
 split_data_fields = [
-    ('is_continous', u1),
     ('split_ind', i4),
     ('val', i4),
     ('left', i4),
-    ('right', i4)
+    ('right', i4),
+    ('is_continous', u1),
 ]
 SplitData, SplitDataType = define_structref("SplitData", split_data_fields)
 SplitDataType.__str__ = lambda self: "SplitDataType"
@@ -25,12 +25,14 @@ SplitDataType.__str__ = lambda self: "SplitDataType"
 
 #### TreeNode ####
 
-treenode_fields = [
-    ('ttype',u1),
+treenode_fields = [    
     ('index',i4),
+    ('parent_index',i4),
+    # ('leaf_index',i4),
+    ('split_data', ListType(SplitDataType)),
+    ('counts', u4[:]),
+    ('ttype', u1),
     ('op_enum', u1),
-    ('split_data',ListType(SplitDataType)),
-    ('counts', u4[:])
 ]
 
 TreeNode, TreeNodeType = define_structref("TreeNode",treenode_fields,define_constructor=False) 
@@ -46,13 +48,14 @@ OP_EQ = u1(4)
 # i4_arr = i4[:]
 
 @njit(cache=True)
-def TreeNode_ctor(ttype, index, counts):
+def TreeNode_ctor(ttype, index, parent_index, counts):
     st = new(TreeNodeType)
-    st.ttype = ttype
     st.index = index
-    st.op_enum = OP_NOP
+    st.parent_index = parent_index    
     st.split_data = List.empty_list(SplitDataType)
     st.counts = counts
+    st.ttype = ttype
+    st.op_enum = OP_NOP
     return st
 
 
@@ -117,6 +120,8 @@ splitter_context_fields = [
 ]
 
 SplitterContext, SplitterContextType = define_structref("SplitterContext",splitter_context_fields, define_constructor=False) 
+SplitterContextType.__str__ = lambda self: "SplitterContextType"
+SplitterContext.__str__ = lambda self: f"<SplitterContext at {hex(id(self))}>"
 
 @njit(cache=True)
 def SplitterContext_ctor(split_chain):
@@ -149,7 +154,8 @@ i8_arr = i8[::1]
 
 tree_fields = [
     # A list of the actual nodes of the tree.
-    ('nodes',ListType(TreeNodeType)),
+    ('nodes', ListType(TreeNodeType)),
+    ('leaves', ListType(TreeNodeType)),
 
     # A cache of split contexts keyed by the sequence of splits so far
     #  this is where split statistics are held between calls to ifit().
@@ -158,9 +164,6 @@ tree_fields = [
     # The data stats for this tree. This is kept around be between calls 
     #  to ifit() and replaced with each call to fit().
     ('data_stats', DataStatsType),
-
-    # Whether or not iterative fitting is enabled
-    ('ifit_enabled', literal(False)),
 
     # Decides which feature(s) to split on based on an array of impurities.
     ('split_chooser', types.FunctionType(i8[::1](f8[::1]))),
@@ -171,21 +174,31 @@ tree_fields = [
     # Calculates the impurity of a distribution of classes selected by a node.
     ('impurity_func', types.FunctionType(f8(u4,u4[:]))),
 
+    # Whether or not nodes should be cached
+    ('cache_nodes', types.boolean),    
+
+    # Whether or not iterative fitting is enabled
+    ('ifit_enabled', literal(True)),
+
+
+
 ]
 
 Tree, TreeTypeTemplate = define_structref_template("Tree", tree_fields, define_constructor=False)
 
 u8_arr = u8[::1]
 @njit(cache=True)
-def Tree_ctor(tree_type, split_chooser, pred_chooser, impurity_func):
+def Tree_ctor(tree_type, split_chooser, pred_chooser, impurity_func, cache_nodes):
     st = new(tree_type)
     st.nodes = List.empty_list(TreeNodeType)
+    st.leaves = List.empty_list(TreeNodeType)
     # st.u_ys = np.zeros(0,dtype=np.int32)
     st.context_cache = new_akd(u8_arr,SplitterContextType)#Dict.empty(i8_arr, SplitterContextType)
     st.data_stats = DataStats_ctor()
     st.split_chooser = split_chooser
     st.pred_chooser = pred_chooser
     st.impurity_func = impurity_func
+    st.cache_nodes = cache_nodes    
     return st
     
 @njit(cache=True)
