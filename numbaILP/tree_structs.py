@@ -4,7 +4,7 @@ from numba import njit, types
 from numba import optional
 from numba import void,b1,u1,u2,u4,u8,i1,i2,i4,i8,f4,f8,c8,c16
 from numba.typed import List, Dict
-from numba.core.types import DictType, ListType, unicode_type, literal
+from numba.core.types import DictType, ListType, unicode_type, literal, Tuple
 from .data_stats import DataStatsType, DataStats_ctor, reinit_datastats
 from numba.experimental.structref import new
 from numbaILP.akd import new_akd, AKDType
@@ -27,8 +27,10 @@ SplitDataType.__str__ = lambda self: "SplitDataType"
 
 treenode_fields = [    
     ('index',i4),
-    ('parent_index',i4),
+    ('sample_inds', u4[::1]),
+    # ('parent_index',i4),
     # ('leaf_index',i4),
+    ('parents', ListType(Tuple((i4,u8)))),
     ('split_data', ListType(SplitDataType)),
     ('counts', u4[:]),
     ('ttype', u1),
@@ -47,12 +49,15 @@ OP_EQ = u1(4)
 
 # i4_arr = i4[:]
 
+i4_u8_tup_type = Tuple((i4,u8))
+
 @njit(cache=True)
-def TreeNode_ctor(ttype, index, parent_index, counts):
+def TreeNode_ctor(ttype, index, sample_inds, counts):
     st = new(TreeNodeType)
     st.index = index
-    st.parent_index = parent_index    
+    st.sample_inds = sample_inds    
     st.split_data = List.empty_list(SplitDataType)
+    st.parents = List.empty_list(i4_u8_tup_type)
     st.counts = counts
     st.ttype = ttype
     st.op_enum = OP_NOP

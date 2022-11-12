@@ -274,7 +274,7 @@ def build_root(tree, iterative=False):
     #Make Root Node
     node_dict = new_akd(u4_arr,i4)
     nodes = List.empty_list(TreeNodeType)
-    node = TreeNode_ctor(TTYPE_NODE,i4(0),i4(-1),ds.y_counts)
+    node = TreeNode_ctor(TTYPE_NODE,i4(0),sample_inds,ds.y_counts)
     nodes.append(node)
     tree.nodes = nodes
 
@@ -298,7 +298,21 @@ TTYPE_NODE = u1(1)
 TTYPE_LEAF = u1(2)
 
 @njit(cache=True)
-def next_split_chain(c, is_right, is_cont, split, val):
+def encode_split(is_cont, negated, split, val):
+    print(is_cont, negated, split, val)
+    return u8((is_cont << 63) | (negated << 62) | (split << 32) | val)
+
+
+@njit(Tuple((u1,u1,i4,i4))(u8),cache=True)
+def decode_split(enc_split):
+    is_cont = enc_split >> 63
+    negated = enc_split >> 62  & u8(1)
+    split =  ((enc_split << 2) >> 34) & 0xFFFFFFFF
+    val =     enc_split               & 0xFFFFFFFF
+    return is_cont, negated, split, val
+
+@njit(cache=True)
+def extend_split_chain(c, encoded_split):
     ''' Make a new split chain by adding an encoding of 
         'is_right', 'is_cont', 'split', and 'val' to the 
         end of the previous split chain.
@@ -306,7 +320,7 @@ def next_split_chain(c, is_right, is_cont, split, val):
     l = len(c.split_chain)
     split_chain = np.empty(l+1,dtype=np.uint64)
     split_chain[:l] = c.split_chain
-    split_chain[l] = u8((is_cont << 63) | (is_right << 62) | (split << 32) | val)
+    split_chain[l] = encoded_split
     return split_chain
 
 
@@ -317,28 +331,22 @@ def new_node(locs, tree, sample_inds, y_counts, impurity, is_right):
     c, best_split, best_val,  iterative,  node_dict, context_stack = locs
     nodes = tree.nodes
     node_id = i4(-1)
-    if (tree.cache_nodes): node_id = node_dict.get(sample_inds,-1)
+    if (tree.cache_nodes): 
+        node_id = node_dict.get(sample_inds,-1)
     # print(node_id, "<<", sample_inds)
+
+    encoded_split = encode_split(0, not is_right, best_split, best_val)
+
     if(node_id == -1):
-        node_id = i4(len(nodes))
+        node_id = i4(len(nodes))        
         # if(cache_nodes): akd_insert(node_dict, sample_inds, node_id)
         if(tree.cache_nodes): node_dict[sample_inds] = node_id
         if(impurity > 0.0):
-            node = TreeNode_ctor(TTYPE_NODE, node_id, c.node.index, y_counts)
-            nodes.append(node)
+            node = TreeNode_ctor(TTYPE_NODE, node_id, sample_inds, y_counts)
 
-            split_chain = next_split_chain(c, is_right, 0, best_split, best_val)
-            # print('split_chain', split_chain, best_split)
+            split_chain = extend_split_chain(c, encoded_split)
             if(iterative and split_chain in tree.context_cache):
-                new_c = tree.context_cache[split_chain]
-                # print(new_c)
-                ok = np.array_equal(new_c.split_chain, split_chain)
-                # print("ALL OK", ok)
-                # if(not ok):
-                #     print(new_c.split_chain)
-                #     print(split_chain)
-                #     print(hash(new_c.split_chain), hash(split_chain))
-                
+                new_c = tree.context_cache[split_chain]                
             else:     
                 new_c = SplitterContext_ctor(split_chain)
                 if(tree.ifit_enabled): tree.context_cache[split_chain] = new_c
@@ -346,15 +354,15 @@ def new_node(locs, tree, sample_inds, y_counts, impurity, is_right):
             reinit_splittercontext(new_c, node, sample_inds, y_counts, impurity)
             context_stack.append(new_c)
         else:
-            leaf = TreeNode_ctor(TTYPE_LEAF, node_id, c.node.index, y_counts)
-            tree.nodes.append(leaf)
-            tree.leaves.append(leaf)
+            node = TreeNode_ctor(TTYPE_LEAF, node_id, sample_inds, y_counts)
+            tree.leaves.append(node)
+
+        tree.nodes.append(node)
+    else:
+        node = tree.nodes[node_id]
+
+    node.parents.append((c.node.index, encoded_split))
     return node_id
-
-
-
-
-
 
 
 @njit(cache=True)
@@ -640,17 +648,101 @@ def predict_tree(tree, X_nom, X_cont):
 # -------------------------------------------------------------------------------
 # : instance ambiguity
 
+# @njit(cache=True)
+# def 
+
+
+@njit(cache=True)
+def count_branches(tree, _node):
+    n_branches = np.zeros(len(tree.nodes),dtype=np.uint64)
+    rec_stack = List()
+    rec_stack.append((i4(-1), _node.index))
+
+    while(len(rec_stack) > 0):
+        prev_ind, node_ind = rec_stack.pop()
+        # print(prev_ind, "->", node_ind)
+
+        if(n_branches[node_ind] > 0):
+            n_branches[prev_ind] += n_branches[node_ind]
+        else:
+            node = tree.nodes[node_ind]            
+            if(len(node.parents) == 0):
+                n_branches[node_ind] = 1
+                continue
+
+            if(prev_ind > -1): rec_stack.append((prev_ind, node_ind))
+            for i, (p_node_ind, enc_split) in enumerate(node.parents):
+                rec_stack.append((node_ind, p_node_ind))
+                    
+    # print(n_branches)
+    return n_branches[_node.index]
+
+
+@njit(cache=True)
+def count_covering_branches(tree, _node, x_nom, x_cont):
+
+    # Size of (N,2) for 0: not covering and 1: covering  
+    n_branches = np.zeros((len(tree.nodes),2),dtype=np.uint64)
+    rec_stack = List()
+    rec_stack.append((i4(-1), _node.index, 1))
+    nom_v_maps = tree.data_stats.nom_v_maps
+
+    while(len(rec_stack) > 0):
+        prev_ind, node_ind, was_okay = rec_stack.pop()
+        # print(prev_ind, "->", node_ind, was_okay)
+        
+        if(n_branches[node_ind][0] > 0 or n_branches[node_ind][1] > 0):
+            if(was_okay):
+                # If was_okay add all covering / not covering 
+                n_branches[prev_ind] += n_branches[node_ind]
+            else:
+                # Otherwise put them all in not covering 
+                n_branches[prev_ind][0] += np.sum(n_branches[node_ind])
+        else:
+            node = tree.nodes[node_ind]            
+            if(len(node.parents) == 0):
+                n_branches[node_ind][was_okay] = 1
+                continue
+
+            if(prev_ind > -1): rec_stack.append((prev_ind, node_ind, was_okay))
+
+            for i, (p_node_ind, enc_split) in enumerate(node.parents):
+                is_cont, negated, split, val = decode_split(enc_split)
+                okay = True
+                if(not is_cont):
+                    mapped_val = nom_v_maps[split][x_nom[split]]
+                    okay = negated ^ (mapped_val==val)
+                    # print(split, "!=" if negated else "==",  val, okay)
+                else:
+                    pass
+
+                rec_stack.append((node_ind, p_node_ind, okay))
+                    
+    # print(n_branches)
+    out = n_branches[_node.index]
+    return out[0], out[1]
+        
+
+
 @njit(cache=True)
 def instance_ambiguity(tree, x_nom, x_cont):    
     if(len(x_nom) == 0): x_nom = np.empty(0, dtype=np.int32)
     if(len(x_cont) == 0): x_cont = np.empty(0, dtype=np.float32)
 
     leaves = filter_leaves(tree, x_nom, x_cont)
-
+    print()
     for leaf in leaves:
-        print(leaf.index, leaf.counts)
+        print(">>", leaf.index, leaf.counts, leaf.sample_inds)
+        print("<<", count_branches(tree, leaf))
+        print("!!", count_covering_branches(tree, leaf, x_nom, x_cont))
+        
+        # for p_node_ind, encoded_split in leaf.parents:
+        #     print(p_node_ind, decode_split(encoded_split))
+        # # for s_ind in leaf.sample_inds:
+            # print(tree.data_stats.X_nom[s_ind])
+        
 
-    print(tree.context_cache)
+    # print(tree.context_cache)
 
 # -------------------------------------------------------------------------------
 # : str_tree()

@@ -1,12 +1,39 @@
 import numpy as np
 from numba import njit
-from numbaILP.splitter import TreeClassifier, instance_ambiguity
+from numbaILP.splitter import TreeClassifier, instance_ambiguity, encode_split, decode_split
 from numba.core.runtime.nrt import rtsys
 
 
 def used_bytes():
     stats = rtsys.get_allocation_stats()
     return stats.alloc-stats.free
+
+
+# ---------------------------------------------------------------------
+# Test encode / decode split
+
+def test_encode_decode_split():
+    enc_split = encode_split(1,1,8,9)
+    print(decode_split(enc_split))
+    assert isinstance(enc_split,int)
+    assert decode_split(enc_split) == (1,1,8,9)
+
+    enc_split = encode_split(1,1,0x0FFFFFFF,0x0FFFFFFF)
+    assert isinstance(enc_split,int)
+    print(decode_split(enc_split))
+    assert decode_split(enc_split) == (1,1,0x0FFFFFFF,0x0FFFFFFF)
+
+    enc_split = encode_split(0,0,0x3FFFFFFF,0x6FFFFFFF)
+    assert isinstance(enc_split,int)
+    print(decode_split(enc_split))
+    assert decode_split(enc_split) == (0,0,0x3FFFFFFF,0x6FFFFFFF)
+
+    enc_split = encode_split(0,0,13,0)
+    assert isinstance(enc_split,int)
+    print(decode_split(enc_split))
+    assert decode_split(enc_split) == (0,0,13,0)
+
+
 
 # ---------------------------------------------------------------------
 # Dataset generation / processing
@@ -244,19 +271,21 @@ if __name__ == "__main__":
     # test_memleaks()
     # test_decision_tree()
     # test_option_tree()
+    test_encode_decode_split()
 
     dt = TreeClassifier('option_tree')
     X_nom, Y = make_data1()
-    # X_nom, Y = random_XY()
+    # X_nom, Y = random_XY(N=50,M=10)
     dt.fit(X_nom, None, Y)
     print(dt)
-
-    x_nom = np.asarray([0,0,1,0,1,1,1,1,1,1,1,0,0,0,0,1,0],np.int32)
-
-    # x_nom = np.random.randint(0,5,(100,),dtype=np.int32)
+    #                   0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16
+    x_nom = np.asarray([0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 0, 0],np.int32)
+    # x_nom = np.random.randint(0,5,(10,),dtype=np.int32)
     x_cont = np.empty(0,dtype=np.float32)
 
     instance_ambiguity(dt.tree, x_nom, x_cont)
     print(x_nom)
+
+
 
     
