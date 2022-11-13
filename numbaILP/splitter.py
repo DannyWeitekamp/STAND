@@ -299,7 +299,6 @@ TTYPE_LEAF = u1(2)
 
 @njit(cache=True)
 def encode_split(is_cont, negated, split, val):
-    print(is_cont, negated, split, val)
     return u8((is_cont << 63) | (negated << 62) | (split << 32) | val)
 
 
@@ -651,9 +650,8 @@ def predict_tree(tree, X_nom, X_cont):
 # @njit(cache=True)
 # def 
 
-
 @njit(cache=True)
-def count_branches(tree, _node):
+def _count_branches(tree, _node):
     n_branches = np.zeros(len(tree.nodes),dtype=np.uint64)
     rec_stack = List()
     rec_stack.append((i4(-1), _node.index))
@@ -673,13 +671,15 @@ def count_branches(tree, _node):
             if(prev_ind > -1): rec_stack.append((prev_ind, node_ind))
             for i, (p_node_ind, enc_split) in enumerate(node.parents):
                 rec_stack.append((node_ind, p_node_ind))
-                    
-    # print(n_branches)
-    return n_branches[_node.index]
-
+    return n_branches
 
 @njit(cache=True)
-def count_covering_branches(tree, _node, x_nom, x_cont):
+def count_branches(tree, _node):
+    n_branches = _count_branches(tree, _node)
+    return n_branches[_node.index]
+
+@njit(cache=True)
+def _count_covering_branches(tree, _node, x_nom, x_cont):
 
     # Size of (N,2) for 0: not covering and 1: covering  
     n_branches = np.zeros((len(tree.nodes),2),dtype=np.uint64)
@@ -693,10 +693,10 @@ def count_covering_branches(tree, _node, x_nom, x_cont):
         
         if(n_branches[node_ind][0] > 0 or n_branches[node_ind][1] > 0):
             if(was_okay):
-                # If was_okay add all covering / not covering 
+                # If was_okay propogate all covering and not covering to child
                 n_branches[prev_ind] += n_branches[node_ind]
             else:
-                # Otherwise put them all in not covering 
+                # Otherwise count all as not covering in the child
                 n_branches[prev_ind][0] += np.sum(n_branches[node_ind])
         else:
             node = tree.nodes[node_ind]            
@@ -717,24 +717,15 @@ def count_covering_branches(tree, _node, x_nom, x_cont):
                     pass
 
                 rec_stack.append((node_ind, p_node_ind, okay))
-                    
-    # print(n_branches)
+    return n_branches
+
+@njit(cache=True)
+def count_covering_branches(tree, _node, x_nom, x_cont):
+    n_branches = _count_covering_branches(tree, _node, x_nom, x_cont)
     out = n_branches[_node.index]
     return out[0], out[1]
         
 
-
-@njit(cache=True)
-def instance_ambiguity(tree, x_nom, x_cont):    
-    if(len(x_nom) == 0): x_nom = np.empty(0, dtype=np.int32)
-    if(len(x_cont) == 0): x_cont = np.empty(0, dtype=np.float32)
-
-    leaves = filter_leaves(tree, x_nom, x_cont)
-    print()
-    for leaf in leaves:
-        print(">>", leaf.index, leaf.counts, leaf.sample_inds)
-        print("<<", count_branches(tree, leaf))
-        print("!!", count_covering_branches(tree, leaf, x_nom, x_cont))
         
         # for p_node_ind, encoded_split in leaf.parents:
         #     print(p_node_ind, decode_split(encoded_split))
@@ -818,6 +809,7 @@ tree_classifier_presets = {
 class TreeClassifier(object):
     def __init__(self,
             preset_type='decision_tree', 
+            ifit_enabled = True,
             **kwargs):
         '''
         TODO: Finish docs
@@ -836,12 +828,7 @@ class TreeClassifier(object):
                 'sep_nan', 'cache_nodes')(kwargs)
 
         self.positive_class = positive_class
-
-
-        tf_dict = {k:v for k,v in tree_fields}
-        tf = [(k,v) for k,v in {**tf_dict, **{"ifit_enabled": literal(True)}}.items()]
-        self.tree_type = TreeTypeTemplate(tf)
-
+        self.tree_type = self.gen_tree_type(ifit_enabled)
         self.tree = Tree_ctor(
             self.tree_type,
             split_choosers[split_choice],
@@ -849,7 +836,12 @@ class TreeClassifier(object):
             impurity_funcs[impurity_func],
             cache_nodes
         )
-        
+
+    def gen_tree_type(self, ifit_enabled):
+        tf_dict = {k:v for k,v in tree_fields}
+        tf = [(k,v) for k,v in {**tf_dict, **{"ifit_enabled": literal(ifit_enabled)}}.items()]
+        return TreeTypeTemplate(tf)
+
         
     def fit(self, X_nom, X_cont, Y, miss_mask=None, ft_weights=None):
         if(X_nom is None): X_nom = np.empty((0,0), dtype=np.int32)

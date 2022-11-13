@@ -1,6 +1,7 @@
 import numpy as np
 from numba import njit
-from numbaILP.splitter import TreeClassifier, instance_ambiguity, encode_split, decode_split
+from numbaILP.stand import instance_ambiguity
+from numbaILP.splitter import TreeClassifier, encode_split, decode_split
 from numba.core.runtime.nrt import rtsys
 
 
@@ -268,6 +269,8 @@ def test_b_ifit_option_tree_rand_1x100(benchmark):
     stats.data = [x/N for x in stats.data]
 
 if __name__ == "__main__":
+
+    from numbaILP.stand import STANDClassifier
     # test_memleaks()
     # test_decision_tree()
     # test_option_tree()
@@ -283,8 +286,26 @@ if __name__ == "__main__":
     # x_nom = np.random.randint(0,5,(10,),dtype=np.int32)
     x_cont = np.empty(0,dtype=np.float32)
 
-    instance_ambiguity(dt.tree, x_nom, x_cont)
+    
     print(x_nom)
+
+    print("--------------------------------")
+    stand = STANDClassifier(positive_class=1)
+    stand.fit(X_nom, None, Y)
+
+    IA = stand.instance_ambiguity(x_nom, None)
+    print("Instance Ambiguity: ", IA)
+    for x,y in zip(X_nom,Y):
+        print(x,y)
+        print(stand.instance_ambiguity(x))
+
+    new_X_nom = np.concatenate([X_nom,x_nom.reshape((1,-1))])
+    new_Y = np.concatenate([Y,[1]])
+    stand.fit(new_X_nom, None, new_Y)
+    print(stand)
+    IA = stand.instance_ambiguity(x_nom, None)
+    print("Instance Ambiguity: ", IA)
+
 
 
 
