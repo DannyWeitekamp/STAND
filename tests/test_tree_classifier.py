@@ -1,7 +1,7 @@
 import numpy as np
 from numba import njit
 from stand.stand import instance_ambiguity
-from stand.tree_classifer import TreeClassifier, encode_split, decode_split
+from stand.tree_classifier import TreeClassifier, encode_split, decode_split
 from numba.core.runtime.nrt import rtsys
 
 

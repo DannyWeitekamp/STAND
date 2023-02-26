@@ -1,7 +1,7 @@
 import numpy as np
 from numba import njit, prange
 from stand.stand import calc_invariant_nom_mask 
-from stand.tree_classifer import TreeClassifier, encode_split, decode_split
+from stand.tree_classifier import TreeClassifier, encode_split, decode_split
 from numba.core.runtime.nrt import rtsys
 
 

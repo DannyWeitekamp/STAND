@@ -1,6 +1,6 @@
 import numpy as np
 from stand.structref import define_structref, define_structref_template
-from stand.tree_classifer import TreeClassifier, str_tree, fit_tree, _count_branches, _count_covering_branches, decode_split, encode_split, filter_leaves, get_branch_splits
+from stand.tree_classifier import TreeClassifier, str_tree, fit_tree, _count_branches, _count_covering_branches, decode_split, encode_split, filter_leaves, get_branch_splits
 from stand.tree_structs import TreeNodeType
 from numba import config, njit, threading_layer, types
 from numba import void,b1,u1,u2,u4,u8,i1,i2,i4,i8,f4,f8,c8,c16
