@@ -10,7 +10,7 @@ from numba.typed.dictobject import _dict_lookup, DKIX, _nonoptional, _cast
 from numba.typed import List, Dict
 from numba.extending import overload, overload_classmethod, overload_method
 
-from numbaILP.fnvhash import hasharray
+from stand.fnvhash import hasharray
 
 
 akd_fields = {
@@ -57,7 +57,6 @@ structref.define_proxy(AKD, AKDType, ["dict"])
 
 
 @generated_jit(nopython=True)
-@overload_classmethod(AKDType, 'empty')
 def new_akd(_key_typ, _val_typ):
     key_typ, val_typ = _key_typ.instance_type, _val_typ.instance_type
     l_typ = ListType(Tuple((key_typ, val_typ)))
@@ -66,6 +65,12 @@ def new_akd(_key_typ, _val_typ):
         akd = new(akd_typ)
         akd.dict = Dict.empty(u8, l_typ)
         return akd
+    return impl
+
+@overload_classmethod(AKDType, 'empty')
+def overload_akd_empty(cls, _key_typ, _val_typ):
+    def impl(cls, _key_typ, _val_typ):
+        return new_akd(_key_typ, _val_typ)
     return impl
 
 # -------------------------------------------------------------------------

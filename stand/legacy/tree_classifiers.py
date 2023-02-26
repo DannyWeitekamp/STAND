@@ -11,12 +11,12 @@ from numba.core.types import DictType,ListType, unicode_type, NamedTuple,NamedUn
 from collections import namedtuple
 import timeit
 from sklearn import tree as SKTree
-from numbaILP.compile_template import compile_template
+from stand.compile_template import compile_template
 from enum import IntEnum
 from numba.pycc import CC
-from numbaILP.fnvhash import hasharray#, AKD#, akd_insert,akd_get
+from stand.fnvhash import hasharray#, AKD#, akd_insert,akd_get
 from operator import itemgetter
-from numbaILP.structref import define_structref
+from stand.structref import define_structref
 
 
 

@@ -1,5 +1,5 @@
 import unittest
-from numbaILP.tree_classifiers import *
+from stand.tree_classifiers import *
 from numba.typed import List, Dict
 import numpy as np
 import re

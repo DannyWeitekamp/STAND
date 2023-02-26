@@ -1,12 +1,43 @@
 import numpy as np
-from numbaILP.structref import define_structref, define_structref_template
-from numbaILP.splitter import TreeClassifier, str_tree, fit_tree, _count_branches, _count_covering_branches, decode_split, encode_split, filter_leaves
-from numbaILP.tree_structs import TreeNodeType
+from stand.structref import define_structref, define_structref_template
+from stand.tree_classifer import TreeClassifier, str_tree, fit_tree, _count_branches, _count_covering_branches, decode_split, encode_split, filter_leaves, get_branch_splits
+from stand.tree_structs import TreeNodeType
 from numba import config, njit, threading_layer, types
 from numba import void,b1,u1,u2,u4,u8,i1,i2,i4,i8,f4,f8,c8,c16
 from numba.typed import List, Dict
 from numba.core.types import DictType,ListType, unicode_type, NamedTuple,NamedUniTuple,Tuple,literal
 from numba.experimental.structref import new
+
+import time
+class PrintElapse():
+    def __init__(self, name):
+        self.name = name
+    def __enter__(self):
+        self.t0 = time.time_ns()/float(1e6)
+    def __exit__(self,*args):
+        self.t1 = time.time_ns()/float(1e6)
+        print(f'{self.name}: {self.t1-self.t0:.2f} ms')
+
+from numba import njit, objmode
+import ctypes
+
+CLOCK_MONOTONIC = 0x1
+clock_gettime_proto = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int,
+                                       ctypes.POINTER(ctypes.c_long))
+pybind = ctypes.CDLL(None)
+clock_gettime_addr = pybind.clock_gettime
+clock_gettime_fn_ptr = clock_gettime_proto(clock_gettime_addr)
+
+
+@njit
+def timenow():
+    timespec = np.zeros(2, dtype=np.int64)
+    clock_gettime_fn_ptr(CLOCK_MONOTONIC, timespec.ctypes)
+    ts = timespec[0]
+    tns = timespec[1]
+    return np.float64(ts) + 1e-9 * np.float64(tns)
+
+
 
 
 # specific_ext_fields = [
@@ -64,13 +95,21 @@ class STANDClassifier(object):
         return STANDTypeTemplate(sf)
 
     def fit(self, X_nom, X_cont, Y, miss_mask=None, ft_weights=None):
-        self.op_tree_classifier.fit(X_nom, X_cont, Y, miss_mask, ft_weights)
-        fit_spec_ext(self.stand)
+        with PrintElapse("fit option_tree"):
+            self.op_tree_classifier.fit(X_nom, X_cont, Y, miss_mask, ft_weights)
+        with PrintElapse("fit_spec_ext"):
+            fit_spec_ext(self.stand)
+        print("N NODES:", len(self.op_tree_classifier.nodes))
+
+    # TODO : ADD SPECIFIC CHECK
+    def predict(self, X_nom, X_cont):
+        return self.op_tree_classifier.predict(X_nom, X_cont)
 
     def ifit(self, x_nom, x_cont, y, miss_mask=None, ft_weights=None):
         if(x_nom is None): x_nom = np.empty((0,), dtype=np.int32)
         if(x_cont is None): x_cont = np.empty((0,), dtype=np.float32)
         self.op_tree_classifier.fit(x_nom, x_cont, y, miss_mask, ft_weights)
+        
         fit_spec_ext(self.stand)
 
     def instance_ambiguity(self, x_nom=None, x_cont=None):
@@ -98,12 +137,7 @@ def calc_invariant_nom_mask(X_nom):
     nom_invariants = np.ones(X_nom.shape[1],dtype=np.uint8)
     x0 = X_nom[0]
     for i in range(1,len(X_nom)):
-        X_nom_i = X_nom[i]
-        for j in range(len(x0)):
-            if(nom_invariants[j]):
-                nom_invariants[j] &= (x0[j] == X_nom_i[j])
-
-
+        nom_invariants &= (x0 == X_nom[i])
     return nom_invariants
 
 
@@ -124,58 +158,63 @@ def fit_spec_ext(stand):
         if(leaf.counts[pc] > 0):
             trm_ss_nom = X_nom[leaf.sample_inds]
             x_nom_0 = trm_ss_nom[0]
+
             nom_invt_mask = calc_invariant_nom_mask(trm_ss_nom)
-            L = ext_size = np.sum(nom_invt_mask, dtype=np.int64)
+
+            L = np.sum(nom_invt_mask, dtype=np.int64)
             spec_ext = np.empty(L, dtype=np.uint64)
 
+            branch_splits = get_branch_splits(tree, leaf)
+            # Build "spec_ext" the conditions for the specific extention of "leaf". 
             # "ext_size" is the number of conditions in the specific extension
             #   that are not present in any branch of "leaf". Decrement any 
             #   repetitions found in the these branches.
-            n_branches = _count_branches(tree, leaf)
-            for node_ind, n in enumerate(n_branches):
-                if(n > 0):
-                    node = tree.nodes[node_ind]
-                    for sd in node.split_data:
-                        split, val = sd.split_ind, sd.val
-                        if(nom_invt_mask[split] and x_nom_0[split]==val):
-                            ext_size -= 1
-
-            # Build "spec_ext" the conditions for the specific extention of "leaf". 
             c = 0
+            ext_size = 0
             for split, is_invariant in enumerate(nom_invt_mask):
                 if(is_invariant):
                     val = x_nom_0[split]
-                    spec_ext[c] = encode_split(0,0,i4(split),val) 
+                    spec_ext[c] = spec_enc =  encode_split(0,0,i4(split),val) 
                     c += 1
+                    if(spec_enc not in branch_splits):
+                        ext_size += 1
+
+            # for split_enc in branch_splits:
+            #     is_cont, negated, split, val = decode_split(split_enc)
+            #     if(nom_invt_mask[split] and negated ^ (x_nom_0[split]==val)):
+            #         ext_size -= 1
 
             # Insert extension and size into "spec_exts" dict of the STAND structref
-            assert ext_size > 0 
+            assert ext_size >= 0 and ext_size <= L
             stand.spec_exts[leaf.index] = (spec_ext, u8(ext_size))
 
 
+
 @njit(cache=True)
-def instance_ambiguity(stand, x_nom, x_cont):    
+def instance_ambiguity(stand, x_nom, x_cont):
+
     tree = stand.op_tree
+    if(stand.positive_class not in tree.data_stats.y_map):
+        return 0.0
     pc = tree.data_stats.y_map[stand.positive_class]
     nom_v_maps = tree.data_stats.nom_v_maps
     
     leaves = filter_leaves(tree, x_nom, x_cont)
-    print("NLEAVES:", len(leaves))
 
     A_px = 0
     A_nx = 0
     Nn, Np = 0, 0
     for leaf in leaves:
+        # print(leaf.counts)
         n_branches = _count_covering_branches(tree, leaf, x_nom, x_cont)
         # The number of parent branches leading into that 
         #  don't (_nn) and do (_np) select (x_nom, x_cont)
         nn_np = n_branches[leaf.index]
         _nn, _np = nn_np[0], nn_np[1]
-        print("::", _nn, _np)
         Nn += _nn
         Np += _np
 
-        # Positive leaf case 
+        # Positive leaf case
         if(leaf.counts[pc] > 0):
             # Find the number of conditions failed in the specific extension 
             n_ext_failed = 0
@@ -183,7 +222,7 @@ def instance_ambiguity(stand, x_nom, x_cont):
             for enc_split in spec_ext:
                 is_cont, negated, split, val = decode_split(enc_split)
                 if(not is_cont):
-                    mapped_val = nom_v_maps[split][x_nom[split]]
+                    mapped_val = nom_v_maps[split].get(x_nom[split],-1)
                     if(mapped_val != val): n_ext_failed 
                 else:
                     pass
@@ -192,13 +231,15 @@ def instance_ambiguity(stand, x_nom, x_cont):
             A_px += _np * (n_ext_failed)
 
             # print(_nn, ext_size, _np, n_ext_failed)
-            # print(n_branches)
+        
 
         # Negative Leaf case 
         else:
             A_nx += _np * (1+ext_size)
+
+        # print("??", A_px, A_nx)
     
-    print(":", A_px, A_nx, Np, Nn)
+    # print(":", A_px, A_nx, Np, Nn)
     
     den = (Np + Nn)
     if(den == 0): return 0.0

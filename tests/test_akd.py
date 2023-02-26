@@ -10,8 +10,8 @@ from numba import njit, u8, i8
 # from numba.typed import List, Dict
 # from numba.extending import overload, overload_classmethod
 
-from numbaILP.fnvhash import hasharray
-from numbaILP.akd import akd_contains, AKD, AKDType
+from stand.fnvhash import hasharray
+from stand.akd import akd_contains, AKD, AKDType
 
 def test_type():
     typ = AKDType(i8[::1], i8)

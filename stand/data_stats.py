@@ -1,4 +1,4 @@
-from numbaILP.structref import define_structref, define_structref_template
+from stand.structref import define_structref, define_structref_template
 from numba import njit
 from numba import optional
 from numba import void,b1,u1,u2,u4,u8,i1,i2,i4,i8,f4,f8,c8,c16

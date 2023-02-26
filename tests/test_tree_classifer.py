@@ -1,7 +1,7 @@
 import numpy as np
 from numba import njit
-from numbaILP.stand import instance_ambiguity
-from numbaILP.splitter import TreeClassifier, encode_split, decode_split
+from stand.stand import instance_ambiguity
+from stand.tree_classifer import TreeClassifier, encode_split, decode_split
 from numba.core.runtime.nrt import rtsys
 
 
@@ -62,7 +62,7 @@ def make_data1():
 
 def make_data2():
     data2 = np.asarray([
-#    0 1 2 3 4 5 6 7 8 9 10111213141516
+#    0 1 2 3 4 5 
     [0,0,0,0,0,0], #1 0
     [0,0,1,0,0,0], #1 1
     [0,1,1,0,0,0], #1 2
@@ -77,7 +77,7 @@ def make_data2():
 
 def make_data3():
     data3 = np.asarray([
-#    0 1 2 3 4 5 6 7 8 9 10111213141516
+#    0 1 
     [0,0], #1 0 
     [1,0], #1 1
     [0,1], #1 2
@@ -112,8 +112,8 @@ def setup_sklearn_fit(model, data_gen, **kwargs):
     return (dt, X_oh, Y), {}
 
 
-def setup_tree_fit(preset, data_gen, use_nom=True, use_cont=False, **kwargs):
-    dt = TreeClassifier(preset_type=preset)
+def setup_tree_fit(preset, data_gen, use_nom=True, use_cont=False, cache_nodes=None, **kwargs):
+    dt = TreeClassifier(preset_type=preset, cache_nodes=cache_nodes)
     X, Y = data_gen(**kwargs)
     X_nom, X_cont = make_nom_cont(X, use_nom, use_cont)
     return (dt, X_nom, X_cont, Y), {}
@@ -231,24 +231,32 @@ def test_memleaks():
 # -----------------------------------------------------------------------
 # : Benchmark Tests
 
+N = 1000
+
 # Sklearn
 
 def test_b_fit_sklearn_dt_rand_1000x100(benchmark):
     benchmark.pedantic(run_sk_tree_fit,
-        setup=lambda : setup_sklearn_fit('DecisionTreeClassifier', random_XY),
+        setup=lambda : setup_sklearn_fit('DecisionTreeClassifier', random_XY, N=N),
         warmup_rounds=1, rounds=10)
 
 # fit 
 
 def test_b_fit_decision_tree_rand_1000x100(benchmark):
     benchmark.pedantic(run_tree_fit,
-        setup=lambda : setup_tree_fit('decision_tree', random_XY),
+        setup=lambda : setup_tree_fit('decision_tree', random_XY, N=N),
         warmup_rounds=1, rounds=10)
 
 def test_b_fit_option_tree_rand_1000x100(benchmark):
     benchmark.pedantic(run_tree_fit,
-        setup=lambda : setup_tree_fit('option_tree', random_XY),
+        setup=lambda : setup_tree_fit('option_tree', random_XY, N=N),
         warmup_rounds=1, rounds=10)
+
+def test_b_fit_option_tree_no_cache_rand_1000x100(benchmark):
+    benchmark.pedantic(run_tree_fit,
+        setup=lambda : setup_tree_fit('option_tree', random_XY, cache_nodes=False, N=N),
+        warmup_rounds=1, rounds=10)
+
 
 # ifit
 
@@ -270,10 +278,31 @@ def test_b_ifit_option_tree_rand_1x100(benchmark):
 
 if __name__ == "__main__":
 
-    from numbaILP.stand import STANDClassifier
+    from stand.stand import STANDClassifier
     # test_memleaks()
     # test_decision_tree()
     # test_option_tree()
+
+    v = 0
+    for i in range(10):
+        dt = run_tree_fit(*setup_tree_fit('decision_tree', random_XY, N=N)[0])
+        v += len(dt.nodes)
+    print("DT:", v/10)
+        
+    v = 0
+    for i in range(10):
+        dt = run_tree_fit(*setup_tree_fit('option_tree', random_XY, N=N)[0])
+        v += len(dt.nodes)
+    print("Op:", v/10)
+
+    v = 0
+    for i in range(10):
+        dt = run_tree_fit(*setup_tree_fit('option_tree', random_XY, cache_nodes=False,  N=N)[0])
+        v += len(dt.nodes)
+    print("Op no cache:", v/10)
+
+
+    raise ValueError()
     test_encode_decode_split()
 
     dt = TreeClassifier('option_tree')

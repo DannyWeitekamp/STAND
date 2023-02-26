@@ -1,5 +1,5 @@
-from numbaILP.structref import define_structref, define_structref_template
-from numbaILP.utils import _struct_from_pointer, _pointer_from_struct, _pointer_from_struct_incref, _decref_pointer, _decref_structref
+from stand.structref import define_structref, define_structref_template
+from stand.utils import _struct_from_pointer, _pointer_from_struct, _pointer_from_struct_incref, _decref_pointer, _decref_structref
 from numba.experimental.structref import new
 import numpy as np
 import numba
@@ -14,11 +14,11 @@ import os
 from operator import itemgetter
 from numba import config, njit, threading_layer
 from sklearn.preprocessing import OneHotEncoder
-from numbaILP.fnvhash import hasharray
-from numbaILP.tree_structs import *
-from numbaILP.data_stats import *
-from numbaILP.split_caches import *
-from numbaILP.akd import new_akd, AKDType
+from stand.fnvhash import hasharray
+from stand.tree_structs import *
+from stand.data_stats import *
+from stand.split_caches import *
+from stand.akd import new_akd, AKDType
 
 
 import logging
@@ -272,11 +272,13 @@ def build_root(tree, iterative=False):
     impurity = tree.impurity_func(u4(len(Y)), ds.y_counts)
     
     #Make Root Node
-    node_dict = new_akd(u4_arr,i4)
-    nodes = List.empty_list(TreeNodeType)
     node = TreeNode_ctor(TTYPE_NODE,i4(0),sample_inds,ds.y_counts)
-    nodes.append(node)
-    tree.nodes = nodes
+
+    # Make Sure various node containers are reset
+    node_dict = new_akd(u4_arr,i4)    
+    tree.nodes = List.empty_list(TreeNodeType)
+    tree.nodes.append(node)
+    tree.leaves = List.empty_list(TreeNodeType)
 
     empty_u8 = np.zeros(0,dtype=np.uint64)
     #Make Root Context
@@ -291,7 +293,7 @@ def build_root(tree, iterative=False):
     context_stack = List.empty_list(SplitterContextType)
     context_stack.append(c)
 
-    return context_stack, node_dict, nodes
+    return context_stack, node_dict
 
 
 TTYPE_NODE = u1(1)
@@ -472,7 +474,7 @@ def fit_tree(tree, iterative=False):
     '''
     Refits the tree from its DataStats
     '''
-    context_stack, node_dict, nodes =  \
+    context_stack, node_dict =  \
         build_root(tree)
     
     # print("A")
@@ -490,20 +492,19 @@ def fit_tree(tree, iterative=False):
         # best_split = np.argmin(c.impurity-c.impurities[:,0])
         # print("---")
         for split in best_splits:
-            # print("S", split)q
+            
+            # This prevents nodes already known to be leaves from being added
+            #  to the set of leaves. Not sure why cannot check this outside of loop. 
+            if(c.node.ttype == TTYPE_LEAF): continue
 
             inds_l, inds_r, y_counts_l, y_counts_r, imp_tot, imp_l, imp_r, val = \
                 extract_nominal_split_info(tree, c, split, iterative)
 
             # print("S1", split, inds_l, inds_r, val, "\n")
 
-            # if(impurity_decrease[split] <= 0.0):
-            
-
             if(c.impurity - imp_tot <= 0):
                 c.node.ttype = TTYPE_LEAF
                 tree.leaves.append(c.node)
-                # print("LEAF")
             else:
                 # print("S2", split)
                 ptr = _pointer_from_struct(c)
@@ -521,7 +522,8 @@ def fit_tree(tree, iterative=False):
         if(not iterative):
             SplitterContext_dtor(c)
         # print("C")
-        
+    
+    assert len(tree.leaves) <= len(tree.nodes)
         # _decref_pointer(ptr)
     return 0
     # print("DONE")
@@ -544,8 +546,10 @@ def get_pure_leaves(leaves):
 
 pred_chooser_sig = i8(ListType(TreeNodeType))
 
+
+# PROBABLY NOT EVER A GOOD CHOICE FUNCTION
 @njit(pred_chooser_sig, cache=True)
-def choose_majority(leaves):
+def choose_majority_leaves(leaves):
     ''' If multiple leaves on predict (i.e. option tree), choose 
         the class predicted by the majority of leaves.''' 
     predictions = np.empty((len(leaves),),dtype=np.int32)
@@ -556,9 +560,19 @@ def choose_majority(leaves):
     return u[_i]
 
 @njit(pred_chooser_sig, cache=True)
+def choose_majority(leaves):
+    ''' Choose the class with the largest representation in the leaves that
+        select the instance being predicted. ''' 
+    all_counts = leaves[0].counts.copy()
+    for i in range(1, len(leaves)):
+        all_counts += leaves[i].counts
+    y = np.argmax(all_counts)
+    return y
+
+@njit(pred_chooser_sig, cache=True)
 def choose_pure_majority(leaves):
     ''' If multiple leaves on predict (i.e. option tree), choose 
-        the class predicted by the majority pure of leaves.'''
+        the class predicted by the majority of putre leaves.'''
     pure_leaves = get_pure_leaves(leaves)
     leaves = pure_leaves if len(pure_leaves) > 0 else leaves
     return choose_majority(leaves)
@@ -594,7 +608,9 @@ def filter_leaves(tree, x_nom, x_cont):
                     # Determine if this sample should feed right, left, or nan (if ternary)
                     if(not sd.is_continous):
                         # Nominal case
-                        mapped_val = nom_v_maps[sd.split_ind][x_nom[sd.split_ind]]
+                        mapped_val = nom_v_maps[sd.split_ind].get(x_nom[sd.split_ind],-1)
+                        # if mapped_val == -1:
+                        #     continue
                         _n = sd.right if(mapped_val==sd.val) else sd.left
                     else:
                         # Continous case : Need to reimplement
@@ -630,18 +646,25 @@ def predict_tree(tree, X_nom, X_cont):
     L = max(len(X_nom),len(X_cont))
     if(len(X_nom) == 0): X_nom = np.empty((L,0), dtype=np.int32)
     if(len(X_cont) == 0): X_cont = np.empty((L,0), dtype=np.float32)
-
     out = np.empty((L,),dtype=np.int64)
     y_uvs = tree.data_stats.u_ys    
     for i in range(L):
         leaves = filter_leaves(tree, X_nom[i], X_cont[i])
+        # for leaf in leaves:
+        #     print(leaf.counts)
 
         # In an option tree the leaf that the instance ends up  is ambiguous 
         #   so we need a subroutine that for choosing how to classify the instance 
         #   from among the leaves it is filtered into. 
-        out_i = tree.pred_chooser(leaves)
-        out_i = y_uvs[out_i]
-        out[i] = out_i
+        if(len(leaves) > 0):
+            out_i = tree.pred_chooser(leaves)
+            out_i = y_uvs[out_i]
+            out[i] = out_i
+        else:
+            raise RuntimeError("Item does not filter into any leaves.")
+            # print("BAD CASE")
+            out[i] = y_uvs[0]  
+    # print("OUT", out[0], y_uvs)  
     return out
 
 # -------------------------------------------------------------------------------
@@ -650,17 +673,45 @@ def predict_tree(tree, X_nom, X_cont):
 # @njit(cache=True)
 # def 
 
+
+
+@njit(cache=True)
+def get_branch_splits(tree, _node):
+    # print("### NODE:", _node.index)
+    covered_nodes = np.zeros(len(tree.nodes), dtype=np.uint8)
+    branch_splits = Dict.empty(u8, i8)
+    rec_stack = List()
+    rec_stack.append(_node.index)
+
+    while(len(rec_stack) > 0):
+        node_ind = rec_stack.pop()
+        node = tree.nodes[node_ind]            
+        if(len(node.parents) == 0):
+            continue
+
+        for i, (p_node_ind, enc_split) in enumerate(node.parents):
+            if(not covered_nodes[p_node_ind]):
+                rec_stack.append(p_node_ind)
+                covered_nodes[p_node_ind] = 1
+            branch_splits[enc_split] = branch_splits.get(enc_split,0) + 1
+
+
+    return branch_splits
+
+
 @njit(cache=True)
 def _count_branches(tree, _node):
+    # print("### NODE:", _node.index)
     n_branches = np.zeros(len(tree.nodes),dtype=np.uint64)
     rec_stack = List()
     rec_stack.append((i4(-1), _node.index))
 
     while(len(rec_stack) > 0):
         prev_ind, node_ind = rec_stack.pop()
-        # print(prev_ind, "->", node_ind)
+        # print(prev_ind, "->", node_ind, len(tree.nodes))
 
         if(n_branches[node_ind] > 0):
+            # print("**", prev_ind, node_ind)
             n_branches[prev_ind] += n_branches[node_ind]
         else:
             node = tree.nodes[node_ind]            
@@ -689,7 +740,7 @@ def _count_covering_branches(tree, _node, x_nom, x_cont):
 
     while(len(rec_stack) > 0):
         prev_ind, node_ind, was_okay = rec_stack.pop()
-        # print(prev_ind, "->", node_ind, was_okay)
+        # print(prev_ind, "->>", node_ind, was_okay)
         
         if(n_branches[node_ind][0] > 0 or n_branches[node_ind][1] > 0):
             if(was_okay):
@@ -710,7 +761,7 @@ def _count_covering_branches(tree, _node, x_nom, x_cont):
                 is_cont, negated, split, val = decode_split(enc_split)
                 okay = True
                 if(not is_cont):
-                    mapped_val = nom_v_maps[split][x_nom[split]]
+                    mapped_val = nom_v_maps[split].get(x_nom[split],-1)
                     okay = negated ^ (mapped_val==val)
                     # print(split, "!=" if negated else "==",  val, okay)
                 else:
@@ -784,6 +835,17 @@ def str_tree(tree):
         # node_offset += node_width
     return "\n".join(l)
 
+# -------------------------------------------------------------------------------
+# : Getters
+
+@njit(cache=True)
+def get_nodes(tree):
+    return tree.nodes
+
+@njit(cache=True)
+def get_leaves(tree):
+    return tree.leaves
+
 
 tree_classifier_presets = {
     'decision_tree' : {
@@ -821,6 +883,9 @@ class TreeClassifier(object):
             positive_class: The integer id for the positive class (used in prediction)
             sep_nan: If set to True then use a ternary tree that treats nan's seperately 
         '''
+
+        # If None is ever provided as config value then ignore it and use the preset value
+        kwargs = {k:v for k,v in kwargs.items() if v is not None}
         kwargs = {**tree_classifier_presets[preset_type], **kwargs}
 
         impurity_func, split_choice, pred_choice, positive_class, sep_nan, cache_nodes = \
@@ -829,6 +894,7 @@ class TreeClassifier(object):
 
         self.positive_class = positive_class
         self.tree_type = self.gen_tree_type(ifit_enabled)
+        print(self.tree_type)
         self.tree = Tree_ctor(
             self.tree_type,
             split_choosers[split_choice],
@@ -868,6 +934,13 @@ class TreeClassifier(object):
         # print("B")
         fit_tree(self.tree, False)
         # print("C")
+    @property
+    def nodes(self):
+        return get_nodes(self.tree)
+
+    @property
+    def leaves(self):
+        return get_leaves(self.tree)
 
     # def inf_gain(self,xb,xc,y,miss_mask=None, ft_weights=None):
     #     if(xb is None): xb = np.empty((0,0), dtype=np.uint8)

@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from numbaILP.data_stats import *
+from stand.data_stats import *
 
 X_nom_contig = np.array([
     # 3 & 4 are contiguous but not iterative contiguous

@@ -1,7 +1,7 @@
 from numba import types, njit, jit
 from numba import void,b1,u1,u2,u4,u8,i1,i2,i4,i8,f4,f8,c8,c16
 from numba.typed import List, Dict
-import numbaILP.m_patch_array_hash
+import stand.m_patch_array_hash
 import numpy as np
 
 f8_lst = f8[:]

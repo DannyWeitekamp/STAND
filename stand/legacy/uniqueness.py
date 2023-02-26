@@ -1,5 +1,5 @@
 import numpy as np
-from numbaILP.tree_classifiers import gini
+from stand.tree_classifiers import gini
 from numba import njit, objmode
 from numba import void,b1,u1,u2,u4,u8,i1,i2,i4,i8,f4,f8,c8,c16
 from numba.types import UniTuple, intp,float32, intp
