@@ -9,6 +9,7 @@ from numba.extending import overload_method
 from .data_stats import DataStatsType, DataStats_ctor, reinit_datastats
 from numba.experimental.structref import new
 from stand.akd import new_akd, AKDType
+from stand.utils import _func_from_address
 import numpy as np
 
 #### SplitData ####
@@ -191,18 +192,32 @@ tree_fields = [
 
 Tree, TreeTypeTemplate = define_structref_template("Tree", tree_fields, define_constructor=False)
 
+
 u8_arr = u8[::1]
+
+impurity_func_sig = f8(u4,u4[:])
+split_chooser_sig = i8[::1](f8[::1])
+pred_chooser_sig = i8(ListType(TreeNodeType))
+
+impurity_func_type = types.FunctionType(impurity_func_sig)
+split_chooser_type = types.FunctionType(split_chooser_sig)
+pred_chooser_type = types.FunctionType(pred_chooser_sig)
+
+
 @njit(cache=True)
-def Tree_ctor(tree_type, split_chooser, pred_chooser, impurity_func, cache_nodes):
+def Tree_ctor(tree_type, split_chooser_addr, pred_chooser_addr,
+         impurity_func_addr, cache_nodes):
     st = new(tree_type)
     st.nodes = List.empty_list(TreeNodeType)
     st.leaves = List.empty_list(TreeNodeType)
     # st.u_ys = np.zeros(0,dtype=np.int32)
     st.context_cache = new_akd(u8_arr,SplitterContextType)#Dict.empty(i8_arr, SplitterContextType)
     st.data_stats = DataStats_ctor()
-    st.split_chooser = split_chooser
-    st.pred_chooser = pred_chooser
-    st.impurity_func = impurity_func
+
+    st.impurity_func = _func_from_address(impurity_func_type, impurity_func_addr)
+    st.split_chooser = _func_from_address(split_chooser_type, split_chooser_addr)
+    st.pred_chooser = _func_from_address(pred_chooser_type, pred_chooser_addr)
+    
     st.cache_nodes = cache_nodes    
     return st
     

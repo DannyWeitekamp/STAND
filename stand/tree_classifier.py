@@ -20,6 +20,8 @@ from stand.data_stats import *
 from stand.split_caches import *
 from stand.akd import new_akd, AKDType
 
+from numba.experimental.function_type import _get_wrapper_address
+
 
 import logging
 import time
@@ -31,7 +33,9 @@ config.THREADING_LAYER = 'thread_safe'
 # --------------------------------
 #  Impurity Functions
 
-@njit(f8(u4,u4[:]), cache=True)
+impurity_func_sig = f8(u4,u4[:])
+
+@njit(impurity_func_sig, cache=True)
 def gini_impurity(total, counts):
     if(total > 0):
         s = 0.0
@@ -52,14 +56,16 @@ impurity_funcs = {
 # --------------------------------
 #  Split Choosers
 
-@njit(i8[::1](f8[::1]),nogil=True,fastmath=True,cache=True)
+split_chooser_sig = i8[::1](f8[::1])
+
+@njit(split_chooser_sig,nogil=True,fastmath=True,cache=True)
 # @njit(i8[::1](f4[::1]),nogil=True,fastmath=True,cache=True,inline='never')
 def choose_single_max(impurity_decrease):
     '''A split chooser that expands greedily by max impurity 
         (i.e. this is the chooser for typical decision trees)'''
     return np.asarray([np.argmax(impurity_decrease)])
 
-@njit(i8[::1](f8[::1]),nogil=True,fastmath=True,cache=True)
+@njit(split_chooser_sig,nogil=True,fastmath=True,cache=True)
 # @njit(i8[::1](f4[::1]),nogil=True,fastmath=True,cache=True,inline='never')
 def choose_all_max(impurity_decrease):
     '''A split chooser that expands every decision tree 
@@ -77,7 +83,7 @@ split_choosers = {
 # -----------------------------------------------------------------------------
 # fit() and ifit()
 
-@njit(nogil=True,fastmath=True,cache=False)
+@njit(cache=True)
 def unique_counts(inp):
     ''' 
         Finds the unique classes in an input array of class labels
@@ -894,12 +900,12 @@ class TreeClassifier(object):
 
         self.positive_class = positive_class
         self.tree_type = self.gen_tree_type(ifit_enabled)
-        print(self.tree_type)
+        # print(self.tree_type)
         self.tree = Tree_ctor(
             self.tree_type,
-            split_choosers[split_choice],
-            pred_choosers[pred_choice],
-            impurity_funcs[impurity_func],
+            _get_wrapper_address(split_choosers[split_choice], split_chooser_sig),
+            _get_wrapper_address(pred_choosers[pred_choice], pred_chooser_sig),
+            _get_wrapper_address(impurity_funcs[impurity_func], impurity_func_sig),
             cache_nodes
         )
 
