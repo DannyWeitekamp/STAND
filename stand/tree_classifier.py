@@ -660,7 +660,7 @@ def predict_tree(tree, X_nom, X_cont):
         #     print(leaf.counts)
 
         # In an option tree the leaf that the instance ends up  is ambiguous 
-        #   so we need a subroutine that for choosing how to classify the instance 
+        #   so we need a subroutine for choosing how to classify the instance 
         #   from among the leaves it is filtered into. 
         if(len(leaves) > 0):
             out_i = tree.pred_chooser(leaves)
@@ -810,16 +810,12 @@ def str_op(op_enum):
 
 
 
-def str_tree(tree):
+def str_tree(tree, inv_mapper=None):
     '''A string representation of a tree usable for the purposes of debugging'''
     
-    # l = ["TREE w/ classes: %s"%_get_y_order(tree)]
     l = ["TREE w/ classes: %s"%tree.data_stats.u_ys]
     nom_v_inv_maps = tree.data_stats.nom_v_inv_maps
-    # node_offset = 1
-    # while node_offset < tree[0]:
     for node in tree.nodes:
-        # node_width = tree[node_offset]
         ttype, index, splits, counts = node.ttype, node.index, node.split_data, node.counts#_unpack_node(tree,node_offset)
         op = node.op_enum
         if(ttype == TTYPE_NODE):
@@ -827,18 +823,27 @@ def str_tree(tree):
             for sd in splits:
                 if(not sd.is_continous): #<-A threshold of 1 means it's binary
                     inv_map = nom_v_inv_maps[sd.split_ind]
-                    s += f"({sd.split_ind},=={inv_map[sd.val]})[L:{sd.left} R:{sd.right}"
+
+                    # Recover the X vector indicies and values as provided before internal remapping
+                    inp_key = sd.split_ind
+                    inp_val = inv_map[sd.val]
+
+                    # If inv_mapper was provided then use it to recover the true feature key
+                    #   and value before the user's vectorization preprocessing.
+                    if(inv_mapper):
+                        inp_key, inp_val = inv_mapper(inp_key, inp_val)
+
+                    s += f"({inp_key},=={inp_val!r})[F:{sd.left} T:{sd.right}"
                 else:
                     thresh = np.int32(sd.val).view(np.float32) if op != OP_EQ else np.int32(sd.val)
                     instr = str_op(op)+str(thresh) if op != OP_ISNAN else str_op(op)
-                    s += f"({sd.split_ind},{instr})[L:{sd.left} R:{sd.right}"
+                    s += f"({sd.split_ind},{instr})[F:{sd.left} T:{sd.right}"
                     # s += "(%s,%s)[L:%s R:%s" % (sd.split_ind,instr,sd.left,sd.right)
                 s += "] "# if(split[4] == -1) else ("NaN:" + str(split[4]) + "] ")
             l.append(s)
         else:
             s  = "LEAF(%s) : %s" % (index,counts)
             l.append(s)
-        # node_offset += node_width
     return "\n".join(l)
 
 # -------------------------------------------------------------------------------
@@ -878,6 +883,9 @@ class TreeClassifier(object):
     def __init__(self,
             preset_type='decision_tree', 
             ifit_enabled = True,
+            # Optional userprovided function for mapping key value pairs back to their original
+            #  values before they were vectorized 
+            inv_mapper=None, 
             **kwargs):
         '''
         TODO: Finish docs
@@ -900,7 +908,8 @@ class TreeClassifier(object):
 
         self.positive_class = positive_class
         self.tree_type = self.gen_tree_type(ifit_enabled)
-        # print(self.tree_type)
+        self.inv_mapper = inv_mapper
+        print("MAKE inv_mapper", self.inv_mapper)
         self.tree = Tree_ctor(
             self.tree_type,
             _get_wrapper_address(split_choosers[split_choice], split_chooser_sig),
@@ -983,7 +992,7 @@ class TreeClassifier(object):
         # return self._predict(self.tree, xb, xc, positive_class)
 
     def __str__(self):
-        return str_tree(self.tree)
+        return str_tree(self.tree, self.inv_mapper)
 
     # def as_conditions(self,positive_class=None, only_pure_leaves=False):
     #     if(positive_class is None): positive_class = self.positive_class
@@ -1003,7 +1012,6 @@ class DecisionTree2(object):
             self.x_format = "integer"
             self.is_onehot = False
             self.dt = TreeClassifier(impl)
-
 
         
         self.impl = impl
