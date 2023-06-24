@@ -1,6 +1,9 @@
 import numpy as np
 from stand.structref import define_structref, define_structref_template
-from stand.tree_classifier import TreeClassifier, str_tree, fit_tree, _count_branches, _count_covering_branches, decode_split, encode_split, filter_leaves, get_branch_splits
+from stand.tree_classifier import (
+    TreeClassifier, str_tree, fit_tree, _count_branches,
+    _count_covering_branches, decode_split, encode_split,
+    filter_leaves, get_branch_splits, prob_item_type)
 from stand.tree_structs import TreeNodeType
 from numba import config, njit, threading_layer, types
 from numba import void,b1,u1,u2,u4,u8,i1,i2,i4,i8,f4,f8,c8,c16
@@ -85,6 +88,7 @@ STAND, STANDTypeTemplate = define_structref_template("STAND", stand_fields, defi
 
 class STANDClassifier(object):
     def __init__(self, positive_class=1, **kwargs):
+        kwargs['split_choice'] = kwargs.get('split_choice', 'all_max')
         self.op_tree_classifier = TreeClassifier(preset_type='option_tree', **kwargs)
         self.op_tree = self.op_tree_classifier.tree
         self.stand_type = self.gen_stand_type(self.op_tree_classifier.tree_type)
@@ -99,11 +103,20 @@ class STANDClassifier(object):
             self.op_tree_classifier.fit(X_nom, X_cont, Y, miss_mask, ft_weights)
         with PrintElapse("fit_spec_ext"):
             fit_spec_ext(self.stand)
-        print("N NODES:", len(self.op_tree_classifier.nodes))
+        # print("N NODES:", len(self.op_tree_classifier.nodes))
 
     # TODO : ADD SPECIFIC CHECK
     def predict(self, X_nom, X_cont):
         return self.op_tree_classifier.predict(X_nom, X_cont)
+
+    def predict_prob(self, X_nom, X_cont):
+        if(self.stand is None): raise RuntimeError("STANDClassifier must be fit before predict_prob() is called.")
+        if(X_nom is None): X_nom = np.empty((0,0), dtype=np.int32)
+        if(X_cont is None): X_cont = np.empty((0,0), dtype=np.float32)
+        X_nom = X_nom.astype(np.int32)
+        X_cont = X_cont.astype(np.float32)
+        return stand_predict_prob(self.stand, X_nom, X_cont)
+        # self.op_tree_classifier.predict_prob(X_nom, X_cont)
 
     def ifit(self, x_nom, x_cont, y, miss_mask=None, ft_weights=None):
         if(x_nom is None): x_nom = np.empty((0,), dtype=np.int32)
@@ -118,7 +131,7 @@ class STANDClassifier(object):
         return instance_ambiguity(self.stand, x_nom, x_cont)
 
     def __str__(self):
-        return str_tree(self.op_tree)
+        return str(self.op_tree_classifier)
 
 
 
@@ -151,44 +164,93 @@ def fit_spec_ext(stand):
     stand.spec_exts = Dict.empty(i4, u8_arr_u8_tup_typ)
 
     # TODO: Check edge case when the training set doesn't contain the positive class
-    pc = tree.data_stats.y_map[stand.positive_class]
+    # pc = tree.data_stats.y_map[stand.positive_class]
     X_nom = tree.data_stats.X_nom
 
     for leaf in tree.leaves:    
-        if(leaf.counts[pc] > 0):
-            trm_ss_nom = X_nom[leaf.sample_inds]
-            x_nom_0 = trm_ss_nom[0]
+        # if(leaf.counts[pc] > 0):
+        trm_ss_nom = X_nom[leaf.sample_inds]
+        x_nom_0 = trm_ss_nom[0]
 
-            nom_invt_mask = calc_invariant_nom_mask(trm_ss_nom)
+        nom_invt_mask = calc_invariant_nom_mask(trm_ss_nom)
 
-            L = np.sum(nom_invt_mask, dtype=np.int64)
-            spec_ext = np.empty(L, dtype=np.uint64)
+        L = np.sum(nom_invt_mask, dtype=np.int64)
+        spec_ext = np.empty(L, dtype=np.uint64)
 
-            branch_splits = get_branch_splits(tree, leaf)
-            # Build "spec_ext" the conditions for the specific extention of "leaf". 
-            # "ext_size" is the number of conditions in the specific extension
-            #   that are not present in any branch of "leaf". Decrement any 
-            #   repetitions found in the these branches.
-            c = 0
-            ext_size = 0
-            for split, is_invariant in enumerate(nom_invt_mask):
-                if(is_invariant):
-                    val = x_nom_0[split]
-                    spec_ext[c] = spec_enc =  encode_split(0,0,i4(split),val) 
-                    c += 1
-                    if(spec_enc not in branch_splits):
-                        ext_size += 1
+        branch_splits = get_branch_splits(tree, leaf)
+        # Build "spec_ext" the conditions for the specific extention of "leaf". 
+        # "ext_size" is the number of conditions in the specific extension
+        #   that are not present in any branch of "leaf". Decrement any 
+        #   repetitions found in the these branches.
+        c = 0
+        ext_size = 0
+        for split, is_invariant in enumerate(nom_invt_mask):
+            if(is_invariant):
+                val = x_nom_0[split]
+                spec_ext[c] = spec_enc =  encode_split(0,0,i4(split),val) 
+                c += 1
+                if(spec_enc not in branch_splits):
+                    ext_size += 1
 
-            # for split_enc in branch_splits:
-            #     is_cont, negated, split, val = decode_split(split_enc)
-            #     if(nom_invt_mask[split] and negated ^ (x_nom_0[split]==val)):
-            #         ext_size -= 1
+        # for split_enc in branch_splits:
+        #     is_cont, negated, split, val = decode_split(split_enc)
+        #     if(nom_invt_mask[split] and negated ^ (x_nom_0[split]==val)):
+        #         ext_size -= 1
 
-            # Insert extension and size into "spec_exts" dict of the STAND structref
-            assert ext_size >= 0 and ext_size <= L
-            stand.spec_exts[leaf.index] = (spec_ext, u8(ext_size))
+        # Insert extension and size into "spec_exts" dict of the STAND structref
+        assert ext_size >= 0 and ext_size <= L
+        stand.spec_exts[leaf.index] = (spec_ext, u8(ext_size))
 
+@njit(cache=True)
+def eval_specific_extension(stand, leaf, x_nom, x_cont):
+    nom_v_maps = stand.op_tree.data_stats.nom_v_maps
+    
+    if(leaf.index not in stand.spec_exts):
+        return 0,0,0
 
+    spec_ext, ext_size = stand.spec_exts[leaf.index]
+    n_ext_matches = 0
+    n_ext_fails = 0
+    for enc_split in spec_ext:
+        is_cont, negated, split, val = decode_split(enc_split)
+        if(is_cont):
+            # Not implemented
+            pass
+        else:
+            mapped_val = nom_v_maps[split].get(x_nom[split],-1)
+            if(mapped_val == val):
+                n_ext_matches += 1
+            else:
+                n_ext_fails += 1
+    return ext_size, n_ext_matches, n_ext_fails
+
+@njit(cache=True)
+def stand_predict_prob(stand, X_nom, X_cont):
+    # NOTE: Should I really call this a probability? It's not a normalized one.
+    tree = stand.op_tree
+    L = max(len(X_nom),len(X_cont))
+    if(len(X_nom) == 0): X_nom = np.empty((L,0), dtype=np.int32)
+    if(len(X_cont) == 0): X_cont = np.empty((L,0), dtype=np.float32)
+    
+    y_uvs = tree.data_stats.u_ys    
+    out = np.zeros((L,len(y_uvs)),dtype=prob_item_type)
+    for i in range(L):
+        x_nom, x_cont = X_nom[i], X_cont[i]
+        leaves = filter_leaves(tree, x_nom, x_cont)
+
+        for j, y_class in enumerate(y_uvs):
+            out[i][j].y_class = y_class
+
+        for leaf in leaves:
+            y = np.argmax(leaf.counts)
+            ext_size, n_ext_matches, n_ext_fails = eval_specific_extension(stand, leaf, x_nom, x_cont)
+            out[i][y].prob += n_ext_matches/(n_ext_matches+n_ext_fails) if ext_size > 0 else 1.0
+
+        for j, y_class in enumerate(y_uvs):
+            out[i][j].prob /= len(leaves)
+    # print("PROBS:", out)
+
+    return out
 
 @njit(cache=True)
 def instance_ambiguity(stand, x_nom, x_cont):
@@ -197,7 +259,7 @@ def instance_ambiguity(stand, x_nom, x_cont):
     if(stand.positive_class not in tree.data_stats.y_map):
         return 0.0
     pc = tree.data_stats.y_map[stand.positive_class]
-    nom_v_maps = tree.data_stats.nom_v_maps
+    # nom_v_maps = tree.data_stats.nom_v_maps
     
     leaves = filter_leaves(tree, x_nom, x_cont)
 
@@ -217,18 +279,11 @@ def instance_ambiguity(stand, x_nom, x_cont):
         # Positive leaf case
         if(leaf.counts[pc] > 0):
             # Find the number of conditions failed in the specific extension 
-            n_ext_failed = 0
-            spec_ext, ext_size = stand.spec_exts[leaf.index]
-            for enc_split in spec_ext:
-                is_cont, negated, split, val = decode_split(enc_split)
-                if(not is_cont):
-                    mapped_val = nom_v_maps[split].get(x_nom[split],-1)
-                    if(mapped_val != val): n_ext_failed 
-                else:
-                    pass
+            ext_size, n_ext_match, n_ext_fails = eval_specific_extension(stand, leaf, x_nom, x_cont)
+            n_ext_failed = ext_size-n_ext_match
 
             A_px += _nn * (1 + ext_size)
-            A_px += _np * (n_ext_failed)
+            A_px += _np * (n_ext_fails)
 
             # print(_nn, ext_size, _np, n_ext_failed)
         

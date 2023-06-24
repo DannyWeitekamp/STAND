@@ -73,10 +73,19 @@ def choose_all_max(impurity_decrease):
     m = np.max(impurity_decrease)
     return np.where(impurity_decrease==m)[0]
 
+@njit(split_chooser_sig,nogil=True,fastmath=True,cache=True)
+# @njit(i8[::1](f4[::1]),nogil=True,fastmath=True,cache=True,inline='never')
+def choose_all_near_max(impurity_decrease):
+    '''A split chooser that expands every decision tree 
+        (i.e. this chooser forces to build whole option tree)'''
+    m = np.max(impurity_decrease)*.9
+    return np.where(impurity_decrease>=m)[0]
+
 
 split_choosers = {
     "single_max" : choose_single_max,
-    "all_max"  : choose_all_max
+    "all_max"  : choose_all_max,
+    "all_near_max"  : choose_all_near_max
 }
 
 
@@ -643,9 +652,43 @@ def filter_leaves(tree, x_nom, x_cont):
     return leaves
 
 
+np_prob_item_type = np.dtype([
+    ('y_class', np.int64),
+    ('prob', np.float64),
+])
+
+prob_item_type = numba.from_dtype(np_prob_item_type)
+
 
 @njit(cache=True)
-def predict_tree(tree, X_nom, X_cont):
+def predict_prob(tree, X_nom, X_cont):
+    '''Predicts the class associated with an unlabelled sample using a fitted 
+        decision/option tree'''
+    
+    L = max(len(X_nom),len(X_cont))
+    if(len(X_nom) == 0): X_nom = np.empty((L,0), dtype=np.int32)
+    if(len(X_cont) == 0): X_cont = np.empty((L,0), dtype=np.float32)
+    
+    y_uvs = tree.data_stats.u_ys    
+    out = np.zeros((L,len(y_uvs)),dtype=prob_item_type)
+    for i in range(L):
+        leaves = filter_leaves(tree, X_nom[i], X_cont[i])
+
+        for j, y_class in enumerate(y_uvs):
+            out[i][j].y_class = y_class
+
+        for leaf in leaves:
+            y = np.argmax(leaf.counts)
+            out[i][y].prob += 1
+
+        for j, y_class in enumerate(y_uvs):
+            out[i][j].prob /= len(leaves)
+
+    return out
+
+
+@njit(cache=True)
+def predict(tree, X_nom, X_cont):
     '''Predicts the class associated with an unlabelled sample using a fitted 
         decision/option tree'''
     
@@ -820,7 +863,8 @@ def str_tree(tree, inv_mapper=None):
         op = node.op_enum
         if(ttype == TTYPE_NODE):
             s  = "NODE(%s) : " % (index)
-            for sd in splits:
+            for i, sd in enumerate(splits):
+                if(i > 0): s += "\n\t"
                 if(not sd.is_continous): #<-A threshold of 1 means it's binary
                     inv_map = nom_v_inv_maps[sd.split_ind]
 
@@ -909,7 +953,6 @@ class TreeClassifier(object):
         self.positive_class = positive_class
         self.tree_type = self.gen_tree_type(ifit_enabled)
         self.inv_mapper = inv_mapper
-        print("MAKE inv_mapper", self.inv_mapper)
         self.tree = Tree_ctor(
             self.tree_type,
             _get_wrapper_address(split_choosers[split_choice], split_chooser_sig),
@@ -988,7 +1031,15 @@ class TreeClassifier(object):
         if(X_cont is None): X_cont = np.empty((0,0), dtype=np.float32)
         X_nom = X_nom.astype(np.int32)
         X_cont = X_cont.astype(np.float32)
-        return predict_tree(self.tree, X_nom, X_cont)
+        return predict(self.tree, X_nom, X_cont)
+
+    def predict_prob(self, X_nom, X_cont, positive_class=None):
+        if(self.tree is None): raise RuntimeError("TreeClassifier must be fit before predict() is called.")
+        if(X_nom is None): X_nom = np.empty((0,0), dtype=np.int32)
+        if(X_cont is None): X_cont = np.empty((0,0), dtype=np.float32)
+        X_nom = X_nom.astype(np.int32)
+        X_cont = X_cont.astype(np.float32)
+        return predict_prob(self.tree, X_nom, X_cont)
         # return self._predict(self.tree, xb, xc, positive_class)
 
     def __str__(self):
