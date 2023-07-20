@@ -21,24 +21,24 @@ class PrintElapse():
         self.t1 = time.time_ns()/float(1e6)
         print(f'{self.name}: {self.t1-self.t0:.2f} ms')
 
-from numba import njit, objmode
-import ctypes
+# from numba import njit, objmode
+# import ctypes
 
-CLOCK_MONOTONIC = 0x1
-clock_gettime_proto = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int,
-                                       ctypes.POINTER(ctypes.c_long))
-pybind = ctypes.CDLL(None)
-clock_gettime_addr = pybind.clock_gettime
-clock_gettime_fn_ptr = clock_gettime_proto(clock_gettime_addr)
+# CLOCK_MONOTONIC = 0x1
+# clock_gettime_proto = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int,
+#                                        ctypes.POINTER(ctypes.c_long))
+# pybind = ctypes.CDLL(None)
+# clock_gettime_addr = pybind.clock_gettime
+# clock_gettime_fn_ptr = clock_gettime_proto(clock_gettime_addr)
 
 
-@njit
-def timenow():
-    timespec = np.zeros(2, dtype=np.int64)
-    clock_gettime_fn_ptr(CLOCK_MONOTONIC, timespec.ctypes)
-    ts = timespec[0]
-    tns = timespec[1]
-    return np.float64(ts) + 1e-9 * np.float64(tns)
+# @njit
+# def timenow():
+#     timespec = np.zeros(2, dtype=np.int64)
+#     clock_gettime_fn_ptr(CLOCK_MONOTONIC, timespec.ctypes)
+#     ts = timespec[0]
+#     tns = timespec[1]
+#     return np.float64(ts) + 1e-9 * np.float64(tns)
 
 
 
