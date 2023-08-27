@@ -2,6 +2,7 @@ from stand.structref import define_structref, define_structref_template
 from stand.utils import _struct_from_pointer, _pointer_from_struct, _pointer_from_struct_incref, _decref_pointer, _decref_structref
 from numba.experimental.structref import new
 import numpy as np
+from numpy.random import choice
 import numba
 from numba import types, njit, guvectorize,vectorize,prange, jit, literally
 from numba import deferred_type, optional
@@ -58,23 +59,27 @@ impurity_funcs = {
 
 split_chooser_sig = i8[::1](f8[::1])
 
-@njit(split_chooser_sig,nogil=True,fastmath=True,cache=True)
-# @njit(i8[::1](f4[::1]),nogil=True,fastmath=True,cache=True,inline='never')
-def choose_single_max(impurity_decrease):
+@njit(split_chooser_sig, nogil=True, fastmath=True, cache=True)
+def choose_random_max(impurity_decrease):
     '''A split chooser that expands greedily by max impurity 
         (i.e. this is the chooser for typical decision trees)'''
+    m = np.max(impurity_decrease)
+    choices = np.where(impurity_decrease==m)[0]
+    return np.asarray([choices[int(np.random.random()*len(choices))]])
+
+@njit(split_chooser_sig, nogil=True, fastmath=True, cache=True)
+def choose_first_max(impurity_decrease):
+    '''Pick the first highest impurity decrease option option'''
     return np.asarray([np.argmax(impurity_decrease)])
 
-@njit(split_chooser_sig,nogil=True,fastmath=True,cache=True)
-# @njit(i8[::1](f4[::1]),nogil=True,fastmath=True,cache=True,inline='never')
+@njit(split_chooser_sig, nogil=True, fastmath=True, cache=True)
 def choose_all_max(impurity_decrease):
     '''A split chooser that expands every decision tree 
         (i.e. this chooser forces to build whole option tree)'''
     m = np.max(impurity_decrease)
     return np.where(impurity_decrease==m)[0]
 
-@njit(split_chooser_sig,nogil=True,fastmath=True,cache=True)
-# @njit(i8[::1](f4[::1]),nogil=True,fastmath=True,cache=True,inline='never')
+@njit(split_chooser_sig, nogil=True, fastmath=True, cache=True)
 def choose_all_near_max(impurity_decrease):
     '''A split chooser that expands every decision tree 
         (i.e. this chooser forces to build whole option tree)'''
@@ -83,7 +88,8 @@ def choose_all_near_max(impurity_decrease):
 
 
 split_choosers = {
-    "single_max" : choose_single_max,
+    "random_max" : choose_random_max,
+    "first_max" : choose_first_max,
     "all_max"  : choose_all_max,
     "all_near_max"  : choose_all_near_max
 }
@@ -905,7 +911,7 @@ def get_leaves(tree):
 tree_classifier_presets = {
     'decision_tree' : {
         'impurity_func' : 'gini',
-        'split_choice' : 'single_max',
+        'split_choice' : 'random_max',
         'pred_choice' : 'majority',
         'positive_class' : 1,
         'sep_nan' : True,

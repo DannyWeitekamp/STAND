@@ -89,6 +89,7 @@ STAND, STANDTypeTemplate = define_structref_template("STAND", stand_fields, defi
 class STANDClassifier(object):
     def __init__(self, positive_class=1, **kwargs):
         kwargs['split_choice'] = kwargs.get('split_choice', 'all_max')
+        print("SPLIT CHOICE:", kwargs['split_choice'])
         self.op_tree_classifier = TreeClassifier(preset_type='option_tree', **kwargs)
         self.op_tree = self.op_tree_classifier.tree
         self.stand_type = self.gen_stand_type(self.op_tree_classifier.tree_type)
