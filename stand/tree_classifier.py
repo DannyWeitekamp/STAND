@@ -312,7 +312,10 @@ def build_root(tree, iterative=False):
     if(tree.ifit_enabled): tree.context_cache[empty_u8] = c
 
     context_stack = List.empty_list(SplitterContextType)
-    context_stack.append(c)
+
+    # Don't bother fitting if training data empty
+    if(len(Y) > 0):
+        context_stack.append(c)
 
     return context_stack, node_dict
 
@@ -498,7 +501,6 @@ def fit_tree(tree, iterative=False):
     context_stack, node_dict =  \
         build_root(tree)
     
-    # print("A")
     
 
     while(len(context_stack) > 0):

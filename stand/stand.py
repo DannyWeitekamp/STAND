@@ -89,7 +89,7 @@ STAND, STANDTypeTemplate = define_structref_template("STAND", stand_fields, defi
 class STANDClassifier(object):
     def __init__(self, positive_class=1, **kwargs):
         kwargs['split_choice'] = kwargs.get('split_choice', 'all_max')
-        print("SPLIT CHOICE:", kwargs['split_choice'])
+        # print("SPLIT CHOICE:", kwargs['split_choice'])
         self.op_tree_classifier = TreeClassifier(preset_type='option_tree', **kwargs)
         self.op_tree = self.op_tree_classifier.tree
         self.stand_type = self.gen_stand_type(self.op_tree_classifier.tree_type)
@@ -100,10 +100,10 @@ class STANDClassifier(object):
         return STANDTypeTemplate(sf)
 
     def fit(self, X_nom, X_cont, Y, miss_mask=None, ft_weights=None):
-        with PrintElapse("fit option_tree"):
-            self.op_tree_classifier.fit(X_nom, X_cont, Y, miss_mask, ft_weights)
-        with PrintElapse("fit_spec_ext"):
-            fit_spec_ext(self.stand)
+        # with PrintElapse("fit option_tree"):
+        self.op_tree_classifier.fit(X_nom, X_cont, Y, miss_mask, ft_weights)
+        # with PrintElapse("fit_spec_ext"):
+        fit_spec_ext(self.stand)
         # print("N NODES:", len(self.op_tree_classifier.nodes))
 
     # TODO : ADD SPECIFIC CHECK
