@@ -233,25 +233,29 @@ def stand_predict_prob(stand, X_nom, X_cont):
     if(len(X_nom) == 0): X_nom = np.empty((L,0), dtype=np.int32)
     if(len(X_cont) == 0): X_cont = np.empty((L,0), dtype=np.float32)
     
-    y_uvs = tree.data_stats.u_ys    
-    out = np.zeros((L,len(y_uvs)),dtype=prob_item_type)
+    y_uvs = tree.data_stats.u_ys
+
+    # out = np.zeros((L,len(y_uvs)),dtype=prob_item_type)
+    probs = np.zeros((L,len(y_uvs)),dtype=np.float64)
+    # For each sample i, filter it into leaves and compute
+    #  the probability of correctness on the basis of the specific extension 
     for i in range(L):
         x_nom, x_cont = X_nom[i], X_cont[i]
         leaves = filter_leaves(tree, x_nom, x_cont)
 
-        for j, y_class in enumerate(y_uvs):
-            out[i][j].y_class = y_class
+        # for j, y_class in enumerate(y_uvs):
+        #     labels[i][j] = y_class
 
         for leaf in leaves:
             y = np.argmax(leaf.counts)
             ext_size, n_ext_matches, n_ext_fails = eval_specific_extension(stand, leaf, x_nom, x_cont)
-            out[i][y].prob += n_ext_matches/(n_ext_matches+n_ext_fails) if ext_size > 0 else 1.0
+            probs[i][y] += n_ext_matches/(n_ext_matches+n_ext_fails) if ext_size > 0 else 1.0
 
         for j, y_class in enumerate(y_uvs):
-            out[i][j].prob /= len(leaves)
+            probs[i][j] /= len(leaves)
     # print("PROBS:", out)
 
-    return out
+    return probs, y_uvs
 
 @njit(cache=True)
 def instance_ambiguity(stand, x_nom, x_cont):
