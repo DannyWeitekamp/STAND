@@ -119,6 +119,14 @@ class STANDClassifier(object):
         return stand_predict_prob(self.stand, X_nom, X_cont)
         # self.op_tree_classifier.predict_prob(X_nom, X_cont)
 
+    def instance_certainty(self, X_nom, X_cont):
+        if(self.stand is None): raise RuntimeError("STANDClassifier must be fit before predict_prob() is called.")
+        if(X_nom is None): X_nom = np.empty((0,0), dtype=np.int32)
+        if(X_cont is None): X_cont = np.empty((0,0), dtype=np.float32)
+        X_nom = X_nom.astype(np.int32)
+        X_cont = X_cont.astype(np.float32)
+        return instance_certainty(self.stand, X_nom, X_cont)
+
     def ifit(self, x_nom, x_cont, y, miss_mask=None, ft_weights=None):
         if(x_nom is None): x_nom = np.empty((0,), dtype=np.int32)
         if(x_cont is None): x_cont = np.empty((0,), dtype=np.float32)
@@ -245,17 +253,74 @@ def stand_predict_prob(stand, X_nom, X_cont):
 
         # for j, y_class in enumerate(y_uvs):
         #     labels[i][j] = y_class
-
+        n_leaves = np.zeros(len(y_uvs), dtype=np.int64)
         for leaf in leaves:
             y = np.argmax(leaf.counts)
             ext_size, n_ext_matches, n_ext_fails = eval_specific_extension(stand, leaf, x_nom, x_cont)
             probs[i][y] += n_ext_matches/(n_ext_matches+n_ext_fails) if ext_size > 0 else 1.0
+            n_leaves[y] += 1
 
         for j, y_class in enumerate(y_uvs):
-            probs[i][j] /= len(leaves)
+            if(n_leaves[j] > 0):
+                probs[i][j] /= n_leaves[j]
     # print("PROBS:", out)
 
     return probs, y_uvs
+
+@njit(cache=True)
+def instance_certainty(stand, X_nom, X_cont):
+    tree = stand.op_tree
+    L = max(len(X_nom),len(X_cont))
+    if(len(X_nom) == 0): X_nom = np.empty((L,0), dtype=np.int32)
+    if(len(X_cont) == 0): X_cont = np.empty((L,0), dtype=np.float32)
+    
+    y_uvs = tree.data_stats.u_ys
+
+    # out = np.zeros((L,len(y_uvs)),dtype=prob_item_type)
+    probs = np.zeros((L,len(y_uvs)),dtype=np.float64)
+    # For each sample i, filter it into leaves and compute
+    #  the probability of correctness on the basis of the specific extension 
+    for i in range(L):
+        x_nom, x_cont = X_nom[i], X_cont[i]
+        leaves = filter_leaves(tree, x_nom, x_cont)
+
+        # for j, y_class in enumerate(y_uvs):
+        #     labels[i][j] = y_class
+        n_leaves = np.zeros(len(y_uvs), dtype=np.int64)
+        for leaf in leaves:
+
+            n_branches = _count_covering_branches(tree, leaf, x_nom, x_cont)
+            # The number of parent branches leading into that 
+            #  don't (_nn) and do (_np) select (x_nom, x_cont)
+            nn_np = n_branches[leaf.index]
+            n_gen_fails, n_gen_matches = nn_np[0], nn_np[1]
+
+            ext_size, n_ext_matches, n_ext_fails = eval_specific_extension(stand, leaf, x_nom, x_cont)
+            # print("G:", n_gen_matches, "/", n_gen_matches+n_gen_fails, "S:", n_ext_matches, "/", n_ext_matches+n_ext_fails)
+            # print("log G:", np.log(1+n_gen_matches), "/", np.log(1+n_gen_matches+n_gen_fails))
+            y = np.argmax(leaf.counts)
+
+            den = (n_gen_matches+n_gen_fails)+(n_ext_matches+n_ext_fails)
+            probs[i][y] += ((n_gen_matches)+(n_ext_matches))/den if den > 0 else 1.0
+            n_leaves[y] += 1
+            # den = np.log(1+n_gen_matches+n_gen_fails)+np.log(1+n_ext_matches+n_ext_fails)
+            # probs[i][y] += (np.log(1+n_gen_matches)+np.log(1+n_ext_matches))/den if den > 0 else 1.0
+            # n_log_n = lambda x: x * np.log(x)
+            # den = np.log(1+n_gen_matches+n_gen_fails)+n_log_n(1+n_ext_matches+n_ext_fails)
+            # probs[i][y] += (np.log(1+n_gen_matches)+n_log_n(1+n_ext_matches))/den if den > 0 else 1.0
+
+            # gen = (1+n_gen_matches)/(1+n_gen_matches+n_gen_fails)
+            # ext = (1+n_ext_matches)/(1+n_ext_matches+n_ext_fails)
+            # probs[i][y] += (gen+ext)/2
+
+        for j, y_class in enumerate(y_uvs):
+            if(n_leaves[j] > 0):
+                probs[i][j] /= n_leaves[j]
+        # probs[i] /= n_leaves
+    # print("PROBS:", probs)
+
+    return probs, y_uvs
+
 
 @njit(cache=True)
 def instance_ambiguity(stand, x_nom, x_cont):
