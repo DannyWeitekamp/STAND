@@ -142,6 +142,8 @@ class STANDClassifier(object):
     def __str__(self):
         return str(self.op_tree_classifier)
 
+    def get_lit_priorities(self):
+        return self.op_tree_classifier.get_lit_priorities()
 
 
 u8_arr = u8[::1]

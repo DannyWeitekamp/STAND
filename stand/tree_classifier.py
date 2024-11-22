@@ -14,7 +14,6 @@ import timeit
 import os 
 from operator import itemgetter
 from numba import config, njit, threading_layer
-from sklearn.preprocessing import OneHotEncoder
 from stand.fnvhash import hasharray
 from stand.tree_structs import *
 from stand.data_stats import *
@@ -23,7 +22,7 @@ from stand.akd import new_akd, AKDType
 
 from numba.experimental.function_type import _get_wrapper_address
 
-
+from copy import copy
 import logging
 import time
 
@@ -359,7 +358,7 @@ def new_node(locs, tree, sample_inds, y_counts, impurity, is_right):
     if (tree.cache_nodes): 
         node_id = node_dict.get(sample_inds,-1)
     # print(node_id, "<<", sample_inds)
-
+    
     encoded_split = encode_split(0, not is_right, best_split, best_val)
 
     if(node_id == -1):
@@ -834,6 +833,129 @@ def count_covering_branches(tree, _node, x_nom, x_cont):
     return out[0], out[1]
         
 
+
+
+u8_arr = u8[::1]
+u8_lst = ListType(u8)
+u8_lst_lst = ListType(u8_lst)
+
+
+
+@njit(cache=True)
+def _opt_conjs_for_leaf(tree, _leaf):
+
+    # Size of (N,2) for 0: not covering and 1: covering  
+    # n_branches = np.zeros((len(tree.nodes),2),dtype=np.uint64)
+
+    opt_conjs = List()
+    min_node_depths = np.zeros(len(tree.nodes), dtype=np.int32)
+    for i, node in enumerate(tree.nodes):
+        if(len(node.parents) > 0):
+            min_node_depths[i] = min([min_node_depths[p]+1 for p,_ in node.parents])
+
+        lst = List.empty_list(u8_lst_lst)
+        # if(node.ttype == TTYPE_LEAF):
+        #     # lst.append()
+        opt_conjs.append(lst)
+
+    opt_conjs[_leaf.index].append(List.empty_list(u8_lst))
+
+
+    cov_nodes = Dict.empty(i4, u1)
+    curr_nodes = Dict.empty(i4, u1)
+    curr_nodes[_leaf.index] = 1;
+    # rec_stack.append(_leaf.index)
+    # for i, (p_node_ind, enc_split) in enumerate(_leaf.parents):
+    #     rec_stack.append((_leaf.index, p_node_ind))
+    
+    should_expand = np.zeros(len(tree.nodes), dtype=np.int32)
+    should_expand[_leaf.index] = 1
+    for node_ind in (-min_node_depths).argsort():
+        if(not should_expand[node_ind]):
+            continue
+        # next_nodes = Dict.empty(i4, u1)
+        # for node_ind in curr_nodes:
+        # while(len(rec_stack) > 0):
+            # node_ind = rec_stack.pop()
+        node = tree.nodes[node_ind]
+        node_opt_conjs = opt_conjs[node_ind]
+        
+        # Group by parent_ind
+        par_splits = Dict.empty(i4, u8_lst)
+        print("Node:", node_ind, "npar=", len(node.parents), "mdepth=", min_node_depths[node_ind])
+        for i, (p_node_ind, enc_split) in enumerate(node.parents):
+            is_cont, negated, split, val = decode_split(enc_split)
+            # print("<<", is_cont, negated, split, val)
+            if(p_node_ind not in par_splits):
+                par_splits[p_node_ind] = List.empty_list(u8)
+            lst = par_splits[p_node_ind]
+            lst.append(enc_split)
+            par_splits[p_node_ind] = lst
+            
+
+        for node_opt_conj in node_opt_conjs:
+            for p_node_ind, splits in par_splits.items():
+                cpy = node_opt_conj.copy()
+                cpy.append(splits)
+                # par_opt_conjs.append(node_opt_conjs + List([List([splits])]))
+                par_opt_conjs = opt_conjs[p_node_ind]
+                par_opt_conjs.append(cpy)
+
+        for p_node_ind, splits in par_splits.items():
+            should_expand[p_node_ind] = 1
+            # rec_stack.append(p_node_ind)
+
+        # cov_nodes[node_ind] = 1
+    # curr_nodes = next_nodes
+
+    for i, opt_conj in enumerate(opt_conjs):
+        if(len(opt_conjs[i]) > 0):
+            print(i, len(opt_conjs[i]), "*" if i ==_leaf.index else "")
+
+
+    # The root will the full set
+    return opt_conjs[0]
+
+
+@njit(cache=True)
+def get_opt_conjs_for_label(tree, y):
+
+    if(y not in tree.data_stats.y_map):
+        raise ValueError("Tree never trained with label:", y)
+    y_ind = tree.data_stats.y_map[y]
+
+    class_leaves = List()
+    for leaf in tree.leaves:
+        if(np.max(leaf.counts) == leaf.counts[y_ind]):
+            class_leaves.append(leaf)
+
+    opt_conjs = List.empty_list(u8_lst_lst)
+    for leaf in class_leaves:
+        leaf_opt_conjs = _opt_conjs_for_leaf(tree, leaf)
+        for oc in leaf_opt_conjs:
+            opt_conjs.append(oc)
+
+
+    nom_v_inv_maps = tree.data_stats.nom_v_inv_maps
+    # print("L=", len(opt_conjs))
+    s = ""
+    for i, opt_conj in enumerate(opt_conjs):
+        if(i != 0): s += "\n"
+        for j, opt_lit in enumerate(opt_conj):
+            if(j != 0): s += ", "
+            opt_str = "{"
+            for k, sp in enumerate(opt_lit):
+                if(k != 0): opt_str += " | "
+
+                is_cont, negated, split, val = decode_split(sp)
+                mapped_val = nom_v_inv_maps[split].get(val,-1)
+
+                opt_str += f"{'~' if negated else ''}({split}=={mapped_val})"
+            opt_str += "}"
+            s += opt_str
+    print(s)
+
+    return opt_conjs
         
         # for p_node_ind, encoded_split in leaf.parents:
         #     print(p_node_ind, decode_split(encoded_split))
@@ -861,7 +983,7 @@ def str_op(op_enum):
 
 
 
-def str_tree(tree, inv_mapper=None):
+def str_tree(tree, inv_mapper=None, leaf_inds=False, node_inds=False):
     '''A string representation of a tree usable for the purposes of debugging'''
     
     l = ["TREE w/ classes: %s"%tree.data_stats.u_ys]
@@ -871,8 +993,9 @@ def str_tree(tree, inv_mapper=None):
         op = node.op_enum
         if(ttype == TTYPE_NODE):
             s  = "NODE(%s) : " % (index)
+            indent = len(s)
             for i, sd in enumerate(splits):
-                if(i > 0): s += "\n\t"
+                if(i > 0): s += "\n"+" "*indent
                 if(not sd.is_continous): #<-A threshold of 1 means it's binary
                     inv_map = nom_v_inv_maps[sd.split_ind]
 
@@ -892,11 +1015,67 @@ def str_tree(tree, inv_mapper=None):
                     s += f"({sd.split_ind},{instr})[F:{sd.left} T:{sd.right}"
                     # s += "(%s,%s)[L:%s R:%s" % (sd.split_ind,instr,sd.left,sd.right)
                 s += "] "# if(split[4] == -1) else ("NaN:" + str(split[4]) + "] ")
+            if(node_inds):
+                s += f" inds={node.sample_inds}"                
             l.append(s)
         else:
             s  = "LEAF(%s) : %s" % (index,counts)
+            if(leaf_inds):
+                s += f" inds={node.sample_inds}"                
             l.append(s)
     return "\n".join(l)
+
+@njit(cache=True)
+def get_lit_priorities(tree):
+    
+    # tree = self.classifier.op_tree_classifier.tree
+    nom_v_inv_maps = tree.data_stats.nom_v_inv_maps
+    # inv_mapper = self.inv_mapper
+
+    lit_priorities = {}
+    N = None
+    for n_ind, node in enumerate(tree.nodes):
+        ttype, index, splits, counts = node.ttype, node.index, node.split_data, node.counts
+        sample_inds = node.sample_inds
+
+        # The root is always first
+        if(n_ind == 0):
+            N = len(sample_inds)
+        priority = len(sample_inds) / N
+
+        op = node.op_enum
+        if(ttype == TTYPE_NODE):
+            for i, sd in enumerate(splits):
+                if(not sd.is_continous): 
+                    inv_map = nom_v_inv_maps[sd.split_ind]
+
+                    # Recover the X vector indicies and values as provided before internal remapping
+                    inp_key = sd.split_ind
+                    inp_val = inv_map[sd.val]
+
+                    # If inv_mapper was provided then use it to recover the true feature key
+                    #   and value before the user's vectorization preprocessing.
+                    # if(inv_mapper):
+                    #     inp_key, inp_val = inv_mapper(inp_key, inp_val)
+
+                    # Convery `inp_key` Fact to tuple
+                    # key_tup = (*inp_key,)
+                    key_tup = (inp_key, inp_val)
+
+                    curr_pr = lit_priorities.get(key_tup, 0.0)
+                    if(priority > curr_pr):
+                        lit_priorities[key_tup] = priority
+                else:
+                    pass
+                    # thresh = np.int32(sd.val).view(np.float32) if op != OP_EQ else np.int32(sd.val)
+                    # instr = str_op(op)+str(thresh) if op != OP_ISNAN else str_op(op)
+                    # TODO: Implement Continous Case
+                    # raise NotImplemented()
+        else:
+            # Ignore leaves
+            pass
+
+    return [(pr,lit) for lit,pr in lit_priorities.items()]
 
 # -------------------------------------------------------------------------------
 # : Getters
@@ -1053,6 +1232,19 @@ class TreeClassifier(object):
     def __str__(self):
         return str_tree(self.tree, self.inv_mapper)
 
+
+    def get_lit_priorities(self, inv_mapper=None):
+        lit_ps = get_lit_priorities(self.tree)
+
+        # Apply inv_mapper if available
+        if(inv_mapper):
+            new_lit_ps = []
+            for p,(key, val) in lit_ps:
+                key,val = inv_mapper(key,val)
+                new_lit_ps.append((p,(key, val)))
+            return new_lit_ps
+
+        return lit_ps
     # def as_conditions(self,positive_class=None, only_pure_leaves=False):
     #     if(positive_class is None): positive_class = self.positive_class
     #     return tree_to_conditions(self.tree, positive_class, only_pure_leaves)
@@ -1237,4 +1429,7 @@ class DecisionTree2(object):
             pred = self.dt.predict(encoded_X,None)
 
         return pred
+
+
+
 

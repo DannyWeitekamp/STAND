@@ -1,7 +1,7 @@
 import numpy as np
 from numba import njit
 from stand.stand import instance_ambiguity
-from stand.tree_classifier import TreeClassifier, encode_split, decode_split
+from stand.tree_classifier import TreeClassifier, encode_split, decode_split, get_lit_priorities, get_opt_conjs_for_label, str_tree
 from numba.core.runtime.nrt import rtsys
 
 
@@ -282,40 +282,40 @@ if __name__ == "__main__":
     # test_memleaks()
     # test_decision_tree()
     # test_option_tree()
+    if(False):
+        v = 0
+        for i in range(10):
+            dt = run_tree_fit(*setup_tree_fit('decision_tree', random_XY, N=N)[0])
+            v += len(dt.nodes)
+        print("DT:", v/10)
+            
+        v = 0
+        for i in range(10):
+            dt = run_tree_fit(*setup_tree_fit('option_tree', random_XY, N=N)[0])
+            v += len(dt.nodes)
+        print("Op:", v/10)
 
-    v = 0
-    for i in range(10):
-        dt = run_tree_fit(*setup_tree_fit('decision_tree', random_XY, N=N)[0])
-        v += len(dt.nodes)
-    print("DT:", v/10)
-        
-    v = 0
-    for i in range(10):
-        dt = run_tree_fit(*setup_tree_fit('option_tree', random_XY, N=N)[0])
-        v += len(dt.nodes)
-    print("Op:", v/10)
-
-    v = 0
-    for i in range(10):
-        dt = run_tree_fit(*setup_tree_fit('option_tree', random_XY, cache_nodes=False,  N=N)[0])
-        v += len(dt.nodes)
-    print("Op no cache:", v/10)
+        v = 0
+        for i in range(10):
+            dt = run_tree_fit(*setup_tree_fit('option_tree', random_XY, cache_nodes=False,  N=N)[0])
+            v += len(dt.nodes)
+        print("Op no cache:", v/10)
 
 
-    raise ValueError()
-    test_encode_decode_split()
+        # raise ValueError()
+        test_encode_decode_split()
 
     dt = TreeClassifier('option_tree')
     X_nom, Y = make_data1()
     # X_nom, Y = random_XY(N=50,M=10)
     dt.fit(X_nom, None, Y)
     print(dt)
-    #                   0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16
+        #                   0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16
     x_nom = np.asarray([0, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 0, 0],np.int32)
     # x_nom = np.random.randint(0,5,(10,),dtype=np.int32)
     x_cont = np.empty(0,dtype=np.float32)
 
-    
+        
     print(x_nom)
 
     print("--------------------------------")
@@ -334,6 +334,38 @@ if __name__ == "__main__":
     print(stand)
     IA = stand.instance_ambiguity(x_nom, None)
     print("Instance Ambiguity: ", IA)
+
+
+
+    print(stand.op_tree)
+    print(stand.get_lit_priorities())
+    print("0:")
+    get_opt_conjs_for_label(stand.op_tree, 1)
+    print("1:")
+    get_opt_conjs_for_label(stand.op_tree, 2)
+    print("2:")
+    get_opt_conjs_for_label(stand.op_tree, 3)
+
+    print(' ---------------------------- ')
+    stand = STANDClassifier(positive_class=1)
+
+    np.random.seed(7)
+
+    X, Y = random_XY(N=10,M=5)
+    stand.fit(X, None, Y)
+
+    print(str_tree(stand.op_tree, None, True, False))
+
+    print("0:")
+    get_opt_conjs_for_label(stand.op_tree, 0)
+    print("1:")
+    get_opt_conjs_for_label(stand.op_tree, 1)
+    print("2:")
+    get_opt_conjs_for_label(stand.op_tree, 2)
+
+
+
+
 
 
 
