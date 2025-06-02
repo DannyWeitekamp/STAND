@@ -1,7 +1,7 @@
 import numpy as np
 from numba import njit
 from stand.stand import instance_ambiguity
-from stand.tree_classifier import TreeClassifier, encode_split, decode_split, get_lit_priorities, get_opt_conjs_for_label, str_tree
+from stand.tree_classifier import TreeClassifier, encode_split, decode_split, get_lit_priorities, get_opt_conjs_for_label, str_tree, opt_conjs_str
 from numba.core.runtime.nrt import rtsys
 
 
@@ -356,12 +356,17 @@ if __name__ == "__main__":
 
     print(str_tree(stand.op_tree, None, True, False))
 
+    print(get_lit_priorities(stand.op_tree))
+
     print("0:")
-    get_opt_conjs_for_label(stand.op_tree, 0)
+    opt_conjs = stand.get_opt_conjs_for_label(0)
+    print(opt_conjs_str(stand.op_tree, opt_conjs))
     print("1:")
-    get_opt_conjs_for_label(stand.op_tree, 1)
+    opt_conjs = stand.get_opt_conjs_for_label(1)
+    print(opt_conjs_str(stand.op_tree, opt_conjs))
     print("2:")
-    get_opt_conjs_for_label(stand.op_tree, 2)
+    opt_conjs = stand.get_opt_conjs_for_label(2)
+    print(opt_conjs_str(stand.op_tree, opt_conjs))
 
 
 

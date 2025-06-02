@@ -145,6 +145,14 @@ class STANDClassifier(object):
     def get_lit_priorities(self):
         return self.op_tree_classifier.get_lit_priorities()
 
+    def get_opt_conjs_for_label(self, label):
+        return self.op_tree_classifier.get_opt_conjs_for_label(label)
+
+    def get_conds(self, label, literals="all", conjuncts="all"):
+        out = self.op_tree_classifier.get_conds(
+                label, literals, conjuncts)        
+        return out
+
 
 u8_arr = u8[::1]
 

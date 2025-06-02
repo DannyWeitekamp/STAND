@@ -843,10 +843,6 @@ u8_lst_lst = ListType(u8_lst)
 
 @njit(cache=True)
 def _opt_conjs_for_leaf(tree, _leaf):
-
-    # Size of (N,2) for 0: not covering and 1: covering  
-    # n_branches = np.zeros((len(tree.nodes),2),dtype=np.uint64)
-
     opt_conjs = List()
     min_node_depths = np.zeros(len(tree.nodes), dtype=np.int32)
     for i, node in enumerate(tree.nodes):
@@ -854,35 +850,26 @@ def _opt_conjs_for_leaf(tree, _leaf):
             min_node_depths[i] = min([min_node_depths[p]+1 for p,_ in node.parents])
 
         lst = List.empty_list(u8_lst_lst)
-        # if(node.ttype == TTYPE_LEAF):
-        #     # lst.append()
         opt_conjs.append(lst)
 
     opt_conjs[_leaf.index].append(List.empty_list(u8_lst))
 
-
     cov_nodes = Dict.empty(i4, u1)
     curr_nodes = Dict.empty(i4, u1)
     curr_nodes[_leaf.index] = 1;
-    # rec_stack.append(_leaf.index)
-    # for i, (p_node_ind, enc_split) in enumerate(_leaf.parents):
-    #     rec_stack.append((_leaf.index, p_node_ind))
     
     should_expand = np.zeros(len(tree.nodes), dtype=np.int32)
     should_expand[_leaf.index] = 1
     for node_ind in (-min_node_depths).argsort():
         if(not should_expand[node_ind]):
             continue
-        # next_nodes = Dict.empty(i4, u1)
-        # for node_ind in curr_nodes:
-        # while(len(rec_stack) > 0):
-            # node_ind = rec_stack.pop()
+
         node = tree.nodes[node_ind]
         node_opt_conjs = opt_conjs[node_ind]
         
         # Group by parent_ind
         par_splits = Dict.empty(i4, u8_lst)
-        print("Node:", node_ind, "npar=", len(node.parents), "mdepth=", min_node_depths[node_ind])
+        # print("Node:", node_ind, "npar=", len(node.parents), "mdepth=", min_node_depths[node_ind])
         for i, (p_node_ind, enc_split) in enumerate(node.parents):
             is_cont, negated, split, val = decode_split(enc_split)
             # print("<<", is_cont, negated, split, val)
@@ -897,23 +884,17 @@ def _opt_conjs_for_leaf(tree, _leaf):
             for p_node_ind, splits in par_splits.items():
                 cpy = node_opt_conj.copy()
                 cpy.append(splits)
-                # par_opt_conjs.append(node_opt_conjs + List([List([splits])]))
                 par_opt_conjs = opt_conjs[p_node_ind]
                 par_opt_conjs.append(cpy)
 
         for p_node_ind, splits in par_splits.items():
             should_expand[p_node_ind] = 1
-            # rec_stack.append(p_node_ind)
 
-        # cov_nodes[node_ind] = 1
-    # curr_nodes = next_nodes
+    # for i, opt_conj in enumerate(opt_conjs):
+    #     if(len(opt_conjs[i]) > 0):
+    #         print(i, len(opt_conjs[i]), "*" if i ==_leaf.index else "")
 
-    for i, opt_conj in enumerate(opt_conjs):
-        if(len(opt_conjs[i]) > 0):
-            print(i, len(opt_conjs[i]), "*" if i ==_leaf.index else "")
-
-
-    # The root will the full set
+    # The root's slot holds the full set
     return opt_conjs[0]
 
 
@@ -936,8 +917,14 @@ def get_opt_conjs_for_label(tree, y):
             opt_conjs.append(oc)
 
 
-    nom_v_inv_maps = tree.data_stats.nom_v_inv_maps
+    
     # print("L=", len(opt_conjs))
+
+    return opt_conjs
+        
+def opt_conjs_str(tree, opt_conjs, inv_mapper=None):
+
+    nom_v_inv_maps = tree.data_stats.nom_v_inv_maps
     s = ""
     for i, opt_conj in enumerate(opt_conjs):
         if(i != 0): s += "\n"
@@ -950,13 +937,14 @@ def get_opt_conjs_for_label(tree, y):
                 is_cont, negated, split, val = decode_split(sp)
                 mapped_val = nom_v_inv_maps[split].get(val,-1)
 
+                if(inv_mapper):
+                    is_neg, split, val = inv_mapper(split, mapped_val)
+                    negated ^= is_neg
+
                 opt_str += f"{'~' if negated else ''}({split}=={mapped_val})"
             opt_str += "}"
             s += opt_str
-    print(s)
-
-    return opt_conjs
-        
+    return s
         # for p_node_ind, encoded_split in leaf.parents:
         #     print(p_node_ind, decode_split(encoded_split))
         # # for s_ind in leaf.sample_inds:
@@ -1005,10 +993,13 @@ def str_tree(tree, inv_mapper=None, leaf_inds=False, node_inds=False):
 
                     # If inv_mapper was provided then use it to recover the true feature key
                     #   and value before the user's vectorization preprocessing.
+                    negated = False
                     if(inv_mapper):
-                        inp_key, inp_val = inv_mapper(inp_key, inp_val)
+                        is_neg, inp_key, inp_val = inv_mapper(inp_key, inp_val)
+                        negated ^= is_neg
 
-                    s += f"({inp_key},=={inp_val!r})[F:{sd.left} T:{sd.right}"
+                    eq_neq = "!=" if negated else "=="
+                    s += f"({inp_key},{eq_neq}{inp_val!r})[F:{sd.left} T:{sd.right}"
                 else:
                     thresh = np.int32(sd.val).view(np.float32) if op != OP_EQ else np.int32(sd.val)
                     instr = str_op(op)+str(thresh) if op != OP_ISNAN else str_op(op)
@@ -1240,11 +1231,51 @@ class TreeClassifier(object):
         if(inv_mapper):
             new_lit_ps = []
             for p,(key, val) in lit_ps:
-                key,val = inv_mapper(key,val)
-                new_lit_ps.append((p,(key, val)))
+                is_neg, key,val = inv_mapper(key,val)
+                new_lit_ps.append((p,(is_neg, key, val)))
             return new_lit_ps
 
         return lit_ps
+
+    def get_opt_conjs_for_label(self, label):
+        return get_opt_conjs_for_label(self.tree, label)
+
+
+    def _map_lit(self, sp):
+        nom_v_inv_maps = self.tree.data_stats.nom_v_inv_maps
+        is_cont, negated, split, val = decode_split(sp)
+        mapped_val = nom_v_inv_maps[split].get(val,-1)
+
+        key = split
+        if(self.inv_mapper):
+            is_neg, key, val = self.inv_mapper(key, mapped_val)
+            negated ^= is_neg
+        return (negated, key, val)
+
+
+    def get_conds(self, label, literals="all", conjuncts="all"):
+        '''A string representation of a tree usable for the purposes of debugging'''
+        opt_conjs = self.get_opt_conjs_for_label(label)
+        
+        py_opt_conjs = []
+        for i, opt_conj in enumerate(opt_conjs):
+            # if(i != 0): s += "\n"
+            conj = []
+            for j, opt_lits in enumerate(opt_conj):
+                # if(j != 0): s += ", "
+                # opt_str = "{"
+                if(literals == "all"):
+                    lit = []
+                    for k, sp in enumerate(opt_lits):
+                        lit.append(self._map_lit(sp))
+                elif(literals == "random"):
+                    sp = choice(list())
+                    lit = self._map_lit(sp)
+                conj.append(lit)
+            py_opt_conjs.append(conj)
+        return py_opt_conjs
+
+    
     # def as_conditions(self,positive_class=None, only_pure_leaves=False):
     #     if(positive_class is None): positive_class = self.positive_class
     #     return tree_to_conditions(self.tree, positive_class, only_pure_leaves)
