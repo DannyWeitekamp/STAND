@@ -220,23 +220,14 @@ def update_nominal_impurities(tree, splitter_context, iterative):
         new_sp_ptrs[:len_cache] = sc.nominal_split_cache_ptrs
         sc.nominal_split_cache_ptrs = new_sp_ptrs
 
-    # X_inds = X[inds]
-
-    # y_count_left = counts_imps[:]
-
-    # n_non_const = len(feature_inds)#-n_const_fts
-    # print(len(feature_inds), n_const_fts, n_non_const)
-    # print("ZA")
     sc.impurities = impurities = np.empty((X.shape[1],3),dtype=np.float64)
-    # b_split, b_split_imp_total = 0, np.inf
+
     #Go through the samples in Fortran order (i.e. feature then sample)
-    # for k_j in prange(0,n_non_const):
     for j in prange(X.shape[1]):
-        # print(_get_thread_id(),k_j)
-        # j = k_j#feature_inds[k_j]
         n_vals_j = n_vals[j]
         cache_ptr = sc.nominal_split_cache_ptrs[j]
-        # print(j, cache_ptr, n_vals_j, n_classes)
+        
+        # Ensure that the split cache exists and is large enough 
         if(cache_ptr != 0):
 
             split_cache = _struct_from_pointer(NominalSplitCacheType, cache_ptr)
@@ -249,32 +240,25 @@ def update_nominal_impurities(tree, splitter_context, iterative):
             split_cache = NominalSplitCache_ctor(n_vals_j, n_classes)
             sc.nominal_split_cache_ptrs[j] = _pointer_from_struct_incref(split_cache)
 
+        # print(j, cache_ptr, n_vals_j, n_classes)
         # print(cache_ptr,sc.nominal_split_cache_ptrs[j])
 
-        # print("ZB")
+        #Update the feature counts for labels and values
         v_counts       = split_cache.v_counts
         y_counts_per_v = split_cache.y_counts_per_v
-        # print("BEF", y_counts_per_v, v_counts)
-        # else:
-        # y_counts_per_feature = np.zeros((n_vals_j,n_classes),dtype=np.uint32)
-        # v_counts_per_feature = np.zeros((n_vals_j),dtype=np.uint32)
-
-
-        #Update the feature counts for labels and values
-        # for k_i in range(start, end):
-        # print(Y,sample_inds)
         for i in sample_inds:
-            # i = sample_inds[k_i]
             y_i = Y[i]
             y_counts_per_v[X[i,j],y_i] += 1
             v_counts[X[i,j]] += 1
-            # for c in range(n_vals_j):
+
+        # HIERARCHICAL SHRINKAGE TWEAK 
+
+        ## 
+
         # print("ZZB")
         # print(k_j, "::", v_counts, y_counts_per_v)
         _fill_nominal_impurities(tree, sc, split_cache, n_vals_j, j)
 
-
-     # = impurities
     sc.n_last_update = n_samples
     # print(impurities)
     # print("ZC")
@@ -505,7 +489,7 @@ def fit_tree(tree, iterative=False):
     while(len(context_stack) > 0):
         # print("AZ")
         c = context_stack.pop()
-        update_nominal_impurities(tree, c ,iterative)
+        update_nominal_impurities(tree, c, iterative)
         # print("BZ")
         # print(c.impurities[:,0],c.start,c.end)
 
