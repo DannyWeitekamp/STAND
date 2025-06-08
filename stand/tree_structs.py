@@ -38,6 +38,21 @@ treenode_fields = [
     ('counts', u4[:]),
     ('ttype', u1),
     ('op_enum', u1),
+
+    ### Attributes for Hierarchical Shrinkage ###
+
+    ('nominal_split_cache_ptrs', i8[::1]),
+
+
+    # ('y_counts_per_v', ListType(u4[:,::1])),
+    # ('v_counts', ListType(u4[:,::1])),
+
+    # # The weighted y_count contributions of the parents
+    # ('par_w_y_counts_per_v', ListType(f4[:,::1])),
+    # # The weighted total contributions of the parents for each value
+    # ('par_v_counts', ListType(f4[::1])),
+    # # How much the true counts in this split context count toward the total
+    # ('self_w', f4),
 ]
 
 TreeNode, TreeNodeType = define_structref("TreeNode",treenode_fields,define_constructor=False) 
@@ -55,7 +70,7 @@ OP_EQ = u1(4)
 i4_u8_tup_type = Tuple((i4,u8))
 
 @njit(cache=True)
-def TreeNode_ctor(ttype, index, sample_inds, counts):
+def TreeNode_ctor(ttype, index, sample_inds, counts, tree):
     st = new(TreeNodeType)
     st.index = index
     st.sample_inds = sample_inds    
@@ -64,6 +79,7 @@ def TreeNode_ctor(ttype, index, sample_inds, counts):
     st.counts = counts
     st.ttype = ttype
     st.op_enum = OP_NOP
+    st.nominal_split_cache_ptrs = np.zeros(tree.data_stats.X_nom.shape[1], dtype=np.int64)
     return st
 
 
@@ -83,7 +99,7 @@ splitter_context_fields = [
     # The indicies of all samples that filter into this node
     ('sample_inds', u4[::1]),
     # The counts of each class label in this node
-    ('y_counts',u4[:]),    
+    ('y_counts',u4[:]),
     # The impurity of the node before splitting
     ('impurity', f8),
     
@@ -179,7 +195,7 @@ tree_fields = [
     ('pred_chooser', types.FunctionType(i8(ListType(TreeNodeType)))),
 
     # Calculates the impurity of a distribution of classes selected by a node.
-    ('impurity_func', types.FunctionType(f8(u4,u4[:]))),
+    ('impurity_func', types.FunctionType(f8(f4,f4[:]))),
 
     # Whether or not nodes should be cached
     ('cache_nodes', types.boolean),    
@@ -195,7 +211,7 @@ Tree, TreeTypeTemplate = define_structref_template("Tree", tree_fields, define_c
 
 u8_arr = u8[::1]
 
-impurity_func_sig = f8(u4,u4[:])
+impurity_func_sig = f8(f4,f4[:])
 split_chooser_sig = i8[::1](f8[::1])
 pred_chooser_sig = i8(ListType(TreeNodeType))
 

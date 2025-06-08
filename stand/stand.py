@@ -139,8 +139,8 @@ class STANDClassifier(object):
         if(x_cont is None): x_cont = np.empty((0,), dtype=np.float32)
         return instance_ambiguity(self.stand, x_nom, x_cont)
 
-    def __str__(self):
-        return str(self.op_tree_classifier)
+    def __str__(self, **kwargs):
+        return self.op_tree_classifier.__str__(**kwargs)
 
     def get_lit_priorities(self):
         return self.op_tree_classifier.get_lit_priorities()

@@ -39,6 +39,22 @@ nominal_split_cache_fields = [
 
     # The number of samples in the previous update
     ('n_last_update', i4),
+
+    ### Attributes for Hierarchical Shrinkage ###
+
+    # The weighted y_count contributions of the parents
+    ('par_w_y_counts_per_v', f4[:,:]),
+    # The weighted total contributions of the parents for each value
+    ('par_v_counts', f4[:]),
+
+    # The total weighted y_count contributions
+    ('w_y_counts_per_v', f4[:,:]),
+    # The weighted total contributions of the parents for each value
+    ('w_v_counts', f4[:]),
+    # How much the true counts in this split context count toward the total
+    # ('self_w', f4),
+
+
     # The number of samples that went to the left and right in the previous
     #  update
     # ('n_l_last_update', i4),

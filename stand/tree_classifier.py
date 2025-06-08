@@ -33,7 +33,7 @@ config.THREADING_LAYER = 'thread_safe'
 # --------------------------------
 #  Impurity Functions
 
-impurity_func_sig = f8(u4,u4[:])
+impurity_func_sig = f8(f4,f4[:])
 
 @njit(impurity_func_sig, cache=True)
 def gini_impurity(total, counts):
@@ -82,7 +82,9 @@ def choose_all_max(impurity_decrease):
 def choose_all_near_max(impurity_decrease):
     '''A split chooser that expands every decision tree 
         (i.e. this chooser forces to build whole option tree)'''
-    m = np.max(impurity_decrease)*.9
+
+    m = np.max(impurity_decrease)*.7
+    print("all_near_max",m)
     return np.where(impurity_decrease>=m)[0]
 
 
@@ -126,13 +128,16 @@ def unique_counts(inp):
 @njit(cache=True)
 def _fill_nominal_impurities(tree, splitter_context, split_cache, n_vals_j, k_j):
     b_ft_val = 0 
-    v_counts       = split_cache.v_counts
-    y_counts_per_v = split_cache.y_counts_per_v
+    v_counts       = split_cache.w_v_counts
+    y_counts_per_v = split_cache.w_y_counts_per_v
 
     impurity = splitter_context.impurity
     impurities = splitter_context.impurities
-    y_counts = splitter_context.y_counts
-    n_samples = len(splitter_context.sample_inds)
+    # y_counts = splitter_context.y_counts
+    y_counts = np.sum(y_counts_per_v, axis=0)
+    n_samples =  np.sum(y_counts)
+
+    # n_samples = len(splitter_context.sample_inds)
     impurity_func = tree.impurity_func
     #If this feature is found to be constant then skip computing impurity
     if(np.sum(v_counts > 0) <= 1):
@@ -145,17 +150,22 @@ def _fill_nominal_impurities(tree, splitter_context, split_cache, n_vals_j, k_j)
         # print("ZZBB")
         b_imp_tot, b_imp_l, b_imp_r = np.inf, 0, 0,
         for ft_val in range(n_vals_j):
+
+
             counts_r = y_counts_per_v[ft_val]
             total_r = np.sum(counts_r)
             # print("Z",ft_val, y_counts, counts_r)
+
+            # counts_l = np.sum(y_counts_per_v[ft_val]) - 
+            # total_l = np.sum(counts_r)
 
             counts_l = y_counts-counts_r
             total_l = n_samples-total_r
 
             # print("Z",total_l, counts_l)
 
-            imp_l = impurity_func(u4(total_l), counts_l)
-            imp_r = impurity_func(u4(total_r), counts_r)
+            imp_l = impurity_func(f4(total_l), counts_l)
+            imp_r = impurity_func(f4(total_r), counts_r)
 
             # print("Z1",ft_val)
 
@@ -238,7 +248,8 @@ def update_nominal_impurities(tree, splitter_context, iterative):
             # print("reusing", j, split_cache.v_counts)
         else:
             split_cache = NominalSplitCache_ctor(n_vals_j, n_classes)
-            sc.nominal_split_cache_ptrs[j] = _pointer_from_struct_incref(split_cache)
+            cache_ptr = _pointer_from_struct_incref(split_cache)
+            sc.nominal_split_cache_ptrs[j] = cache_ptr
 
         # print(j, cache_ptr, n_vals_j, n_classes)
         # print(cache_ptr,sc.nominal_split_cache_ptrs[j])
@@ -251,13 +262,76 @@ def update_nominal_impurities(tree, splitter_context, iterative):
             y_counts_per_v[X[i,j],y_i] += 1
             v_counts[X[i,j]] += 1
 
-        # HIERARCHICAL SHRINKAGE TWEAK 
+        # START HIERARCHICAL SHRINKAGE TWEAK 
+        # print("START HIERARCHICAL SHRINKAGE TWEAK")
+        
+        self_node = sc.node
+        self_node.nominal_split_cache_ptrs[j] = cache_ptr
+
+        # print("A", self_node.index, "j=", j, cache_ptr)
+        
+        avg_par_w_y_counts_per_v = np.zeros(y_counts_per_v.shape, dtype=np.float32)
+        avg_par_v_counts = np.zeros(v_counts.shape, dtype=np.float32)
+
+        lam = 1.0
+        
+        if(len(sc.node.parents) > 0):
+            
+            self_w = 1.0/(1.0+lam/n_samples)
+            
+            for i, (p_node_ind, enc_split) in enumerate(sc.node.parents):
+                # print("::", i)
+                p_node = tree.nodes[p_node_ind]
+                p_w = 1.0/(1.0+lam/n_samples)
+
+                par_cache_ptr = p_node.nominal_split_cache_ptrs[j]
+                par_spl_c = _struct_from_pointer(NominalSplitCacheType, par_cache_ptr)
+
+                # print("B", p_node_ind, par_cache_ptr)
+
+                avg_par_w_y_counts_per_v += par_spl_c.par_w_y_counts_per_v 
+                # print("B2")
+                avg_par_w_y_counts_per_v += (p_w-self_w) * par_spl_c.y_counts_per_v 
+                # print("B3")
+                avg_par_v_counts += par_spl_c.par_v_counts 
+                avg_par_v_counts += (p_w-self_w) * par_spl_c.v_counts
+
+                # print("C")
+
+            avg_par_w_y_counts_per_v /= len(sc.node.parents)
+            avg_par_v_counts /= len(sc.node.parents)
+
+            split_cache.w_y_counts_per_v = (avg_par_w_y_counts_per_v + self_w * y_counts_per_v).astype(np.float32)
+            split_cache.w_v_counts = (avg_par_v_counts + self_w * v_counts).astype(np.float32)
+
+            # print(split_cache.w_y_counts_per_v)
+            # print(y_counts_per_v)
+            # print("NOT ROOT", self_w)
+        else:
+            
+            split_cache.w_y_counts_per_v = y_counts_per_v.astype(np.float32)
+            split_cache.w_v_counts = v_counts.astype(np.float32)
+
+        # print("E")
+
+
+        split_cache.par_w_y_counts_per_v = avg_par_w_y_counts_per_v
+        split_cache.par_v_counts = avg_par_v_counts
+
+        # END HIERARCHICAL SHRINKAGE TWEAK 
+
+        # print("F")
+
+        # p_n_samples = len(p_node.sample_inds)
+
 
         ## 
 
         # print("ZZB")
         # print(k_j, "::", v_counts, y_counts_per_v)
         _fill_nominal_impurities(tree, sc, split_cache, n_vals_j, j)
+
+        # print("G")
 
     sc.n_last_update = n_samples
     # print(impurities)
@@ -273,10 +347,10 @@ def build_root(tree, iterative=False):
     Y = ds.Y
     sample_inds = np.arange(len(Y),dtype=np.uint32)
 
-    impurity = tree.impurity_func(u4(len(Y)), ds.y_counts)
+    impurity = tree.impurity_func(f4(len(Y)), ds.y_counts.astype(np.float32))
     
     #Make Root Node
-    node = TreeNode_ctor(TTYPE_NODE,i4(0),sample_inds,ds.y_counts)
+    node = TreeNode_ctor(TTYPE_NODE,i4(0),sample_inds,ds.y_counts, tree)
 
     # Make Sure various node containers are reset
     node_dict = new_akd(u4_arr,i4)    
@@ -350,7 +424,7 @@ def new_node(locs, tree, sample_inds, y_counts, impurity, is_right):
         # if(cache_nodes): akd_insert(node_dict, sample_inds, node_id)
         if(tree.cache_nodes): node_dict[sample_inds] = node_id
         if(impurity > 0.0):
-            node = TreeNode_ctor(TTYPE_NODE, node_id, sample_inds, y_counts)
+            node = TreeNode_ctor(TTYPE_NODE, node_id, sample_inds, y_counts, tree)
 
             split_chain = extend_split_chain(c, encoded_split)
             if(iterative and split_chain in tree.context_cache):
@@ -362,13 +436,14 @@ def new_node(locs, tree, sample_inds, y_counts, impurity, is_right):
             reinit_splittercontext(new_c, node, sample_inds, y_counts, impurity)
             context_stack.append(new_c)
         else:
-            node = TreeNode_ctor(TTYPE_LEAF, node_id, sample_inds, y_counts)
+            node = TreeNode_ctor(TTYPE_LEAF, node_id, sample_inds, y_counts, tree)
             tree.leaves.append(node)
 
         tree.nodes.append(node)
     else:
         node = tree.nodes[node_id]
 
+    # print("add PARENT")
     node.parents.append((c.node.index, encoded_split))
     return node_id
 
@@ -495,6 +570,9 @@ def fit_tree(tree, iterative=False):
 
         best_splits = tree.split_chooser(c.impurity-c.impurities[:,0])
 
+
+        print("IMP:", c.impurity-c.impurities[:,0])
+
         # best_split = np.argmin(c.impurity-c.impurities[:,0])
         # print("---")
         for split in best_splits:
@@ -525,8 +603,8 @@ def fit_tree(tree, iterative=False):
                 # print("DONE NODE")
 
         # print("B")
-        if(not iterative):
-            SplitterContext_dtor(c)
+        # if(not iterative):
+        #     SplitterContext_dtor(c)
         # print("C")
     
     assert len(tree.leaves) <= len(tree.nodes)
@@ -991,12 +1069,12 @@ def str_tree(tree, inv_mapper=None, leaf_inds=False, node_inds=False):
                     # s += "(%s,%s)[L:%s R:%s" % (sd.split_ind,instr,sd.left,sd.right)
                 s += "] "# if(split[4] == -1) else ("NaN:" + str(split[4]) + "] ")
             if(node_inds):
-                s += f" inds={node.sample_inds}"                
+                s += f"\tinds={node.sample_inds}"                
             l.append(s)
         else:
             s  = "LEAF(%s) : %s" % (index,counts)
             if(leaf_inds):
-                s += f" inds={node.sample_inds}"                
+                s += f"\tinds={node.sample_inds}"                
             l.append(s)
     return "\n".join(l)
 
@@ -1204,8 +1282,8 @@ class TreeClassifier(object):
         return predict_prob(self.tree, X_nom, X_cont)
         # return self._predict(self.tree, xb, xc, positive_class)
 
-    def __str__(self):
-        return str_tree(self.tree, self.inv_mapper)
+    def __str__(self, **kwargs):
+        return str_tree(self.tree, self.inv_mapper, **kwargs)
 
 
     def get_lit_priorities(self, inv_mapper=None):
