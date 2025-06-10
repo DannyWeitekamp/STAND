@@ -84,8 +84,10 @@ def choose_all_near_max(impurity_decrease):
         (i.e. this chooser forces to build whole option tree)'''
 
     m = np.max(impurity_decrease)*.7
-    print("all_near_max",m)
-    return np.where(impurity_decrease>=m)[0]
+    if(m == 0.0):
+        raise ValueError("BAD MAX DECREASE")
+
+    return np.where(impurity_decrease >= m)[0]
 
 
 split_choosers = {
@@ -128,17 +130,24 @@ def unique_counts(inp):
 @njit(cache=True)
 def _fill_nominal_impurities(tree, splitter_context, split_cache, n_vals_j, k_j):
     b_ft_val = 0 
-    v_counts       = split_cache.w_v_counts
-    y_counts_per_v = split_cache.w_y_counts_per_v
+
+    v_counts       = split_cache.v_counts
+    y_counts_per_v = split_cache.y_counts_per_v
+    w_v_counts       = split_cache.w_v_counts
+    w_y_counts_per_v = split_cache.w_y_counts_per_v
+    
 
     impurity = splitter_context.impurity
     impurities = splitter_context.impurities
-    # y_counts = splitter_context.y_counts
-    y_counts = np.sum(y_counts_per_v, axis=0)
-    n_samples =  np.sum(y_counts)
+    y_counts = splitter_context.y_counts
+    w_y_counts = np.sum(w_y_counts_per_v, axis=0)
+    w_n_samples =  np.sum(w_y_counts)
 
-    # n_samples = len(splitter_context.sample_inds)
+    n_samples = len(splitter_context.sample_inds)
     impurity_func = tree.impurity_func
+
+    # print(v_counts)
+
     #If this feature is found to be constant then skip computing impurity
     if(np.sum(v_counts > 0) <= 1):
         # print("ZZAB")
@@ -151,25 +160,44 @@ def _fill_nominal_impurities(tree, splitter_context, split_cache, n_vals_j, k_j)
         b_imp_tot, b_imp_l, b_imp_r = np.inf, 0, 0,
         for ft_val in range(n_vals_j):
 
-
             counts_r = y_counts_per_v[ft_val]
             total_r = np.sum(counts_r)
+            # counts_l = y_counts-counts_r
+            total_l = n_samples-total_r
+            if(total_l == 0 or total_r == 0):
+                imp_l = 1.0
+                imp_r = 1.0
+                imp_tot = 1.0
+
+                # counts_l = y_counts-counts_r
+                # imp_l = impurity_func(f4(total_l), counts_l.astype(np.float32))
+                # imp_r = impurity_func(f4(total_r), counts_r.astype(np.float32))
+                # imp_tot = ((total_l/n_samples) * imp_l) + \
+                #           ((total_r/n_samples) * imp_r)
+                # print("BAD TOTAL:", k_j, total_l, total_r)
+            else:
+                w_counts_r = w_y_counts_per_v[ft_val]
+                w_total_r = np.sum(w_counts_r)
+                w_counts_l = w_y_counts-w_counts_r
+                w_total_l = w_n_samples-w_total_r
+
+                imp_l = impurity_func(f4(w_total_l), w_counts_l)
+                imp_r = impurity_func(f4(w_total_r), w_counts_r)
+                imp_tot = ((w_total_l/w_n_samples) * imp_l) + \
+                          ((w_total_r/w_n_samples) * imp_r)
+
             # print("Z",ft_val, y_counts, counts_r)
 
             # counts_l = np.sum(y_counts_per_v[ft_val]) - 
             # total_l = np.sum(counts_r)
 
-            counts_l = y_counts-counts_r
-            total_l = n_samples-total_r
 
             # print("Z",total_l, counts_l)
 
-            imp_l = impurity_func(f4(total_l), counts_l)
-            imp_r = impurity_func(f4(total_r), counts_r)
-
+            
             # print("Z1",ft_val)
-
-            imp_tot = ((total_l/n_samples) * imp_l) + ((total_r/n_samples) * imp_r)
+            
+            
             if(imp_tot < b_imp_tot):
                 b_imp_tot, b_imp_l, b_imp_r, b_ft_val = imp_tot, imp_l, imp_r, ft_val
         # print("ZZCB")            
@@ -180,6 +208,10 @@ def _fill_nominal_impurities(tree, splitter_context, split_cache, n_vals_j, k_j)
     # print("ZZC")
     # split_cache.prev_best_v = split_cache.best_v
     split_cache.best_v = b_ft_val
+
+# @njit(cache=True)
+# def node_get
+
 
 
 @njit(cache=True,parallel=False)
@@ -273,7 +305,7 @@ def update_nominal_impurities(tree, splitter_context, iterative):
         avg_par_w_y_counts_per_v = np.zeros(y_counts_per_v.shape, dtype=np.float32)
         avg_par_v_counts = np.zeros(v_counts.shape, dtype=np.float32)
 
-        lam = 1.0
+        lam = 0.0
         
         if(len(sc.node.parents) > 0):
             
@@ -287,16 +319,11 @@ def update_nominal_impurities(tree, splitter_context, iterative):
                 par_cache_ptr = p_node.nominal_split_cache_ptrs[j]
                 par_spl_c = _struct_from_pointer(NominalSplitCacheType, par_cache_ptr)
 
-                # print("B", p_node_ind, par_cache_ptr)
 
                 avg_par_w_y_counts_per_v += par_spl_c.par_w_y_counts_per_v 
-                # print("B2")
                 avg_par_w_y_counts_per_v += (p_w-self_w) * par_spl_c.y_counts_per_v 
-                # print("B3")
                 avg_par_v_counts += par_spl_c.par_v_counts 
                 avg_par_v_counts += (p_w-self_w) * par_spl_c.v_counts
-
-                # print("C")
 
             avg_par_w_y_counts_per_v /= len(sc.node.parents)
             avg_par_v_counts /= len(sc.node.parents)
@@ -556,10 +583,12 @@ def fit_tree(tree, iterative=False):
     '''
     Refits the tree from its DataStats
     '''
+
+
     context_stack, node_dict =  \
         build_root(tree)
     
-    
+        
 
     while(len(context_stack) > 0):
         # print("AZ")
@@ -570,8 +599,9 @@ def fit_tree(tree, iterative=False):
 
         best_splits = tree.split_chooser(c.impurity-c.impurities[:,0])
 
+        # print(c.node.sample_inds)
 
-        print("IMP:", c.impurity-c.impurities[:,0])
+        # print("IMP:", c.impurity-c.impurities[:,0])
 
         # best_split = np.argmin(c.impurity-c.impurities[:,0])
         # print("---")
