@@ -183,7 +183,7 @@ def calc_invariant_nom_mask(X_nom):
 def calc_spec_ext_prob(tree, leaf, enc_split):
     is_cont, negated, split, val = decode_split(enc_split)
 
-    lam = 1.0
+    lam = 0.0
     n_samples = len(leaf.sample_inds)
     avg_par_v_prob = 0.0 #np.zeros(v_counts.shape, dtype=np.float32)
 
@@ -192,6 +192,7 @@ def calc_spec_ext_prob(tree, leaf, enc_split):
 
     self_w = 1.0 / (1.0 + lam / n_samples)
 
+    # print()
     if(len(leaf.parents) > 0):
         for i, (p_node_ind, enc_split) in enumerate(leaf.parents):
             p_node = tree.nodes[p_node_ind]
@@ -200,14 +201,14 @@ def calc_spec_ext_prob(tree, leaf, enc_split):
             par_cache_ptr = p_node.nominal_split_cache_ptrs[split]
             par_spl_c = _struct_from_pointer(NominalSplitCacheType, par_cache_ptr)
             
-            par_tot = np.sum(par_spl_c.par_w_v_counts)
+            # par_tot = np.sum(par_spl_c.par_w_v_probs)
 
             # print("A")
-            print("A", leaf.index, p_node_ind, ":", par_spl_c.par_w_v_counts[val], par_tot)
-            avg_par_v_prob += par_spl_c.par_w_v_counts[val] #/ par_tot if par_tot != 0.0 else 0.0
+            # print("A", leaf.index, p_node_ind, ":", par_spl_c.par_w_v_probs[val])
+            avg_par_v_prob += par_spl_c.par_w_v_probs[val] #/ par_tot if par_tot != 0.0 else 0.0
             # print("B")
-            print("B", p_w, self_w, par_spl_c.w_v_counts[val], np.sum(par_spl_c.w_v_counts))
-            avg_par_v_prob += (p_w-self_w) * (par_spl_c.w_v_counts[val] / np.sum(par_spl_c.w_v_counts))
+            # print("B", p_w, self_w, par_spl_c.w_v_probs[val], np.sum(par_spl_c.w_v_probs))
+            avg_par_v_prob += (p_w-self_w) * par_spl_c.w_v_probs[val] #/ np.sum(par_spl_c.w_v_counts))
 
             # if(split == 7):
             #     print("avg_par_v_prob @ 7:", avg_par_v_prob)
@@ -215,14 +216,16 @@ def calc_spec_ext_prob(tree, leaf, enc_split):
         
         # print("D")
         avg_par_v_prob /= len(leaf.parents)
-        # print("E")
+        # print("avg_par_v_prob:", avg_par_v_prob, self_w)
+        
         
 
         w_v_prob = (avg_par_v_prob + self_w)
-        if(split == 7):
-            print("avg_par_v_prob @ 7:", w_v_prob)
-        if(split == 2):
-            print("avg_par_v_prob @ 2:", w_v_prob)
+        # print("w_v_prob:", w_v_prob)
+        # if(split == 7):
+        #     print("avg_par_v_prob @ 7:", w_v_prob)
+        # if(split == 2):
+        #     print("avg_par_v_prob @ 2:", w_v_prob)
 
     else:
         w_v_prob = 1.0
@@ -322,7 +325,7 @@ def stand_predict_prob(stand, X_nom, X_cont):
     
     y_uvs = tree.data_stats.u_ys
 
-    lam = 1.0
+    lam = 0.0
 
     # out = np.zeros((L,len(y_uvs)),dtype=prob_item_type)
     probs = np.zeros((L,len(y_uvs)),dtype=np.float64)
@@ -339,20 +342,20 @@ def stand_predict_prob(stand, X_nom, X_cont):
             n_samples = len(leaf.sample_inds)
             leaf_weight = 1/(1.0+lam/n_samples)
             
-            print("LEAF:", leaf.index, "L=", len(leaf.sample_inds))
-            for enc_split, prob in zip(spec_ext, ext_probs):
-                is_cont, negated, split, val = decode_split(enc_split)
-                print(f"[{split}]=={val}", prob)
+            # print("LEAF:", leaf.index, "L=", len(leaf.sample_inds))
+            # for enc_split, prob in zip(spec_ext, ext_probs):
+            #     is_cont, negated, split, val = decode_split(enc_split)
+            #     print(f"[{split}]=={val}", prob)
 
             y = np.argmax(leaf.counts)
             ext_size, n_ext_matches, n_ext_fails, w_ext_matches, w_ext_fails = (
                 eval_specific_extension(stand, leaf, x_nom, x_cont))
-            ext_prob = w_ext_matches / (w_ext_matches+w_ext_fails) if ext_size > 0 else 1.0
+            ext_prob = w_ext_matches / (w_ext_matches+w_ext_fails) if (w_ext_matches+w_ext_fails) > 0.0 else 1.0
             probs[i][y] += leaf_weight * ext_prob
             # probs[i][y] += n_ext_matches/(n_ext_matches+n_ext_fails) if ext_size > 0 else 1.0
             n_leaves[y] += 1
             tot_leaf_weight[y] += leaf_weight
-            print(i, y, ":", w_ext_matches/(w_ext_matches+w_ext_fails), w_ext_matches, w_ext_fails)
+            # print(i, y, ":", w_ext_matches/(w_ext_matches+w_ext_fails), w_ext_matches, w_ext_fails)
 
         for j, y_class in enumerate(y_uvs):
             if(n_leaves[j] > 0):

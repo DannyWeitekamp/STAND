@@ -33,18 +33,19 @@ config.THREADING_LAYER = 'thread_safe'
 # --------------------------------
 #  Impurity Functions
 
-impurity_func_sig = f8(f4,f4[:])
+impurity_func_sig = f8(f4[:])
 
 @njit(impurity_func_sig, cache=True)
-def gini_impurity(total, counts):
-    if(total > 0):
-        s = 0.0
-        for c_i in counts:
-            prob = c_i / total;
-            s += prob * prob 
-        return 1.0 - s
-    else:
-        return 0.0
+def gini_impurity(probs):
+    # if(total > 0):
+    # print("probs", probs)
+    s = 0.0
+    for prob in probs:
+        # prob = c_i / total;
+        s += prob * prob 
+    return 1.0 - s
+    # else:
+    #     return 0.0
 
 
 impurity_funcs = {
@@ -133,15 +134,15 @@ def _fill_nominal_impurities(tree, splitter_context, split_cache, n_vals_j, k_j)
 
     v_counts       = split_cache.v_counts
     y_counts_per_v = split_cache.y_counts_per_v
-    w_v_counts       = split_cache.w_v_counts
-    w_y_counts_per_v = split_cache.w_y_counts_per_v
+    w_v_probs       = split_cache.w_v_probs
+    w_y_probs_per_v = split_cache.w_y_probs_per_v
     
 
     impurity = splitter_context.impurity
     impurities = splitter_context.impurities
     y_counts = splitter_context.y_counts
-    w_y_counts = np.sum(w_y_counts_per_v, axis=0)
-    w_n_samples =  np.sum(w_y_counts)
+    w_y_probs = np.sum(w_y_probs_per_v, axis=0)
+    # w_n_samples =  np.sum(w_y_counts)
 
     n_samples = len(splitter_context.sample_inds)
     impurity_func = tree.impurity_func
@@ -162,8 +163,10 @@ def _fill_nominal_impurities(tree, splitter_context, split_cache, n_vals_j, k_j)
 
             counts_r = y_counts_per_v[ft_val]
             total_r = np.sum(counts_r)
-            # counts_l = y_counts-counts_r
+            counts_l = y_counts-counts_r
             total_l = n_samples-total_r
+
+
             if(total_l == 0 or total_r == 0):
                 imp_l = 1.0
                 imp_r = 1.0
@@ -176,15 +179,43 @@ def _fill_nominal_impurities(tree, splitter_context, split_cache, n_vals_j, k_j)
                 #           ((total_r/n_samples) * imp_r)
                 # print("BAD TOTAL:", k_j, total_l, total_r)
             else:
-                w_counts_r = w_y_counts_per_v[ft_val]
-                w_total_r = np.sum(w_counts_r)
-                w_counts_l = w_y_counts-w_counts_r
-                w_total_l = w_n_samples-w_total_r
 
-                imp_l = impurity_func(f4(w_total_l), w_counts_l)
-                imp_r = impurity_func(f4(w_total_r), w_counts_r)
-                imp_tot = ((w_total_l/w_n_samples) * imp_l) + \
-                          ((w_total_r/w_n_samples) * imp_r)
+               
+                
+                w_v_margin_r = np.sum(w_y_probs_per_v[ft_val])
+                w_y_prob_r = w_y_probs_per_v[ft_val] / w_v_margin_r
+                w_v_margin_l = 1.0-w_v_margin_r
+                w_y_prob_l = (w_y_probs - w_y_probs_per_v[ft_val]) / w_v_margin_l
+                # w_y_prob_l = (w_v_probs[ft_val]-w_y_probs_per_v[ft_val]) #/ w_v_margin_l
+
+                # print()
+                # print("w_v_probs:", w_v_probs)
+                # print("w_y_probs_per_v:", ft_val)
+                # print(w_y_probs_per_v)
+                # print("w_y_prob_r", w_y_prob_r)
+                # print("w_v_margin_r", w_v_margin_r)
+                # print("w_y_prob_l", w_y_prob_l)
+                # print("w_v_margin_l:", w_v_margin_l)
+
+                # w_counts_r = w_y_counts_per_v[ft_val]
+                # w_total_r = np.sum(w_counts_r)
+                # w_counts_l = w_y_counts-w_counts_r
+                # w_total_l = w_n_samples-w_total_r
+
+                l_pure = np.sum(counts_l != 0) == 1
+                r_pure = np.sum(counts_r != 0) == 1
+
+                if(l_pure):
+                    imp_l = 0.0    
+                else:
+                    imp_l = impurity_func(w_y_prob_l.astype(np.float32))
+
+                if(r_pure):
+                    imp_r = 0.0    
+                else:
+                    imp_r = impurity_func(w_y_prob_r.astype(np.float32))
+                imp_tot = (w_v_margin_l * imp_l) + \
+                          (w_v_margin_r * imp_r)
 
             # print("Z",ft_val, y_counts, counts_r)
 
@@ -302,8 +333,8 @@ def update_nominal_impurities(tree, splitter_context, iterative):
 
         # print("A", self_node.index, "j=", j, cache_ptr)
         
-        avg_par_w_y_counts_per_v = np.zeros(y_counts_per_v.shape, dtype=np.float32)
-        avg_par_w_v_counts = np.zeros(v_counts.shape, dtype=np.float32)
+        avg_par_w_y_probs_per_v = np.zeros(y_counts_per_v.shape, dtype=np.float32)
+        avg_par_w_v_probs = np.zeros(v_counts.shape, dtype=np.float32)
 
         lam = 1.0
 
@@ -313,40 +344,48 @@ def update_nominal_impurities(tree, splitter_context, iterative):
             
             for i, (p_node_ind, enc_split) in enumerate(sc.node.parents):
                 # print("::", i)
+                
                 p_node = tree.nodes[p_node_ind]
-                p_w = 1.0/(1.0+lam/len(p_node.sample_inds))
+                p_len = len(p_node.sample_inds)
+                p_w = 1.0/(1.0+lam/p_len)
 
                 par_cache_ptr = p_node.nominal_split_cache_ptrs[j]
                 par_spl_c = _struct_from_pointer(NominalSplitCacheType, par_cache_ptr)
 
-                avg_par_w_y_counts_per_v += par_spl_c.par_w_y_counts_per_v 
-                avg_par_w_y_counts_per_v += (p_w-self_w) * par_spl_c.y_counts_per_v 
-                avg_par_w_v_counts += par_spl_c.par_w_v_counts 
-                avg_par_w_v_counts += (p_w-self_w) * par_spl_c.v_counts
+                par_y_probs_per_v = par_spl_c.y_counts_per_v / p_len #np.sum(par_spl_c.y_counts_per_v,axis=0, keepdims=True))
+                avg_par_w_y_probs_per_v += par_spl_c.par_w_y_probs_per_v 
+                avg_par_w_y_probs_per_v += (p_w-self_w) * par_y_probs_per_v
+
+                par_v_probs = par_spl_c.v_counts / p_len #np.sum(par_spl_c.v_counts)
+                avg_par_w_v_probs += par_spl_c.par_w_v_probs 
+                avg_par_w_v_probs += (p_w-self_w) * par_v_probs
                 # print("par", p_w, self_w, par_spl_c.v_counts)
 
-            avg_par_w_y_counts_per_v /= len(sc.node.parents)
-            avg_par_w_v_counts /= len(sc.node.parents)
+            avg_par_w_y_probs_per_v /= len(sc.node.parents)
+            avg_par_w_v_probs /= len(sc.node.parents)
 
-            split_cache.w_y_counts_per_v = (avg_par_w_y_counts_per_v + self_w * y_counts_per_v).astype(np.float32)
-            split_cache.w_v_counts = (avg_par_w_v_counts + self_w * v_counts).astype(np.float32)
+            y_probs_per_v = y_counts_per_v / n_samples #np.sum(y_counts_per_v,axis=0, keepdims=True)
+            v_probs = v_counts / n_samples #np.sum(v_counts)
 
-            # print(split_cache.w_y_counts_per_v)
-            # print(y_counts_per_v)
+            split_cache.w_y_probs_per_v = (avg_par_w_y_probs_per_v + self_w * y_probs_per_v).astype(np.float32)
+            split_cache.w_v_probs = (avg_par_w_v_probs + self_w * v_probs).astype(np.float32)
+
+            # print(split_cache.w_y_probs_per_v)
+            # print(y_probs_per_v)
             # print("NOT ROOT")
-            # print("NOT ROOT", self_w, avg_par_w_v_counts, par_spl_c.v_counts)
+            # print("NOT ROOT", self_w, avg_par_w_v_probs, par_spl_c.v_counts)
         else:
             
-            split_cache.w_y_counts_per_v = y_counts_per_v.astype(np.float32)
-            split_cache.w_v_counts = v_counts.astype(np.float32)
+            split_cache.w_y_probs_per_v = (y_counts_per_v / n_samples).astype(np.float32)
+            split_cache.w_v_probs = (v_counts / n_samples).astype(np.float32)
             # print("IS ROOT", self_w)
 
         # print("E")
 
 
-        split_cache.par_w_y_counts_per_v = avg_par_w_y_counts_per_v
-        # print("AAAAA", self_node.index, avg_par_w_v_counts)
-        split_cache.par_w_v_counts = avg_par_w_v_counts
+        split_cache.par_w_y_probs_per_v = avg_par_w_y_probs_per_v
+        # print("AAAAA", self_node.index, avg_par_w_v_probs)
+        split_cache.par_w_v_probs = avg_par_w_v_probs
 
         # END HIERARCHICAL SHRINKAGE TWEAK 
 
@@ -377,7 +416,7 @@ def build_root(tree, iterative=False):
     Y = ds.Y
     sample_inds = np.arange(len(Y),dtype=np.uint32)
 
-    impurity = tree.impurity_func(f4(len(Y)), ds.y_counts.astype(np.float32))
+    impurity = tree.impurity_func(ds.y_counts.astype(np.float32)/f4(len(Y)))
     
     #Make Root Node
     node = TreeNode_ctor(TTYPE_NODE,i4(0),sample_inds,ds.y_counts, tree)
@@ -610,21 +649,22 @@ def fit_tree(tree, iterative=False):
         
 
         imp_decrease = c.impurity-c.impurities[:,0]
+        # print("IMP:", imp_decrease)
         max_imp_decrease = np.max(imp_decrease)
 
         if(max_imp_decrease <= 0.0):
-            print("BAIL", c.node.index)
+            # print("BAIL", c.node.index)
             c.node.ttype = TTYPE_LEAF
             tree.leaves.append(c.node)
             continue
 
         best_splits = tree.split_chooser(imp_decrease)
 
-        print(c.node.index, "best_splits", best_splits)
+        # print(c.node.index, "best_splits", best_splits)
 
         # print(c.node.sample_inds)
 
-        print("IMP:", c.impurity-c.impurities[:,0])
+        
 
         # best_split = np.argmin(c.impurity-c.impurities[:,0])
         # print("---")
@@ -649,7 +689,7 @@ def fit_tree(tree, iterative=False):
                 locs = (c, split, val, iterative, node_dict, context_stack)
                 node_l = new_node(locs, tree, inds_l, y_counts_l, imp_l, 0)
                 node_r = new_node(locs, tree, inds_r, y_counts_r, imp_r, 1)
-                print("S2", split, len(context_stack))
+                # print("S2", split, len(context_stack))
 
                 split_data = SplitData(i4(split), i4(val), i4(node_l), i4(node_r), u1(False))
                 #np.array([split, val, node_l, node_r, -1],dtype=np.int32)

@@ -195,7 +195,7 @@ tree_fields = [
     ('pred_chooser', types.FunctionType(i8(ListType(TreeNodeType)))),
 
     # Calculates the impurity of a distribution of classes selected by a node.
-    ('impurity_func', types.FunctionType(f8(f4,f4[:]))),
+    ('impurity_func', types.FunctionType(f8(f4[:]))),
 
     # Whether or not nodes should be cached
     ('cache_nodes', types.boolean),    
@@ -203,7 +203,10 @@ tree_fields = [
     # Whether or not iterative fitting is enabled
     ('ifit_enabled', literal(True)),
 
-
+    # Regularization terms for hierarchical shrink
+    ('lam_p', f8), # Probabilities
+    ('lam_e', f8), # Specific Extensions
+    ('lam_l', f8), # Leaves 
 ]
 
 Tree, TreeTypeTemplate = define_structref_template("Tree", tree_fields, define_constructor=False)
@@ -211,7 +214,7 @@ Tree, TreeTypeTemplate = define_structref_template("Tree", tree_fields, define_c
 
 u8_arr = u8[::1]
 
-impurity_func_sig = f8(f4,f4[:])
+impurity_func_sig = f8(f4[:])
 split_chooser_sig = i8[::1](f8[::1])
 pred_chooser_sig = i8(ListType(TreeNodeType))
 
