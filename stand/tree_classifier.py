@@ -303,10 +303,10 @@ def update_nominal_impurities(tree, splitter_context, iterative):
         # print("A", self_node.index, "j=", j, cache_ptr)
         
         avg_par_w_y_counts_per_v = np.zeros(y_counts_per_v.shape, dtype=np.float32)
-        avg_par_v_counts = np.zeros(v_counts.shape, dtype=np.float32)
+        avg_par_w_v_counts = np.zeros(v_counts.shape, dtype=np.float32)
 
-        lam = 0.0
-        
+        lam = 1.0
+
         if(len(sc.node.parents) > 0):
             
             self_w = 1.0/(1.0+lam/n_samples)
@@ -314,36 +314,39 @@ def update_nominal_impurities(tree, splitter_context, iterative):
             for i, (p_node_ind, enc_split) in enumerate(sc.node.parents):
                 # print("::", i)
                 p_node = tree.nodes[p_node_ind]
-                p_w = 1.0/(1.0+lam/n_samples)
+                p_w = 1.0/(1.0+lam/len(p_node.sample_inds))
 
                 par_cache_ptr = p_node.nominal_split_cache_ptrs[j]
                 par_spl_c = _struct_from_pointer(NominalSplitCacheType, par_cache_ptr)
 
-
                 avg_par_w_y_counts_per_v += par_spl_c.par_w_y_counts_per_v 
                 avg_par_w_y_counts_per_v += (p_w-self_w) * par_spl_c.y_counts_per_v 
-                avg_par_v_counts += par_spl_c.par_v_counts 
-                avg_par_v_counts += (p_w-self_w) * par_spl_c.v_counts
+                avg_par_w_v_counts += par_spl_c.par_w_v_counts 
+                avg_par_w_v_counts += (p_w-self_w) * par_spl_c.v_counts
+                # print("par", p_w, self_w, par_spl_c.v_counts)
 
             avg_par_w_y_counts_per_v /= len(sc.node.parents)
-            avg_par_v_counts /= len(sc.node.parents)
+            avg_par_w_v_counts /= len(sc.node.parents)
 
             split_cache.w_y_counts_per_v = (avg_par_w_y_counts_per_v + self_w * y_counts_per_v).astype(np.float32)
-            split_cache.w_v_counts = (avg_par_v_counts + self_w * v_counts).astype(np.float32)
+            split_cache.w_v_counts = (avg_par_w_v_counts + self_w * v_counts).astype(np.float32)
 
             # print(split_cache.w_y_counts_per_v)
             # print(y_counts_per_v)
-            # print("NOT ROOT", self_w)
+            # print("NOT ROOT")
+            # print("NOT ROOT", self_w, avg_par_w_v_counts, par_spl_c.v_counts)
         else:
             
             split_cache.w_y_counts_per_v = y_counts_per_v.astype(np.float32)
             split_cache.w_v_counts = v_counts.astype(np.float32)
+            # print("IS ROOT", self_w)
 
         # print("E")
 
 
         split_cache.par_w_y_counts_per_v = avg_par_w_y_counts_per_v
-        split_cache.par_v_counts = avg_par_v_counts
+        # print("AAAAA", self_node.index, avg_par_w_v_counts)
+        split_cache.par_w_v_counts = avg_par_w_v_counts
 
         # END HIERARCHICAL SHRINKAGE TWEAK 
 
@@ -593,38 +596,60 @@ def fit_tree(tree, iterative=False):
     while(len(context_stack) > 0):
         # print("AZ")
         c = context_stack.pop()
+        
+        # This prevents nodes already known to be leaves from being added
+        #  to the set of leaves. Not sure why cannot check this outside of loop. 
+        if(c.node.ttype == TTYPE_LEAF):
+            print("ALREADY LEAF:", c.node.index)
+            continue
+
         update_nominal_impurities(tree, c, iterative)
         # print("BZ")
         # print(c.impurities[:,0],c.start,c.end)
 
-        best_splits = tree.split_chooser(c.impurity-c.impurities[:,0])
+        
+
+        imp_decrease = c.impurity-c.impurities[:,0]
+        max_imp_decrease = np.max(imp_decrease)
+
+        if(max_imp_decrease <= 0.0):
+            print("BAIL", c.node.index)
+            c.node.ttype = TTYPE_LEAF
+            tree.leaves.append(c.node)
+            continue
+
+        best_splits = tree.split_chooser(imp_decrease)
+
+        print(c.node.index, "best_splits", best_splits)
 
         # print(c.node.sample_inds)
 
-        # print("IMP:", c.impurity-c.impurities[:,0])
+        print("IMP:", c.impurity-c.impurities[:,0])
 
         # best_split = np.argmin(c.impurity-c.impurities[:,0])
         # print("---")
         for split in best_splits:
             
-            # This prevents nodes already known to be leaves from being added
-            #  to the set of leaves. Not sure why cannot check this outside of loop. 
-            if(c.node.ttype == TTYPE_LEAF): continue
+            
 
             inds_l, inds_r, y_counts_l, y_counts_r, imp_tot, imp_l, imp_r, val = \
                 extract_nominal_split_info(tree, c, split, iterative)
 
+            
+
             # print("S1", split, inds_l, inds_r, val, "\n")
 
             if(c.impurity - imp_tot <= 0):
+                raise ValueError("IMPOSSIBLE")
                 c.node.ttype = TTYPE_LEAF
                 tree.leaves.append(c.node)
             else:
-                # print("S2", split)
+                
                 ptr = _pointer_from_struct(c)
                 locs = (c, split, val, iterative, node_dict, context_stack)
                 node_l = new_node(locs, tree, inds_l, y_counts_l, imp_l, 0)
                 node_r = new_node(locs, tree, inds_r, y_counts_r, imp_r, 1)
+                print("S2", split, len(context_stack))
 
                 split_data = SplitData(i4(split), i4(val), i4(node_l), i4(node_r), u1(False))
                 #np.array([split, val, node_l, node_r, -1],dtype=np.int32)

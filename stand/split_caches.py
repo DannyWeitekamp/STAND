@@ -45,7 +45,7 @@ nominal_split_cache_fields = [
     # The weighted y_count contributions of the parents
     ('par_w_y_counts_per_v', f4[:,:]),
     # The weighted total contributions of the parents for each value
-    ('par_v_counts', f4[:]),
+    ('par_w_v_counts', f4[:]),
 
     # The total weighted y_count contributions
     ('w_y_counts_per_v', f4[:,:]),

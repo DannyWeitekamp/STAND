@@ -200,18 +200,30 @@ def calc_spec_ext_prob(tree, leaf, enc_split):
             par_cache_ptr = p_node.nominal_split_cache_ptrs[split]
             par_spl_c = _struct_from_pointer(NominalSplitCacheType, par_cache_ptr)
             
-            par_tot = np.sum(par_spl_c.par_v_counts)
+            par_tot = np.sum(par_spl_c.par_w_v_counts)
 
             # print("A")
-            avg_par_v_prob += par_spl_c.par_v_counts[val] / par_tot if par_tot != 0.0 else 0.0
+            print("A", leaf.index, p_node_ind, ":", par_spl_c.par_w_v_counts[val], par_tot)
+            avg_par_v_prob += par_spl_c.par_w_v_counts[val] #/ par_tot if par_tot != 0.0 else 0.0
             # print("B")
-            avg_par_v_prob += (p_w-self_w) * (par_spl_c.v_counts[val] / np.sum(par_spl_c.v_counts))
+            print("B", p_w, self_w, par_spl_c.w_v_counts[val], np.sum(par_spl_c.w_v_counts))
+            avg_par_v_prob += (p_w-self_w) * (par_spl_c.w_v_counts[val] / np.sum(par_spl_c.w_v_counts))
+
+            # if(split == 7):
+            #     print("avg_par_v_prob @ 7:", avg_par_v_prob)
             # print("C")
         
         # print("D")
         avg_par_v_prob /= len(leaf.parents)
         # print("E")
+        
+
         w_v_prob = (avg_par_v_prob + self_w)
+        if(split == 7):
+            print("avg_par_v_prob @ 7:", w_v_prob)
+        if(split == 2):
+            print("avg_par_v_prob @ 2:", w_v_prob)
+
     else:
         w_v_prob = 1.0
 
@@ -294,10 +306,10 @@ def eval_specific_extension(stand, leaf, x_nom, x_cont):
             mapped_val = nom_v_maps[split].get(x_nom[split],-1)
             if(mapped_val == val):
                 n_ext_matches += 1
-                w_ext_matches += prob
+                w_ext_matches += 1.0-prob
             else:
                 n_ext_fails += 1
-                w_ext_fails += prob
+                w_ext_fails += 1.0-prob
     return ext_size, n_ext_matches, n_ext_fails, w_ext_matches, w_ext_fails
 
 @njit(cache=True)
@@ -340,7 +352,7 @@ def stand_predict_prob(stand, X_nom, X_cont):
             # probs[i][y] += n_ext_matches/(n_ext_matches+n_ext_fails) if ext_size > 0 else 1.0
             n_leaves[y] += 1
             tot_leaf_weight[y] += leaf_weight
-            # print(i, y, ":", w_ext_matches/(w_ext_matches+w_ext_fails), w_ext_matches, w_ext_fails)
+            print(i, y, ":", w_ext_matches/(w_ext_matches+w_ext_fails), w_ext_matches, w_ext_fails)
 
         for j, y_class in enumerate(y_uvs):
             if(n_leaves[j] > 0):
