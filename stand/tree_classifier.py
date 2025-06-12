@@ -57,10 +57,10 @@ impurity_funcs = {
 # --------------------------------
 #  Split Choosers
 
-split_chooser_sig = i8[::1](f8[::1])
+split_chooser_sig = i8[::1](f8[::1], i8)
 
 @njit(split_chooser_sig, nogil=True, fastmath=True, cache=True)
-def choose_random_max(impurity_decrease):
+def choose_random_max(impurity_decrease, n_samples):
     '''A split chooser that expands greedily by max impurity 
         (i.e. this is the chooser for typical decision trees)'''
     m = np.max(impurity_decrease)
@@ -68,34 +68,63 @@ def choose_random_max(impurity_decrease):
     return np.asarray([choices[int(np.random.random()*len(choices))]])
 
 @njit(split_chooser_sig, nogil=True, fastmath=True, cache=True)
-def choose_first_max(impurity_decrease):
+def choose_first_max(impurity_decrease, n_samples):
     '''Pick the first highest impurity decrease option option'''
     return np.asarray([np.argmax(impurity_decrease)])
 
 @njit(split_chooser_sig, nogil=True, fastmath=True, cache=True)
-def choose_all_max(impurity_decrease):
+def choose_all_max(impurity_decrease, n_samples):
     '''A split chooser that expands every decision tree 
         (i.e. this chooser forces to build whole option tree)'''
     m = np.max(impurity_decrease)
     return np.where(impurity_decrease==m)[0]
 
+
+SPLIT_MAX = 20
+
 @njit(split_chooser_sig, nogil=True, fastmath=True, cache=True)
-def choose_all_near_max(impurity_decrease):
+def choose_all_near_max(impurity_decrease, n_samples):
     '''A split chooser that expands every decision tree 
         (i.e. this chooser forces to build whole option tree)'''
 
-    m = np.max(impurity_decrease)*.7
-    if(m == 0.0):
-        raise ValueError("BAD MAX DECREASE")
+    m = np.max(impurity_decrease)*.90
+    best_splits = np.where(impurity_decrease >= m)[0]
 
-    return np.where(impurity_decrease >= m)[0]
+    max_splits = min(max(int(100/n_samples), 3),SPLIT_MAX)
+    # print("best_splits:", len(best_splits), max_splits)
+    if(len(best_splits) > max_splits):
+        best_splits = np.argsort(-impurity_decrease)[:max_splits]
+
+    return best_splits
+
+@njit(split_chooser_sig, nogil=True, fastmath=True, cache=True)
+def choose_dynamic_all_near_max(impurity_decrease, n_samples):
+    '''A split chooser that expands every decision tree 
+        (i.e. this chooser forces to build whole option tree)'''
+    
+    restr = min((.65 + (5.0 / n_samples)), 1.0)
+    # print("dyn: ", n_samples, restr)
+    m = np.max(impurity_decrease)*restr
+    best_splits = np.where(impurity_decrease >= m)[0]
+
+    if(n_samples == 100):
+        print("::", impurity_decrease[np.argsort(-impurity_decrease)[:5]])
+    
+    max_splits = min(max(int(100/n_samples), 3), SPLIT_MAX)
+    # print("best_splits:", len(best_splits), max_splits)
+    if(len(best_splits) > max_splits):
+        best_splits = np.argsort(-impurity_decrease)[:max_splits]
+
+    return best_splits
+
 
 
 split_choosers = {
     "random_max" : choose_random_max,
     "first_max" : choose_first_max,
     "all_max"  : choose_all_max,
-    "all_near_max"  : choose_all_near_max
+    "all_near_max"  : choose_all_near_max,
+    "dyn_all_near_max"  : choose_dynamic_all_near_max
 }
 
 
@@ -336,7 +365,8 @@ def update_nominal_impurities(tree, splitter_context, iterative):
         avg_par_w_y_probs_per_v = np.zeros(y_counts_per_v.shape, dtype=np.float32)
         avg_par_w_v_probs = np.zeros(v_counts.shape, dtype=np.float32)
 
-        lam = 1.0
+        lam = tree.lam_p
+
 
         if(len(sc.node.parents) > 0):
             
@@ -510,6 +540,7 @@ def new_node(locs, tree, sample_inds, y_counts, impurity, is_right):
 
         tree.nodes.append(node)
     else:
+        # print("NODE HIT", node_id)
         node = tree.nodes[node_id]
 
     # print("add PARENT")
@@ -625,7 +656,11 @@ def fit_tree(tree, iterative=False):
     '''
     Refits the tree from its DataStats
     '''
+    # print(f"FIT P={int(tree.lam_p)} L={int(tree.lam_l)} E={int(tree.lam_e)}")
 
+    # If not iterative and tree has split caches then clean them out
+    if(not iterative):
+        clean_split_caches(tree)
 
     context_stack, node_dict =  \
         build_root(tree)
@@ -635,12 +670,15 @@ def fit_tree(tree, iterative=False):
     while(len(context_stack) > 0):
         # print("AZ")
         c = context_stack.pop()
+
+        # print("NODE:", c.node.index, len(c.node.sample_inds), c.node.sample_inds[:10], "..." if len(c.node.sample_inds) > 10 else "")
         
         # This prevents nodes already known to be leaves from being added
         #  to the set of leaves. Not sure why cannot check this outside of loop. 
         if(c.node.ttype == TTYPE_LEAF):
-            print("ALREADY LEAF:", c.node.index)
+            #print("ALREADY LEAF:", c.node.index)
             continue
+
 
         update_nominal_impurities(tree, c, iterative)
         # print("BZ")
@@ -658,7 +696,7 @@ def fit_tree(tree, iterative=False):
             tree.leaves.append(c.node)
             continue
 
-        best_splits = tree.split_chooser(imp_decrease)
+        best_splits = tree.split_chooser(imp_decrease, len(c.node.sample_inds))
 
         # print(c.node.index, "best_splits", best_splits)
 
@@ -708,7 +746,16 @@ def fit_tree(tree, iterative=False):
     # print("DONE")
     # return Tree(nodes,data_stats.u_ys)
 
-            
+@njit(cache=True)
+def clean_split_caches(tree):
+    for node in tree.nodes:
+        L = len(node.nominal_split_cache_ptrs)
+        for i in range(L):
+            ptr = node.nominal_split_cache_ptrs[i]
+            if(ptr != 0):
+                _decref_pointer(ptr)
+                node.nominal_split_cache_ptrs[i] = 0
+
 # ---------------------------------------------------------------------------
 # : predict()
 
@@ -1265,6 +1312,9 @@ class TreeClassifier(object):
             # Optional userprovided function for mapping key value pairs back to their original
             #  values before they were vectorized 
             inv_mapper=None, 
+            lam_p = 0.0,
+            lam_e = 0.0,
+            lam_l = 0.0,
             **kwargs):
         '''
         TODO: Finish docs
@@ -1293,7 +1343,8 @@ class TreeClassifier(object):
             _get_wrapper_address(split_choosers[split_choice], split_chooser_sig),
             _get_wrapper_address(pred_choosers[pred_choice], pred_chooser_sig),
             _get_wrapper_address(impurity_funcs[impurity_func], impurity_func_sig),
-            cache_nodes
+            cache_nodes,
+            lam_p, lam_l, lam_e,
         )
 
     def gen_tree_type(self, ifit_enabled):
@@ -1431,6 +1482,13 @@ class TreeClassifier(object):
                 conj.append(lit)
             py_opt_conjs.append(conj)
         return py_opt_conjs
+
+    def __del__(self):
+        try:
+            clean_split_caches(self.tree)
+        except Exception as e:
+            print(e)
+            pass
 
     
     # def as_conditions(self,positive_class=None, only_pure_leaves=False):

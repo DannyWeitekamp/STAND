@@ -90,7 +90,7 @@ STAND, STANDTypeTemplate = define_structref_template("STAND", stand_fields, defi
 
 class STANDClassifier(object):
     def __init__(self, positive_class=1, **kwargs):
-        kwargs['split_choice'] = kwargs.get('split_choice', 'all_max')
+        kwargs['split_choice'] = kwargs.get('split_choice', 'dyn_all_near_max')
         # print("SPLIT CHOICE:", kwargs['split_choice'])
         self.op_tree_classifier = TreeClassifier(preset_type='option_tree', **kwargs)
         self.op_tree = self.op_tree_classifier.tree
@@ -183,7 +183,7 @@ def calc_invariant_nom_mask(X_nom):
 def calc_spec_ext_prob(tree, leaf, enc_split):
     is_cont, negated, split, val = decode_split(enc_split)
 
-    lam = 0.0
+    lam = tree.lam_e
     n_samples = len(leaf.sample_inds)
     avg_par_v_prob = 0.0 #np.zeros(v_counts.shape, dtype=np.float32)
 
@@ -325,7 +325,7 @@ def stand_predict_prob(stand, X_nom, X_cont):
     
     y_uvs = tree.data_stats.u_ys
 
-    lam = 0.0
+    lam = tree.lam_l
 
     # out = np.zeros((L,len(y_uvs)),dtype=prob_item_type)
     probs = np.zeros((L,len(y_uvs)),dtype=np.float64)

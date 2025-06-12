@@ -171,6 +171,8 @@ def SplitterContext_dtor(sc):
             _decref_pointer(ptr)
 
 
+
+
 #### Tree ####
 
 i8_arr = i8[::1]
@@ -189,24 +191,25 @@ tree_fields = [
     ('data_stats', DataStatsType),
 
     # Decides which feature(s) to split on based on an array of impurities.
-    ('split_chooser', types.FunctionType(i8[::1](f8[::1]))),
+    ('split_chooser', types.FunctionType(i8[::1](f8[::1], i8))),
 
     # Decides which class to predict based on a list of leaves that an example falls into.
     ('pred_chooser', types.FunctionType(i8(ListType(TreeNodeType)))),
 
     # Calculates the impurity of a distribution of classes selected by a node.
     ('impurity_func', types.FunctionType(f8(f4[:]))),
+    
+    # Regularization terms for hierarchical shrink
+    ('lam_p', f8), # Probabilities
+    ('lam_e', f8), # Specific Extensions
+    ('lam_l', f8), # Leaves 
 
     # Whether or not nodes should be cached
     ('cache_nodes', types.boolean),    
 
     # Whether or not iterative fitting is enabled
+    # ('ifit_enabled', literal(True)),
     ('ifit_enabled', literal(True)),
-
-    # Regularization terms for hierarchical shrink
-    ('lam_p', f8), # Probabilities
-    ('lam_e', f8), # Specific Extensions
-    ('lam_l', f8), # Leaves 
 ]
 
 Tree, TreeTypeTemplate = define_structref_template("Tree", tree_fields, define_constructor=False)
@@ -215,7 +218,7 @@ Tree, TreeTypeTemplate = define_structref_template("Tree", tree_fields, define_c
 u8_arr = u8[::1]
 
 impurity_func_sig = f8(f4[:])
-split_chooser_sig = i8[::1](f8[::1])
+split_chooser_sig = i8[::1](f8[::1], i8)
 pred_chooser_sig = i8(ListType(TreeNodeType))
 
 impurity_func_type = types.FunctionType(impurity_func_sig)
@@ -225,7 +228,7 @@ pred_chooser_type = types.FunctionType(pred_chooser_sig)
 
 @njit(cache=True)
 def Tree_ctor(tree_type, split_chooser_addr, pred_chooser_addr,
-         impurity_func_addr, cache_nodes):
+         impurity_func_addr, cache_nodes, lam_p, lam_l, lam_e):
     st = new(tree_type)
     st.nodes = List.empty_list(TreeNodeType)
     st.leaves = List.empty_list(TreeNodeType)
@@ -237,7 +240,11 @@ def Tree_ctor(tree_type, split_chooser_addr, pred_chooser_addr,
     st.split_chooser = _func_from_address(split_chooser_type, split_chooser_addr)
     st.pred_chooser = _func_from_address(pred_chooser_type, pred_chooser_addr)
     
-    st.cache_nodes = cache_nodes    
+    st.cache_nodes = cache_nodes 
+
+    st.lam_p = lam_p   
+    st.lam_l = lam_l   
+    st.lam_e = lam_e   
     return st
     
 @njit(cache=True)

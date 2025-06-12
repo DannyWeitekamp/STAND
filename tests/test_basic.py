@@ -44,6 +44,7 @@ X,y = Xy[:,:-1], Xy[:,-1]
 # y = np.array([0, 1, 1, 1, 1, 0, 0, 0], dtype=np.int32)
 
 stand.fit(X,None,y)
+stand.fit(X,None,y)
 
 print(stand.__str__(leaf_inds=True, node_inds=True))
 
