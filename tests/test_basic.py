@@ -3,7 +3,11 @@ import numpy as np
 
 np.set_printoptions(precision=3)
 
-stand = STANDClassifier(split_choice="all_near_max")
+stand = STANDClassifier(
+   lam_p=1.0,
+   lam_e=1.0,
+   split_choice="all_near_max"
+   )
 
 
 # Xy = np.array([
@@ -60,6 +64,15 @@ print("--------------------------")
 # A case where it is distributed across a positive and negative leaf
 stand.predict_prob(np.array(
    [[1, 1, 1, 1, 1, 1, 0, 1]] # similar to 3 w/ [0] and [3] flipped
+   ,dtype=np.int32
+   ),None
+)
+
+print("--------------------------")
+
+# A case where it is distributed across a positive and negative leaf
+stand.predict_prob(np.array(
+   [[0, 1, 0, 1, 1, 1, 0, 1, 1]] # similar to 3 w/ [0] and [3] flipped
    ,dtype=np.int32
    ),None
 )

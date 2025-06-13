@@ -114,7 +114,17 @@ class STANDClassifier(object):
 
     # TODO : ADD SPECIFIC CHECK
     def predict(self, X_nom, X_cont):
-        return self.op_tree_classifier.predict(X_nom, X_cont)
+        if(self.stand is None): raise RuntimeError("STANDClassifier must be fit before predict_prob() is called.")
+        if(X_nom is None): X_nom = np.empty((0,0), dtype=np.int32)
+        if(X_cont is None): X_cont = np.empty((0,0), dtype=np.float32)
+        X_nom = X_nom.astype(np.int32)
+        X_cont = X_cont.astype(np.float32)
+
+        probs, labels = stand_predict_prob(self.stand, X_nom, X_cont)
+        # print(probs)
+        # print(probs.shape)
+        return labels[np.argmax(probs, axis=-1)] #self.op_tree_classifier.predict(X_nom, X_cont)
+        # return self.op_tree_classifier.predict(X_nom, X_cont)
 
     def predict_prob(self, X_nom, X_cont):
         if(self.stand is None): raise RuntimeError("STANDClassifier must be fit before predict_prob() is called.")
@@ -180,12 +190,13 @@ def calc_invariant_nom_mask(X_nom):
     return nom_invariants
 
 @njit(cache=True)
-def calc_spec_ext_prob(tree, leaf, enc_split):
+def calc_spec_ext_weight(tree, leaf, enc_split):
     is_cont, negated, split, val = decode_split(enc_split)
 
     lam = tree.lam_e
     n_samples = len(leaf.sample_inds)
     avg_par_v_prob = 0.0 #np.zeros(v_counts.shape, dtype=np.float32)
+
 
     # if(n_samples == 0):
     #     print(str_tree(tree))
@@ -196,7 +207,11 @@ def calc_spec_ext_prob(tree, leaf, enc_split):
     if(len(leaf.parents) > 0):
         for i, (p_node_ind, enc_split) in enumerate(leaf.parents):
             p_node = tree.nodes[p_node_ind]
-            p_w = 1.0 / (1.0+lam/len(p_node.sample_inds))
+
+            if(p_node_ind == 0):
+                p_w = 1.0
+            else:
+                p_w = 1.0 / (1.0 + lam/len(p_node.sample_inds))
 
             par_cache_ptr = p_node.nominal_split_cache_ptrs[split]
             par_spl_c = _struct_from_pointer(NominalSplitCacheType, par_cache_ptr)
@@ -204,14 +219,18 @@ def calc_spec_ext_prob(tree, leaf, enc_split):
             # par_tot = np.sum(par_spl_c.par_w_v_probs)
 
             # print("A")
-            # print("A", leaf.index, p_node_ind, ":", par_spl_c.par_w_v_probs[val])
+            
             avg_par_v_prob += par_spl_c.par_w_v_probs[val] #/ par_tot if par_tot != 0.0 else 0.0
             # print("B")
-            # print("B", p_w, self_w, par_spl_c.w_v_probs[val], np.sum(par_spl_c.w_v_probs))
+            
             avg_par_v_prob += (p_w-self_w) * par_spl_c.w_v_probs[val] #/ np.sum(par_spl_c.w_v_counts))
 
             # if(split == 7):
+            #     print("-----", split, "==", val, ":", n_samples, len(p_node.sample_inds), self_w, p_w, (p_w-self_w))
+            #     print(f"NODE={leaf.index}", f"PAR={p_node_ind}", ":", par_spl_c.par_w_v_probs[val])
+            #     print("B", p_w, self_w, par_spl_c.w_v_probs[val], np.sum(par_spl_c.w_v_probs))
             #     print("avg_par_v_prob @ 7:", avg_par_v_prob)
+
             # print("C")
         
         # print("D")
@@ -221,7 +240,8 @@ def calc_spec_ext_prob(tree, leaf, enc_split):
         
 
         w_v_prob = (avg_par_v_prob + self_w)
-        # print("w_v_prob:", w_v_prob)
+        # if(split == 7):
+        #     print("w_v_prob:", w_v_prob)
         # if(split == 7):
         #     print("avg_par_v_prob @ 7:", w_v_prob)
         # if(split == 2):
@@ -230,7 +250,9 @@ def calc_spec_ext_prob(tree, leaf, enc_split):
     else:
         w_v_prob = 1.0
 
-    return w_v_prob
+
+
+    return (n_samples + .5 + w_v_prob) / (n_samples + 2)
 
 
 
@@ -256,7 +278,7 @@ def fit_spec_ext(stand):
 
         L = np.sum(nom_invt_mask, dtype=np.int64)
         spec_ext = np.empty(L, dtype=np.uint64)
-        spec_probs = np.empty(L, dtype=np.float32)
+        spec_ws = np.empty(L, dtype=np.float32)
 
         branch_splits = get_branch_splits(tree, leaf)
         # Build "spec_ext" the conditions for the specific extention of "leaf". 
@@ -264,20 +286,20 @@ def fit_spec_ext(stand):
         #   that are not present in any branch of "leaf". Decrement any 
         #   repetitions found in the these branches.
         c = 0
-        total_prob = f4(0.0)
+        total_w = f4(0.0)
         ext_size = u4(0)
         for split, is_invariant in enumerate(nom_invt_mask):
             if(is_invariant):
                 val = x_nom_0[split]
                 spec_ext[c] = enc_split = encode_split(0,0,i4(split),val) 
                 
-                prob = calc_spec_ext_prob(tree, leaf, enc_split)
-                spec_probs[c] = prob
+                ext_w = calc_spec_ext_weight(tree, leaf, enc_split)
+                spec_ws[c] = ext_w
                 c += 1
 
                 if(enc_split not in branch_splits):
                     ext_size += 1
-                    total_prob += prob
+                    total_w += ext_w
 
         # for split_enc in branch_splits:
         #     is_cont, negated, split, val = decode_split(split_enc)
@@ -286,7 +308,7 @@ def fit_spec_ext(stand):
 
         # Insert extension and size into "spec_exts" dict of the STAND structref
         assert ext_size >= 0 and ext_size <= L
-        stand.spec_exts[leaf.index] = (spec_ext, spec_probs, u4(ext_size), f4(total_prob))
+        stand.spec_exts[leaf.index] = (spec_ext, spec_ws, u4(ext_size), f4(total_w))
 
 @njit(cache=True)
 def eval_specific_extension(stand, leaf, x_nom, x_cont):
@@ -295,12 +317,12 @@ def eval_specific_extension(stand, leaf, x_nom, x_cont):
     if(leaf.index not in stand.spec_exts):
         return 0, 0, 0, 0.0, 0.0
 
-    spec_ext, ext_probs, ext_size, ext_weight = stand.spec_exts[leaf.index]
+    spec_ext, ext_ws, ext_size, ext_weight = stand.spec_exts[leaf.index]
     n_ext_matches = 0
     n_ext_fails = 0
     w_ext_matches = 0.0
     w_ext_fails = 0.0
-    for enc_split, prob in zip(spec_ext, ext_probs):
+    for enc_split, ext_w in zip(spec_ext, ext_ws):
         is_cont, negated, split, val = decode_split(enc_split)
         if(is_cont):
             # Not implemented
@@ -309,11 +331,13 @@ def eval_specific_extension(stand, leaf, x_nom, x_cont):
             mapped_val = nom_v_maps[split].get(x_nom[split],-1)
             if(mapped_val == val):
                 n_ext_matches += 1
-                w_ext_matches += 1.0-prob
+                w_ext_matches += np.log(ext_w)
+                # w_ext_fails += np.log(1.0-ext_w)
             else:
                 n_ext_fails += 1
-                w_ext_fails += 1.0-prob
-    return ext_size, n_ext_matches, n_ext_fails, w_ext_matches, w_ext_fails
+                w_ext_matches += np.log(1.0-ext_w)
+                # w_ext_fails += np.log(ext_w)
+    return ext_size, n_ext_matches, n_ext_fails, np.exp(w_ext_matches), w_ext_fails
 
 @njit(cache=True)
 def stand_predict_prob(stand, X_nom, X_cont):
@@ -331,36 +355,60 @@ def stand_predict_prob(stand, X_nom, X_cont):
     probs = np.zeros((L,len(y_uvs)),dtype=np.float64)
     # For each sample i, filter it into leaves and compute
     #  the probability of correctness on the basis of the specific extension 
+
     for i in range(L):
         x_nom, x_cont = X_nom[i], X_cont[i]
         leaves = filter_leaves(tree, x_nom, x_cont)
 
         n_leaves = np.zeros(len(y_uvs), dtype=np.int64)
         tot_leaf_weight = np.zeros(len(y_uvs), dtype=np.float32)
+        tot_w_ext_prob = np.zeros(len(y_uvs), dtype=np.float32)
+        tot_ext_prob = np.zeros(len(y_uvs), dtype=np.float32)
+        # tot_y = np.zeros(len(y_uvs), dtype=np.int32)
         for leaf in leaves:
-            spec_ext, ext_probs, L, ext_weight = stand.spec_exts[leaf.index]
+            spec_ext, ext_ws, L, ext_weight = stand.spec_exts[leaf.index]
             n_samples = len(leaf.sample_inds)
             leaf_weight = 1/(1.0+lam/n_samples)
             
             # print("LEAF:", leaf.index, "L=", len(leaf.sample_inds))
-            # for enc_split, prob in zip(spec_ext, ext_probs):
+            # for enc_split, ext_w in zip(spec_ext, ext_ws):
             #     is_cont, negated, split, val = decode_split(enc_split)
-            #     print(f"[{split}]=={val}", prob)
+            #     print(f"[{split}]=={val}", ext_w)
 
             y = np.argmax(leaf.counts)
             ext_size, n_ext_matches, n_ext_fails, w_ext_matches, w_ext_fails = (
                 eval_specific_extension(stand, leaf, x_nom, x_cont))
-            ext_prob = w_ext_matches / (w_ext_matches+w_ext_fails) if (w_ext_matches+w_ext_fails) > 0.0 else 1.0
+            # ext_prob = w_ext_matches / (w_ext_matches+w_ext_fails) if (w_ext_matches+w_ext_fails) > 0.0 else 1.0
+            ext_prob = w_ext_matches #/ (w_ext_matches + w_ext_fails) if (w_ext_matches + w_ext_fails) > 0.0 else 1.0
+            tot_w_ext_prob[y] += ext_prob
+            tot_ext_prob[y] += n_ext_matches / (n_ext_matches + n_ext_fails)
+
             probs[i][y] += leaf_weight * ext_prob
             # probs[i][y] += n_ext_matches/(n_ext_matches+n_ext_fails) if ext_size > 0 else 1.0
             n_leaves[y] += 1
             tot_leaf_weight[y] += leaf_weight
+            # print(f"LEAF: {y} {leaf.index} {n_samples}\t", ext_prob, w_ext_matches, w_ext_fails)
             # print(i, y, ":", w_ext_matches/(w_ext_matches+w_ext_fails), w_ext_matches, w_ext_fails)
 
-        for j, y_class in enumerate(y_uvs):
-            if(n_leaves[j] > 0):
-                probs[i][j] /= tot_leaf_weight[j]
-    # print("PROBS:", probs)
+        # for j, y_class in enumerate(y_uvs):
+            # if(n_leaves[j] > 0):
+                # probs[i][j] /= tot_leaf_weight[j]
+                # probs[i][j] /= np.sum(tot_leaf_weight)
+                # probs[i][j] /= np.sum(tot_leaf_weight)
+
+        # probs[i] = probs[i] / n_leaves
+        probs[i] = probs[i] / np.sum(probs[i]) # Normalize
+
+        # probs[i] = (n_leaves / np.sum(n_leaves))
+
+        # print("PROBS:", probs[i])
+        # print("N_LEAVES:", n_leaves)
+        
+        # print("WEXTP:", tot_w_ext_prob / n_leaves)
+        # print(" EXTP:", tot_ext_prob / n_leaves)
+
+    # b_ind = np.argmax(probs)
+
 
     return probs, y_uvs
 

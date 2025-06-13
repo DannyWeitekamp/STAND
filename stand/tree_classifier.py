@@ -87,7 +87,7 @@ def choose_all_near_max(impurity_decrease, n_samples):
     '''A split chooser that expands every decision tree 
         (i.e. this chooser forces to build whole option tree)'''
 
-    m = np.max(impurity_decrease)*.90
+    m = np.max(impurity_decrease)*.70
     best_splits = np.where(impurity_decrease >= m)[0]
 
     max_splits = min(max(int(100/n_samples), 3),SPLIT_MAX)
@@ -365,7 +365,7 @@ def update_nominal_impurities(tree, splitter_context, iterative):
         avg_par_w_y_probs_per_v = np.zeros(y_counts_per_v.shape, dtype=np.float32)
         avg_par_w_v_probs = np.zeros(v_counts.shape, dtype=np.float32)
 
-        lam = tree.lam_p
+        lam = 1.0#tree.lam_p
 
 
         if(len(sc.node.parents) > 0):
@@ -377,7 +377,11 @@ def update_nominal_impurities(tree, splitter_context, iterative):
                 
                 p_node = tree.nodes[p_node_ind]
                 p_len = len(p_node.sample_inds)
-                p_w = 1.0/(1.0+lam/p_len)
+                if(p_node_ind == 0):
+                    p_w = 1.0
+                else:
+                    p_w = 1.0/(1.0+lam/p_len)
+
 
                 par_cache_ptr = p_node.nominal_split_cache_ptrs[j]
                 par_spl_c = _struct_from_pointer(NominalSplitCacheType, par_cache_ptr)
@@ -409,6 +413,7 @@ def update_nominal_impurities(tree, splitter_context, iterative):
             split_cache.w_y_probs_per_v = (y_counts_per_v / n_samples).astype(np.float32)
             split_cache.w_v_probs = (v_counts / n_samples).astype(np.float32)
             # print("IS ROOT", self_w)
+            # avg_par_w_v_probs = 
 
         # print("E")
 
@@ -916,6 +921,7 @@ def predict(tree, X_nom, X_cont):
         # In an option tree the leaf that the instance ends up  is ambiguous 
         #   so we need a subroutine for choosing how to classify the instance 
         #   from among the leaves it is filtered into. 
+        # print("N_LEAVES:", len(leaves))
         if(len(leaves) > 0):
             out_i = tree.pred_chooser(leaves)
             out_i = y_uvs[out_i]
