@@ -383,6 +383,7 @@ def stand_predict_y_density(stand, X_nom, X_cont):
         tot_leaf_weight = np.zeros(len(y_uvs), dtype=np.float32)
         tot_w_ext_prob = np.zeros(len(y_uvs), dtype=np.float32)
         tot_exts = np.zeros(len(y_uvs), dtype=np.float32)
+        tot_samples = np.zeros(len(y_uvs), dtype=np.float32)
         leaf_density = np.zeros(len(y_uvs), dtype=np.float32)
 
         zz_leaf_probs = np.zeros((len(leaves), len(y_uvs)), dtype=np.float32)
@@ -391,6 +392,8 @@ def stand_predict_y_density(stand, X_nom, X_cont):
             spec_ext, ext_ws, L, ext_weight = stand.spec_exts[leaf.index]
             n_samples = len(leaf.sample_inds)
             leaf_weight = 1/(1.0+lam/n_samples)
+
+
             
             # print("LEAF:", leaf.index, "L=", len(leaf.sample_inds), leaf_weight)
             # for enc_split, ext_w in zip(spec_ext, ext_ws):
@@ -398,6 +401,8 @@ def stand_predict_y_density(stand, X_nom, X_cont):
             #     print(f"[{split}]=={val}", ext_w)
 
             y = np.argmax(leaf.counts)
+
+            tot_samples[y] += n_samples
             ext_size, n_ext_matches, n_ext_fails, w_ext_matches, w_ext_fails = (
                 eval_specific_extension(stand, leaf, x_nom, x_cont))
             # ext_prob = w_ext_matches / (w_ext_matches+w_ext_fails) if (w_ext_matches+w_ext_fails) > 0.0 else 1.0
@@ -419,8 +424,8 @@ def stand_predict_y_density(stand, X_nom, X_cont):
         for j, y_class in enumerate(y_uvs):
             if(n_leaves[j] > 0):
                 # probs[i][j] /= tot_leaf_weight[j]
-                probs[i][j] /= tot_exts[j]
-                y_density[i][j] / tot_exts[j]
+                probs[i][j] /= tot_samples[j]
+                y_density[i][j] / tot_samples[j]
                 # probs[i][j] /= np.sum(tot_leaf_weight)
                 # probs[i][j] /= np.sum(tot_leaf_weight)
 
