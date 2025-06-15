@@ -107,8 +107,8 @@ def choose_dynamic_all_near_max(impurity_decrease, n_samples):
     m = np.max(impurity_decrease)*restr
     best_splits = np.where(impurity_decrease >= m)[0]
 
-    if(n_samples == 100):
-        print("::", impurity_decrease[np.argsort(-impurity_decrease)[:5]])
+    # if(n_samples == 100):
+    #     print("::", impurity_decrease[np.argsort(-impurity_decrease)[:5]])
     
     max_splits = min(max(int(100/n_samples), 3), SPLIT_MAX)
     # print("best_splits:", len(best_splits), max_splits)
@@ -904,7 +904,7 @@ def predict_prob(tree, X_nom, X_cont):
 
 
 @njit(cache=True)
-def predict(tree, X_nom, X_cont):
+def predict_max_leaves(tree, X_nom, X_cont):
     '''Predicts the class associated with an unlabelled sample using a fitted 
         decision/option tree'''
     
@@ -1423,7 +1423,7 @@ class TreeClassifier(object):
         if(X_cont is None): X_cont = np.empty((0,0), dtype=np.float32)
         X_nom = X_nom.astype(np.int32)
         X_cont = X_cont.astype(np.float32)
-        return predict(self.tree, X_nom, X_cont)
+        return predict_max_leaves(self.tree, X_nom, X_cont)
 
     def predict_prob(self, X_nom, X_cont, positive_class=None):
         if(self.tree is None): raise RuntimeError("TreeClassifier must be fit before predict() is called.")

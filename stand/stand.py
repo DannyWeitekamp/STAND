@@ -89,13 +89,15 @@ STAND, STANDTypeTemplate = define_structref_template("STAND", stand_fields, defi
 
 
 class STANDClassifier(object):
-    def __init__(self, positive_class=1, **kwargs):
+    def __init__(self, positive_class=1, pred_kind="max_leaves", **kwargs):
         kwargs['split_choice'] = kwargs.get('split_choice', 'dyn_all_near_max')
         # print("SPLIT CHOICE:", kwargs['split_choice'])
+        self.pred_kind = pred_kind
         self.op_tree_classifier = TreeClassifier(preset_type='option_tree', **kwargs)
         self.op_tree = self.op_tree_classifier.tree
         self.stand_type = self.gen_stand_type(self.op_tree_classifier.tree_type)
         self.stand = STAND_ctor(self.stand_type, self.op_tree, positive_class)
+
 
     def gen_stand_type(self, tree_type):
         sf = [('op_tree', tree_type), *stand_fields[1:]]
@@ -120,11 +122,17 @@ class STANDClassifier(object):
         X_nom = X_nom.astype(np.int32)
         X_cont = X_cont.astype(np.float32)
 
-        probs, labels = stand_predict_prob(self.stand, X_nom, X_cont)
-        # print(probs)
-        # print(probs.shape)
-        return labels[np.argmax(probs, axis=-1)] #self.op_tree_classifier.predict(X_nom, X_cont)
-        # return self.op_tree_classifier.predict(X_nom, X_cont)
+        if(self.pred_kind == "prob" or self.pred_kind == "density"):
+            y_density, probs = stand_predict_y_density(self.stand, X_nom, X_cont)
+            probs, labels = stand_predict_prob(self.stand, X_nom, X_cont)
+            # print(probs)
+            # print(probs.shape)
+            if(self.pred_kind == "density"):
+                return labels[np.argmax(y_density, axis=-1)] #self.op_tree_classifier.predict(X_nom, X_cont)
+            else:
+                return labels[np.argmax(probs, axis=-1)] #self.op_tree_classifier.predict(X_nom, X_cont)
+        else:
+            return self.op_tree_classifier.predict(X_nom, X_cont)
 
     def predict_prob(self, X_nom, X_cont):
         if(self.stand is None): raise RuntimeError("STANDClassifier must be fit before predict_prob() is called.")
@@ -204,6 +212,8 @@ def calc_spec_ext_weight(tree, leaf, enc_split):
     self_w = 1.0 / (1.0 + lam / n_samples)
 
     # print()
+    y = np.argmax(leaf.counts)
+
     if(len(leaf.parents) > 0):
         for i, (p_node_ind, enc_split) in enumerate(leaf.parents):
             p_node = tree.nodes[p_node_ind]
@@ -219,11 +229,17 @@ def calc_spec_ext_weight(tree, leaf, enc_split):
             # par_tot = np.sum(par_spl_c.par_w_v_probs)
 
             # print("A")
-            
-            avg_par_v_prob += par_spl_c.par_w_v_probs[val] #/ par_tot if par_tot != 0.0 else 0.0
-            # print("B")
-            
-            avg_par_v_prob += (p_w-self_w) * par_spl_c.w_v_probs[val] #/ np.sum(par_spl_c.w_v_counts))
+            # --- OLD ----
+            # avg_par_v_prob += par_spl_c.par_w_v_probs[val] #/ par_tot if par_tot != 0.0 else 0.0            
+            # avg_par_v_prob += (p_w-self_w) * par_spl_c.w_v_probs[val] #/ np.sum(par_spl_c.w_v_counts))
+            # 
+            #######
+
+            # Note: This has a slight benefit to productive monotonicity over "w_v_probs" 
+            avg_par_v_prob += par_spl_c.par_w_y_probs_per_v[val, y] #/ par_tot if par_tot != 0.0 else 0.0            
+            avg_par_v_prob += (p_w-self_w) * par_spl_c.w_y_probs_per_v[val, y] #/ np.sum(par_spl_c.w_v_counts))
+
+            ######
 
             # if(split == 7):
             #     print("-----", split, "==", val, ":", n_samples, len(p_node.sample_inds), self_w, p_w, (p_w-self_w))
@@ -331,16 +347,16 @@ def eval_specific_extension(stand, leaf, x_nom, x_cont):
             mapped_val = nom_v_maps[split].get(x_nom[split],-1)
             if(mapped_val == val):
                 n_ext_matches += 1
-                w_ext_matches += np.log(ext_w)
-                # w_ext_fails += np.log(1.0-ext_w)
+                w_ext_matches += ext_w
+                w_ext_fails += 1.0-ext_w
             else:
                 n_ext_fails += 1
-                w_ext_matches += np.log(1.0-ext_w)
-                # w_ext_fails += np.log(ext_w)
-    return ext_size, n_ext_matches, n_ext_fails, np.exp(w_ext_matches), w_ext_fails
+                w_ext_matches += 1.0-ext_w
+                w_ext_fails += ext_w
+    return ext_size, n_ext_matches, n_ext_fails, w_ext_matches, w_ext_fails
 
 @njit(cache=True)
-def stand_predict_prob(stand, X_nom, X_cont):
+def stand_predict_y_density(stand, X_nom, X_cont):
     # NOTE: Should I really call this a probability? It's not a normalized one.
     tree = stand.op_tree
     L = max(len(X_nom),len(X_cont))
@@ -353,6 +369,9 @@ def stand_predict_prob(stand, X_nom, X_cont):
 
     # out = np.zeros((L,len(y_uvs)),dtype=prob_item_type)
     probs = np.zeros((L,len(y_uvs)),dtype=np.float64)
+    y_density = np.zeros((L,len(y_uvs)),dtype=np.float64)
+    tot_leaf_weight = np.zeros((L,len(y_uvs)),dtype=np.float64)
+    zz_max = np.zeros((L,len(y_uvs)),dtype=np.float64)
     # For each sample i, filter it into leaves and compute
     #  the probability of correctness on the basis of the specific extension 
 
@@ -363,14 +382,17 @@ def stand_predict_prob(stand, X_nom, X_cont):
         n_leaves = np.zeros(len(y_uvs), dtype=np.int64)
         tot_leaf_weight = np.zeros(len(y_uvs), dtype=np.float32)
         tot_w_ext_prob = np.zeros(len(y_uvs), dtype=np.float32)
-        tot_ext_prob = np.zeros(len(y_uvs), dtype=np.float32)
+        tot_exts = np.zeros(len(y_uvs), dtype=np.float32)
+        leaf_density = np.zeros(len(y_uvs), dtype=np.float32)
+
+        zz_leaf_probs = np.zeros((len(leaves), len(y_uvs)), dtype=np.float32)
         # tot_y = np.zeros(len(y_uvs), dtype=np.int32)
-        for leaf in leaves:
+        for k, leaf in enumerate(leaves):
             spec_ext, ext_ws, L, ext_weight = stand.spec_exts[leaf.index]
             n_samples = len(leaf.sample_inds)
             leaf_weight = 1/(1.0+lam/n_samples)
             
-            # print("LEAF:", leaf.index, "L=", len(leaf.sample_inds))
+            # print("LEAF:", leaf.index, "L=", len(leaf.sample_inds), leaf_weight)
             # for enc_split, ext_w in zip(spec_ext, ext_ws):
             #     is_cont, negated, split, val = decode_split(enc_split)
             #     print(f"[{split}]=={val}", ext_w)
@@ -379,37 +401,78 @@ def stand_predict_prob(stand, X_nom, X_cont):
             ext_size, n_ext_matches, n_ext_fails, w_ext_matches, w_ext_fails = (
                 eval_specific_extension(stand, leaf, x_nom, x_cont))
             # ext_prob = w_ext_matches / (w_ext_matches+w_ext_fails) if (w_ext_matches+w_ext_fails) > 0.0 else 1.0
-            ext_prob = w_ext_matches #/ (w_ext_matches + w_ext_fails) if (w_ext_matches + w_ext_fails) > 0.0 else 1.0
+            ext_prob = w_ext_matches / (n_ext_matches + n_ext_fails) if (n_ext_matches + n_ext_fails) > 0.0 else 1.0
             tot_w_ext_prob[y] += ext_prob
-            tot_ext_prob[y] += n_ext_matches / (n_ext_matches + n_ext_fails)
+            tot_exts[y] += (n_ext_matches + n_ext_fails)
+            # tot_exts[y] += n_ext_matches #/ (n_ext_matches + n_ext_fails)
 
-            probs[i][y] += leaf_weight * ext_prob
+            y_density[i][y] += leaf_weight * w_ext_matches
+            probs[i][y]     += leaf_weight * ext_prob
+            zz_leaf_probs[k][y] = leaf_weight* ext_prob
             # probs[i][y] += n_ext_matches/(n_ext_matches+n_ext_fails) if ext_size > 0 else 1.0
             n_leaves[y] += 1
             tot_leaf_weight[y] += leaf_weight
             # print(f"LEAF: {y} {leaf.index} {n_samples}\t", ext_prob, w_ext_matches, w_ext_fails)
             # print(i, y, ":", w_ext_matches/(w_ext_matches+w_ext_fails), w_ext_matches, w_ext_fails)
 
-        # for j, y_class in enumerate(y_uvs):
-            # if(n_leaves[j] > 0):
+
+        for j, y_class in enumerate(y_uvs):
+            if(n_leaves[j] > 0):
                 # probs[i][j] /= tot_leaf_weight[j]
+                probs[i][j] /= tot_exts[j]
+                y_density[i][j] / tot_exts[j]
                 # probs[i][j] /= np.sum(tot_leaf_weight)
                 # probs[i][j] /= np.sum(tot_leaf_weight)
+
+
 
         # probs[i] = probs[i] / n_leaves
-        probs[i] = probs[i] / np.sum(probs[i]) # Normalize
+
+        # probs[i] = probs[i] / tot_leaf_weight # Normalize
+        # probs[i] = probs[i] / np.sum(probs[i]) # Normalize
+        # probs[i] = probs[i] / tot_exts # Normalize
 
         # probs[i] = (n_leaves / np.sum(n_leaves))
+        # if(np.sum(n_leaves != 0) > 1):
 
-        # print("PROBS:", probs[i])
-        # print("N_LEAVES:", n_leaves)
+        #################
+        # print()
+        # zz_max = np.empty((1,len(y_uvs)), dtype=np.float32)
+        for j in range(len(y_uvs)):
+            zz_max[i,j] = np.max(zz_leaf_probs[:,j])
+            # print("BEST:", i, -np.sort(-zz_leaf_probs[:,i][zz_leaf_probs[:,i]>=zz_max[0,i]*.9]))
+
+        # probs[i] = np.sum(zz_leaf_probs*zz_leaf_probs, axis=0)/np.sum(zz_leaf_probs, axis=0)
+        # probs[i] = np.sum(probs[i]*probs[i], axis=0)/np.sum(probs[i], axis=0)
+
+        # best_probs = 
+        # print(best_probs)
+
+
+
+        #################
+
+
+        
+        # print("SQR_PROBS:", np.sum(zz_leaf_probs*zz_leaf_probs, axis=0)/np.sum(zz_leaf_probs, axis=0))
+        # print("MAX_PROBS:", np.max(zz_leaf_probs[:,0]), np.max(zz_leaf_probs[:,1]))
+        # print("PROBS    :", probs[i])
+        # print("N_LEAVES :", n_leaves)
+
         
         # print("WEXTP:", tot_w_ext_prob / n_leaves)
-        # print(" EXTP:", tot_ext_prob / n_leaves)
+        # print(" EXTP:", tot_exts / n_leaves)
 
     # b_ind = np.argmax(probs)
 
+    # return y_density, probs
+    return y_density, zz_max
 
+@njit(cache=True)
+def stand_predict_prob(stand, X_nom, X_cont):
+    tree = stand.op_tree
+    y_uvs = tree.data_stats.u_ys
+    y_density, probs = stand_predict_y_density(stand, X_nom, X_cont)
     return probs, y_uvs
 
 @njit(cache=True)
