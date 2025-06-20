@@ -102,7 +102,7 @@ def choose_dynamic_all_near_max(impurity_decrease, n_samples):
     '''A split chooser that expands every decision tree 
         (i.e. this chooser forces to build whole option tree)'''
     
-    restr = min((.85 + (1.5 / n_samples)), 1.0)
+    restr = min(.7 + .3 * (n_samples/50) , 1.0)
     # print("dyn: ", n_samples, restr)
     m = np.max(impurity_decrease)*restr
     best_splits = np.where(impurity_decrease >= m)[0]
@@ -111,6 +111,8 @@ def choose_dynamic_all_near_max(impurity_decrease, n_samples):
     #     print("::", impurity_decrease[np.argsort(-impurity_decrease)[:5]])
     
     max_splits = min(max(int(100/n_samples), 3), SPLIT_MAX)
+    
+    
     # print("best_splits:", len(best_splits), max_splits)
     if(len(best_splits) > max_splits):
         best_splits = np.argsort(-impurity_decrease)[:max_splits]
