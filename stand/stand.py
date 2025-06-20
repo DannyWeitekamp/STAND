@@ -368,6 +368,7 @@ def stand_predict_y_density(stand, X_nom, X_cont):
     lam = tree.lam_l
 
     # out = np.zeros((L,len(y_uvs)),dtype=prob_item_type)
+    out_probs = np.zeros((L,len(y_uvs)),dtype=np.float64)
     probs = np.zeros((L,len(y_uvs)),dtype=np.float64)
     y_density = np.zeros((L,len(y_uvs)),dtype=np.float64)
     tot_leaf_weight = np.zeros((L,len(y_uvs)),dtype=np.float64)
@@ -375,23 +376,32 @@ def stand_predict_y_density(stand, X_nom, X_cont):
     # For each sample i, filter it into leaves and compute
     #  the probability of correctness on the basis of the specific extension 
 
+    
+    w_100 = 1/(1.0+lam/100)
+    w_root = 1/(1.0+lam/ len(tree.nodes[0].sample_inds))
+
     for i in range(L):
         x_nom, x_cont = X_nom[i], X_cont[i]
         leaves = filter_leaves(tree, x_nom, x_cont)
 
         n_leaves = np.zeros(len(y_uvs), dtype=np.int64)
         tot_leaf_weight = np.zeros(len(y_uvs), dtype=np.float32)
+        max_leaf_weight = 0.0
         tot_w_ext_prob = np.zeros(len(y_uvs), dtype=np.float32)
         tot_exts = np.zeros(len(y_uvs), dtype=np.float32)
         tot_samples = np.zeros(len(y_uvs), dtype=np.float32)
         leaf_density = np.zeros(len(y_uvs), dtype=np.float32)
 
         zz_leaf_probs = np.zeros((len(leaves), len(y_uvs)), dtype=np.float32)
+        zz_leaf_density = np.zeros((len(leaves), len(y_uvs)), dtype=np.float32)
         # tot_y = np.zeros(len(y_uvs), dtype=np.int32)
         for k, leaf in enumerate(leaves):
             spec_ext, ext_ws, L, ext_weight = stand.spec_exts[leaf.index]
             n_samples = len(leaf.sample_inds)
             leaf_weight = 1/(1.0+lam/n_samples)
+
+
+            max_leaf_weight = max(leaf_weight, max_leaf_weight)
 
 
             
@@ -413,7 +423,8 @@ def stand_predict_y_density(stand, X_nom, X_cont):
 
             y_density[i][y] += leaf_weight * w_ext_matches
             probs[i][y]     += leaf_weight * ext_prob
-            zz_leaf_probs[k][y] = leaf_weight* ext_prob
+            zz_leaf_probs[k][y] = ext_prob
+            zz_leaf_density[k][y] = leaf_weight* ext_prob
             # probs[i][y] += n_ext_matches/(n_ext_matches+n_ext_fails) if ext_size > 0 else 1.0
             n_leaves[y] += 1
             tot_leaf_weight[y] += leaf_weight
@@ -421,15 +432,30 @@ def stand_predict_y_density(stand, X_nom, X_cont):
             # print(i, y, ":", w_ext_matches/(w_ext_matches+w_ext_fails), w_ext_matches, w_ext_fails)
 
 
+        best_ind = np.argmax(probs[i])
+        
+        # print("probs", probs[i], best_ind, best_p)
+
         for j, y_class in enumerate(y_uvs):
+            # if(j == best_ind):
+            #     out_probs[i,best_ind] += probs[i,j]
+            # else:
+            #     out_probs[i,best_ind] += probs[i,j]
+
             if(n_leaves[j] > 0):
                 # probs[i][j] /= tot_leaf_weight[j]
-                probs[i][j] /= tot_samples[j]
+                # probs[i][j] /= tot_samples[j]
                 y_density[i][j] / tot_samples[j]
-                # probs[i][j] /= np.sum(tot_leaf_weight)
+                # probs[i][j] /= tot_leaf_weight[j]
+                probs[i][j] /= np.sum(tot_leaf_weight)
                 # probs[i][j] /= np.sum(tot_leaf_weight)
 
+        # probs[i] /= np.sum(tot_leaf_weight)
+        best_p = probs[i, best_ind]
+        probs[i] = 1.0-best_p
+        probs[i, best_ind] = best_p
 
+        # print("out_probs", out_probs[i], best_p)
 
         # probs[i] = probs[i] / n_leaves
 
@@ -443,11 +469,15 @@ def stand_predict_y_density(stand, X_nom, X_cont):
         #################
         # print()
         # zz_max = np.empty((1,len(y_uvs)), dtype=np.float32)
+
         for j in range(len(y_uvs)):
-            zz_max[i,j] = np.max(zz_leaf_probs[:,j])
+            # print(j, "y[p]", -np.sort(-zz_leaf_probs[:,j]))
+            # print(j, "y[d]", -np.sort(-zz_leaf_density[:,j]))
+            max_k = np.argmax(zz_leaf_probs[:,j])
+            zz_max[i,j] = zz_leaf_probs[max_k,j] #/ w_root #max_leaf_weight if max_leaf_weight != 0.0 else 1.0
             # print("BEST:", i, -np.sort(-zz_leaf_probs[:,i][zz_leaf_probs[:,i]>=zz_max[0,i]*.9]))
 
-        # probs[i] = np.sum(zz_leaf_probs*zz_leaf_probs, axis=0)/np.sum(zz_leaf_probs, axis=0)
+        # probs[i] = np.sum(zz_leaf_probs, axis=0)/tot_leaf_weight
         # probs[i] = np.sum(probs[i]*probs[i], axis=0)/np.sum(probs[i], axis=0)
 
         # best_probs = 
@@ -471,7 +501,7 @@ def stand_predict_y_density(stand, X_nom, X_cont):
     # b_ind = np.argmax(probs)
 
     # return y_density, probs
-    return y_density, zz_max
+    return y_density, probs
 
 @njit(cache=True)
 def stand_predict_prob(stand, X_nom, X_cont):

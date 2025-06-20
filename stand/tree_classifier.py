@@ -87,7 +87,7 @@ def choose_all_near_max(impurity_decrease, n_samples):
     '''A split chooser that expands every decision tree 
         (i.e. this chooser forces to build whole option tree)'''
 
-    m = np.max(impurity_decrease)*.70
+    m = np.max(impurity_decrease)*.9
     best_splits = np.where(impurity_decrease >= m)[0]
 
     max_splits = min(max(int(100/n_samples), 3),SPLIT_MAX)
@@ -102,7 +102,7 @@ def choose_dynamic_all_near_max(impurity_decrease, n_samples):
     '''A split chooser that expands every decision tree 
         (i.e. this chooser forces to build whole option tree)'''
     
-    restr = min((.65 + (5.0 / n_samples)), 1.0)
+    restr = min((.85 + (1.5 / n_samples)), 1.0)
     # print("dyn: ", n_samples, restr)
     m = np.max(impurity_decrease)*restr
     best_splits = np.where(impurity_decrease >= m)[0]
@@ -365,7 +365,7 @@ def update_nominal_impurities(tree, splitter_context, iterative):
         avg_par_w_y_probs_per_v = np.zeros(y_counts_per_v.shape, dtype=np.float32)
         avg_par_w_v_probs = np.zeros(v_counts.shape, dtype=np.float32)
 
-        lam = 1.0#tree.lam_p
+        lam = tree.lam_p
 
 
         if(len(sc.node.parents) > 0):
