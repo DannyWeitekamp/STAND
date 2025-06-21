@@ -57,67 +57,68 @@ impurity_funcs = {
 # --------------------------------
 #  Split Choosers
 
-split_chooser_sig = i8[::1](f8[::1], i8)
+# split_chooser_sig = Tuple((TreeParams, i8[::1],f8[::1]))(f8[::1], i8)
 
 @njit(split_chooser_sig, nogil=True, fastmath=True, cache=True)
-def choose_random_max(impurity_decrease, n_samples):
+def choose_random_max(params, impurity_decrease, n_samples):
     '''A split chooser that expands greedily by max impurity 
         (i.e. this is the chooser for typical decision trees)'''
     m = np.max(impurity_decrease)
     choices = np.where(impurity_decrease==m)[0]
-    return np.asarray([choices[int(np.random.random()*len(choices))]])
+    best_splits = np.asarray([choices[int(np.random.random()*len(choices))]])
+    return best_splits, np.ones(1,dtype=np.float64)
 
 @njit(split_chooser_sig, nogil=True, fastmath=True, cache=True)
-def choose_first_max(impurity_decrease, n_samples):
+def choose_first_max(params, impurity_decrease, n_samples):
     '''Pick the first highest impurity decrease option option'''
-    return np.asarray([np.argmax(impurity_decrease)])
+    best_splits = np.asarray([np.argmax(impurity_decrease)])
+    return best_splits, np.ones(1,dtype=np.float64)
 
 @njit(split_chooser_sig, nogil=True, fastmath=True, cache=True)
-def choose_all_max(impurity_decrease, n_samples):
+def choose_all_max(params, impurity_decrease, n_samples):
     '''A split chooser that expands every decision tree 
         (i.e. this chooser forces to build whole option tree)'''
     m = np.max(impurity_decrease)
-    return np.where(impurity_decrease==m)[0]
+    best_splits = np.where(impurity_decrease==m)[0]
+    return best_splits, np.ones(len(best_splits), dtype=np.float64)
 
 
 SPLIT_MAX = 20
 
 @njit(split_chooser_sig, nogil=True, fastmath=True, cache=True)
-def choose_all_near_max(impurity_decrease, n_samples):
+def choose_all_near_max(params, impurity_decrease, n_samples):
     '''A split chooser that expands every decision tree 
         (i.e. this chooser forces to build whole option tree)'''
 
-    m = np.max(impurity_decrease)*.9
-    best_splits = np.where(impurity_decrease >= m)[0]
+    m = np.max(impurity_decrease)
+    restr = (1.0-params.slip)
+    best_splits = np.where(impurity_decrease >= m*restr)[0]
 
     max_splits = min(max(int(100/n_samples), 3),SPLIT_MAX)
-    # print("best_splits:", len(best_splits), max_splits)
     if(len(best_splits) > max_splits):
         best_splits = np.argsort(-impurity_decrease)[:max_splits]
 
-    return best_splits
+    conj_slips = impurity_decrease[best_splits] / m
+
+    return best_splits, conj_slips
 
 @njit(split_chooser_sig, nogil=True, fastmath=True, cache=True)
-def choose_dynamic_all_near_max(impurity_decrease, n_samples):
+def choose_dynamic_all_near_max(params, impurity_decrease, n_samples):
     '''A split chooser that expands every decision tree 
         (i.e. this chooser forces to build whole option tree)'''
     
-    restr = min(.7 + .3 * (n_samples/50) , 1.0)
+    restr = min((1.0-params.slip) + params.slip * (n_samples/params.n_slip_atten) , 1.0)
     # print("dyn: ", n_samples, restr)
-    m = np.max(impurity_decrease)*restr
-    best_splits = np.where(impurity_decrease >= m)[0]
-
-    # if(n_samples == 100):
-    #     print("::", impurity_decrease[np.argsort(-impurity_decrease)[:5]])
+    m = np.max(impurity_decrease)
+    best_splits = np.where(impurity_decrease >= m*restr)[0]
     
     max_splits = min(max(int(100/n_samples), 3), SPLIT_MAX)
-    
-    
-    # print("best_splits:", len(best_splits), max_splits)
     if(len(best_splits) > max_splits):
         best_splits = np.argsort(-impurity_decrease)[:max_splits]
 
-    return best_splits
+    conj_slips = impurity_decrease[best_splits] / m
+
+    return best_splits, conj_slips
 
 
 
@@ -295,6 +296,7 @@ def update_nominal_impurities(tree, splitter_context, iterative):
     # n_const_fts = sc.n_const_fts
     sample_inds = sc.sample_inds
     n_samples = len(sc.sample_inds)
+    lam = tree.params.lam_p
 
 
     # If in iterative mode then only update from where left off 
@@ -367,7 +369,7 @@ def update_nominal_impurities(tree, splitter_context, iterative):
         avg_par_w_y_probs_per_v = np.zeros(y_counts_per_v.shape, dtype=np.float32)
         avg_par_w_v_probs = np.zeros(v_counts.shape, dtype=np.float32)
 
-        lam = tree.lam_p
+        
 
 
         if(len(sc.node.parents) > 0):
@@ -457,6 +459,8 @@ def build_root(tree, iterative=False):
     
     #Make Root Node
     node = TreeNode_ctor(TTYPE_NODE,i4(0),sample_inds,ds.y_counts, tree)
+    node.conj_slip = 1.0
+    node.path_conj_slip = 1.0
 
     # Make Sure various node containers are reset
     node_dict = new_akd(u4_arr,i4)    
@@ -516,7 +520,9 @@ def extend_split_chain(c, encoded_split):
 @njit(cache=True)
 def new_node(locs, tree, sample_inds, y_counts, impurity, is_right):
     ''' Creates a new node and a new context to compute its child nodes'''
-    c, best_split, best_val,  iterative,  node_dict, context_stack = locs
+    (c, best_split, best_val,  iterative,
+        node_dict, context_stack, conj_slip) = locs
+
     nodes = tree.nodes
     node_id = i4(-1)
     if (tree.cache_nodes): 
@@ -545,10 +551,16 @@ def new_node(locs, tree, sample_inds, y_counts, impurity, is_right):
             node = TreeNode_ctor(TTYPE_LEAF, node_id, sample_inds, y_counts, tree)
             tree.leaves.append(node)
 
+
+
         tree.nodes.append(node)
     else:
         # print("NODE HIT", node_id)
         node = tree.nodes[node_id]
+
+    node.conj_slip = max(conj_slip, node.conj_slip)
+    node.path_conj_slip = max(node.path_conj_slip, c.node.path_conj_slip)
+    node.path_conj_slip = min(node.conj_slip, c.node.path_conj_slip)
 
     # print("add PARENT")
     node.parents.append((c.node.index, encoded_split))
@@ -666,6 +678,7 @@ def fit_tree(tree, iterative=False):
     # print(f"FIT P={int(tree.lam_p)} L={int(tree.lam_l)} E={int(tree.lam_e)}")
 
     # If not iterative and tree has split caches then clean them out
+    params = tree.params
     if(not iterative):
         clean_split_caches(tree)
 
@@ -701,19 +714,21 @@ def fit_tree(tree, iterative=False):
             # print("BAIL", c.node.index)
             c.node.ttype = TTYPE_LEAF
             tree.leaves.append(c.node)
+            # c.node.conj_slip = 1.0
+            # c.node.path_conj_slip = min(c.node.conj_slip, c.node.path_conj_slip)
             continue
 
-        best_splits = tree.split_chooser(imp_decrease, len(c.node.sample_inds))
+        best_splits, conj_slips = tree.split_chooser(params, imp_decrease, len(c.node.sample_inds))
 
         # print(c.node.index, "best_splits", best_splits)
 
         # print(c.node.sample_inds)
 
         
-
+        # print(conj_slips)
         # best_split = np.argmin(c.impurity-c.impurities[:,0])
         # print("---")
-        for split in best_splits:
+        for split, conj_slip in zip(best_splits, conj_slips):
             
             
 
@@ -731,7 +746,8 @@ def fit_tree(tree, iterative=False):
             else:
                 
                 ptr = _pointer_from_struct(c)
-                locs = (c, split, val, iterative, node_dict, context_stack)
+                locs = (c, split, val, iterative, node_dict,
+                        context_stack, conj_slip)
                 node_l = new_node(locs, tree, inds_l, y_counts_l, imp_l, 0)
                 node_r = new_node(locs, tree, inds_r, y_counts_r, imp_r, 1)
                 # print("S2", split, len(context_stack))
@@ -1320,6 +1336,11 @@ class TreeClassifier(object):
             # Optional userprovided function for mapping key value pairs back to their original
             #  values before they were vectorized 
             inv_mapper=None, 
+
+            slip=.3,
+            n_slip_atten=50,
+            w_path_slip=False,
+
             lam_p = 0.0,
             lam_e = 0.0,
             lam_l = 0.0,
@@ -1352,6 +1373,9 @@ class TreeClassifier(object):
             _get_wrapper_address(pred_choosers[pred_choice], pred_chooser_sig),
             _get_wrapper_address(impurity_funcs[impurity_func], impurity_func_sig),
             cache_nodes,
+            slip,
+            n_slip_atten,
+            w_path_slip,
             lam_p, lam_l, lam_e,
         )
 

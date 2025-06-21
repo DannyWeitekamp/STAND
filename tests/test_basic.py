@@ -4,9 +4,11 @@ import numpy as np
 np.set_printoptions(precision=3)
 
 stand = STANDClassifier(
-   lam_p=1.0,
+   lam_p=25.0,
    lam_e=1.0,
-   split_choice="all_near_max"
+   slip=.3,
+   split_choice="all_near_max",
+   w_path_slip=True
    )
 
 

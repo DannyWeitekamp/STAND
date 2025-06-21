@@ -36,6 +36,8 @@ treenode_fields = [
     ('parents', ListType(Tuple((i4,u8)))),
     ('split_data', ListType(SplitDataType)),
     ('counts', u4[:]),
+    ('conj_slip',f8),
+    ('path_conj_slip',f8),
     ('ttype', u1),
     ('op_enum', u1),
 
@@ -77,6 +79,8 @@ def TreeNode_ctor(ttype, index, sample_inds, counts, tree):
     st.split_data = List.empty_list(SplitDataType)
     st.parents = List.empty_list(i4_u8_tup_type)
     st.counts = counts
+    st.conj_slip = 0.0
+    st.path_conj_slip = 0.0
     st.ttype = ttype
     st.op_enum = OP_NOP
     st.nominal_split_cache_ptrs = np.zeros(tree.data_stats.X_nom.shape[1], dtype=np.int64)
@@ -170,12 +174,35 @@ def SplitterContext_dtor(sc):
         if(ptr != 0):
             _decref_pointer(ptr)
 
+#### Tree Params ####
 
+tree_params_fields = [
+    # How much slip 
+    ('slip', f8), 
+
+    ('n_slip_atten', f8), 
+
+    # Weight slip leaves by path slip
+    ('w_path_slip', types.boolean), 
+
+    # A list of the actual nodes of the tree.
+    # Regularization terms for hierarchical shrink
+    ('lam_p', f8), # Probabilities
+    ('lam_e', f8), # Specific Extensions
+    ('lam_l', f8), # Leaves 
+]
+
+TreeParams, TreeParamsType = define_structref("TreeParams", tree_params_fields, define_constructor=True)
 
 
 #### Tree ####
 
 i8_arr = i8[::1]
+impurity_func_sig = f8(f4[:])
+split_chooser_sig = Tuple((i8[::1],f8[::1]))(TreeParamsType, f8[::1], i8)
+pred_chooser_sig = i8(ListType(TreeNodeType))
+
+
 
 tree_fields = [
     # A list of the actual nodes of the tree.
@@ -191,18 +218,16 @@ tree_fields = [
     ('data_stats', DataStatsType),
 
     # Decides which feature(s) to split on based on an array of impurities.
-    ('split_chooser', types.FunctionType(i8[::1](f8[::1], i8))),
+    ('split_chooser', types.FunctionType(split_chooser_sig)),
 
     # Decides which class to predict based on a list of leaves that an example falls into.
-    ('pred_chooser', types.FunctionType(i8(ListType(TreeNodeType)))),
+    ('pred_chooser', types.FunctionType(pred_chooser_sig)),
 
     # Calculates the impurity of a distribution of classes selected by a node.
-    ('impurity_func', types.FunctionType(f8(f4[:]))),
+    ('impurity_func', types.FunctionType(impurity_func_sig)),
     
-    # Regularization terms for hierarchical shrink
-    ('lam_p', f8), # Probabilities
-    ('lam_e', f8), # Specific Extensions
-    ('lam_l', f8), # Leaves 
+    
+    ('params', TreeParamsType),
 
     # Whether or not nodes should be cached
     ('cache_nodes', types.boolean),    
@@ -217,9 +242,7 @@ Tree, TreeTypeTemplate = define_structref_template("Tree", tree_fields, define_c
 
 u8_arr = u8[::1]
 
-impurity_func_sig = f8(f4[:])
-split_chooser_sig = i8[::1](f8[::1], i8)
-pred_chooser_sig = i8(ListType(TreeNodeType))
+
 
 impurity_func_type = types.FunctionType(impurity_func_sig)
 split_chooser_type = types.FunctionType(split_chooser_sig)
@@ -228,7 +251,9 @@ pred_chooser_type = types.FunctionType(pred_chooser_sig)
 
 @njit(cache=True)
 def Tree_ctor(tree_type, split_chooser_addr, pred_chooser_addr,
-         impurity_func_addr, cache_nodes, lam_p, lam_l, lam_e):
+         impurity_func_addr, cache_nodes, 
+         # Tree Params
+         slip, n_slip_atten, w_path_slip, lam_p, lam_l, lam_e):
     st = new(tree_type)
     st.nodes = List.empty_list(TreeNodeType)
     st.leaves = List.empty_list(TreeNodeType)
@@ -239,12 +264,19 @@ def Tree_ctor(tree_type, split_chooser_addr, pred_chooser_addr,
     st.impurity_func = _func_from_address(impurity_func_type, impurity_func_addr)
     st.split_chooser = _func_from_address(split_chooser_type, split_chooser_addr)
     st.pred_chooser = _func_from_address(pred_chooser_type, pred_chooser_addr)
+
+    par = st.params = TreeParams(slip, float(n_slip_atten), w_path_slip, lam_p, lam_l, lam_e)
+
+    # par.slip = slip 
+    # par.n_slip_atten = n_slip_atten 
+    # par.w_path_slip = w_path_slip 
+    
+    # par.lam_p = lam_p   
+    # par.lam_l = lam_l   
+    # par.lam_e = lam_e   
     
     st.cache_nodes = cache_nodes 
-
-    st.lam_p = lam_p   
-    st.lam_l = lam_l   
-    st.lam_e = lam_e   
+    
     return st
     
 @njit(cache=True)

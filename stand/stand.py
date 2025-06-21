@@ -201,7 +201,7 @@ def calc_invariant_nom_mask(X_nom):
 def calc_spec_ext_weight(tree, leaf, enc_split):
     is_cont, negated, split, val = decode_split(enc_split)
 
-    lam = tree.lam_e
+    lam = tree.params.lam_e
     n_samples = len(leaf.sample_inds)
     avg_par_v_prob = 0.0 #np.zeros(v_counts.shape, dtype=np.float32)
 
@@ -365,7 +365,8 @@ def stand_predict_y_density(stand, X_nom, X_cont):
     
     y_uvs = tree.data_stats.u_ys
 
-    lam = tree.lam_l
+    lam = tree.params.lam_l
+    weight_path_slip = tree.params.w_path_slip
 
     # out = np.zeros((L,len(y_uvs)),dtype=prob_item_type)
     out_probs = np.zeros((L,len(y_uvs)),dtype=np.float64)
@@ -398,7 +399,15 @@ def stand_predict_y_density(stand, X_nom, X_cont):
         for k, leaf in enumerate(leaves):
             spec_ext, ext_ws, L, ext_weight = stand.spec_exts[leaf.index]
             n_samples = len(leaf.sample_inds)
-            leaf_weight = 1/(1.0+lam/n_samples)
+
+            # if(leaf.path_conj_slip != 1.0):
+            #     print("CONJ SPLIT", leaf.index, leaf.conj_slip, leaf.path_conj_slip)
+            path_weight = leaf.path_conj_slip if weight_path_slip else 1.0
+            leaf_weight = 1/(1.0+lam/n_samples) * path_weight
+
+            
+                
+            # print("DO PATH SLIP:", tree.w_path_slip)
 
 
             max_leaf_weight = max(leaf_weight, max_leaf_weight)
@@ -421,8 +430,8 @@ def stand_predict_y_density(stand, X_nom, X_cont):
             tot_exts[y] += (n_ext_matches + n_ext_fails)
             # tot_exts[y] += n_ext_matches #/ (n_ext_matches + n_ext_fails)
 
-            y_density[i][y] += leaf_weight * w_ext_matches
-            probs[i][y]     += leaf_weight * ext_prob
+            y_density[i][y] += leaf_weight * w_ext_matches 
+            probs[i][y]     += leaf_weight * ext_prob 
             zz_leaf_probs[k][y] = ext_prob
             zz_leaf_density[k][y] = leaf_weight* ext_prob
             # probs[i][y] += n_ext_matches/(n_ext_matches+n_ext_fails) if ext_size > 0 else 1.0
@@ -452,6 +461,22 @@ def stand_predict_y_density(stand, X_nom, X_cont):
 
         # probs[i] /= np.sum(tot_leaf_weight)
         best_p = probs[i, best_ind]
+
+        # These are all worse than what is below
+        # a,b,c,d =(-8.33, 19.5, -13.667, 3.5)
+        # a,b,c,d =(-12.0833, 28.25, -20.2292, 5.0625)  #  (.7,.6) (.9,.93),
+        # a,b,c,d =(-12.9167, 29.75, -21.0208, 5.1875)  #  (.7,.62) (.9,.95)
+        # a,b,c,d =(-10.4167, 24.25, -17.1458, 4.3125)  #  (.7,.62) (.9,.95)
+        # a,b,c,d =(-6.25, 14.25, -9.4375, 2.4375)   # (.7,.67) (.9,.93)
+
+        # Add non-linearity to prediction, lower probability of low, increase high
+        a,b,c,d =(-7.91667, 18.25, -12.5208, 3.1875)   # (.7,.65) (.9,.93)
+        best_p = (a * best_p*best_p*best_p +
+                  b * best_p*best_p +
+                  c * best_p +
+                  d
+                 )
+
         probs[i] = 1.0-best_p
         probs[i, best_ind] = best_p
 
@@ -508,6 +533,9 @@ def stand_predict_prob(stand, X_nom, X_cont):
     tree = stand.op_tree
     y_uvs = tree.data_stats.u_ys
     y_density, probs = stand_predict_y_density(stand, X_nom, X_cont)
+
+
+
     return probs, y_uvs
 
 @njit(cache=True)
