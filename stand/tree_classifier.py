@@ -83,7 +83,7 @@ def choose_all_max(params, impurity_decrease, n_samples):
     return best_splits, np.ones(len(best_splits), dtype=np.float64)
 
 
-SPLIT_MAX = 20
+SPLIT_MAX = 100
 
 @njit(split_chooser_sig, nogil=True, fastmath=True, cache=True)
 def choose_all_near_max(params, impurity_decrease, n_samples):

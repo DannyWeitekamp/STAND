@@ -55,7 +55,7 @@ stand.fit(X,None,y)
 print(stand.__str__(leaf_inds=True, node_inds=True))
 
 # A case where it is distributed across two negative leaves
-stand.predict_prob(np.array(
+stand.predict_proba(np.array(
    [[1, 1, 1, 1, 0, 1, 1, 1]] # similar to 0 w/ [0] and [6] flipped
    ,dtype=np.int32
    ),None
@@ -64,7 +64,7 @@ stand.predict_prob(np.array(
 print("--------------------------")
 
 # A case where it is distributed across a positive and negative leaf
-stand.predict_prob(np.array(
+stand.predict_proba(np.array(
    [[1, 1, 1, 1, 1, 1, 0, 1]] # similar to 3 w/ [0] and [3] flipped
    ,dtype=np.int32
    ),None
@@ -73,8 +73,22 @@ stand.predict_prob(np.array(
 print("--------------------------")
 
 # A case where it is distributed across a positive and negative leaf
-stand.predict_prob(np.array(
+probs, labels = stand.predict_proba(np.array(
    [[0, 1, 0, 1, 1, 1, 0, 1, 1]] # similar to 3 w/ [0] and [3] flipped
    ,dtype=np.int32
    ),None
 )
+print(probs)
+
+print("--------------------------")
+
+# A case where it is distributed across a positive and negative leaf
+
+
+probs, labels = stand.predict_proba(np.array(
+   [[0, 1, 1, 1, 0, 1, 1, 1, 0]] # similar to 3 w/ [0] and [3] flipped
+   ,dtype=np.int32
+   ),None
+)
+
+print(probs)

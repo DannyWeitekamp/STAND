@@ -116,35 +116,58 @@ class STANDClassifier(object):
 
     # TODO : ADD SPECIFIC CHECK
     def predict(self, X_nom, X_cont):
-        if(self.stand is None): raise RuntimeError("STANDClassifier must be fit before predict_prob() is called.")
+        if(self.stand is None): raise RuntimeError("STANDClassifier must be fit before predict_proba() is called.")
         if(X_nom is None): X_nom = np.empty((0,0), dtype=np.int32)
         if(X_cont is None): X_cont = np.empty((0,0), dtype=np.float32)
         X_nom = X_nom.astype(np.int32)
         X_cont = X_cont.astype(np.float32)
 
         if(self.pred_kind == "prob" or self.pred_kind == "density"):
-            y_density, probs = stand_predict_y_density(self.stand, X_nom, X_cont)
-            probs, labels = stand_predict_prob(self.stand, X_nom, X_cont)
+            # y_density, probs = stand_predict_y_density(self.stand, X_nom, X_cont)
+            
             # print(probs)
             # print(probs.shape)
             if(self.pred_kind == "density"):
+                probs, labels = stand_predict_cert(self.stand, X_nom, X_cont)
                 return labels[np.argmax(y_density, axis=-1)] #self.op_tree_classifier.predict(X_nom, X_cont)
             else:
+                probs, labels = stand_predict_proba(self.stand, X_nom, X_cont)
                 return labels[np.argmax(probs, axis=-1)] #self.op_tree_classifier.predict(X_nom, X_cont)
         else:
             return self.op_tree_classifier.predict(X_nom, X_cont)
 
-    def predict_prob(self, X_nom, X_cont):
-        if(self.stand is None): raise RuntimeError("STANDClassifier must be fit before predict_prob() is called.")
+    def predict_proba(self, X_nom, X_cont):
+        if(self.stand is None): raise RuntimeError("STANDClassifier must be fit before predict_proba() is called.")
         if(X_nom is None): X_nom = np.empty((0,0), dtype=np.int32)
         if(X_cont is None): X_cont = np.empty((0,0), dtype=np.float32)
         X_nom = X_nom.astype(np.int32)
         X_cont = X_cont.astype(np.float32)
-        return stand_predict_prob(self.stand, X_nom, X_cont)
-        # self.op_tree_classifier.predict_prob(X_nom, X_cont)
+        return stand_predict_proba(self.stand, X_nom, X_cont)
+        # self.op_tree_classifier.predict_proba(X_nom, X_cont)
+
+    def predict_cert(self, X_nom, X_cont):
+        if(self.stand is None): raise RuntimeError("STANDClassifier must be fit before predict_proba() is called.")
+        if(X_nom is None): X_nom = np.empty((0,0), dtype=np.int32)
+        if(X_cont is None): X_cont = np.empty((0,0), dtype=np.float32)
+        X_nom = X_nom.astype(np.int32)
+        X_cont = X_cont.astype(np.float32)
+        return stand_predict_cert(self.stand, X_nom, X_cont)
+        # self.op_tree_classifier.predict_proba(X_nom, X_cont)
+
+    def bloop(self, X_nom, X_cont):
+        if(self.stand is None): raise RuntimeError("STANDClassifier must be fit before predict_proba() is called.")
+        if(X_nom is None): X_nom = np.empty((0,0), dtype=np.int32)
+        if(X_cont is None): X_cont = np.empty((0,0), dtype=np.float32)
+        X_nom = X_nom.astype(np.int32)
+        X_cont = X_cont.astype(np.float32)
+        y_density, probs = stand_predict_y_density(self.stand, X_nom, X_cont, True)
+
+        # return stand_predict_cert(self.stand, X_nom, X_cont)
+
+
 
     def instance_certainty(self, X_nom, X_cont):
-        if(self.stand is None): raise RuntimeError("STANDClassifier must be fit before predict_prob() is called.")
+        if(self.stand is None): raise RuntimeError("STANDClassifier must be fit before predict_proba() is called.")
         if(X_nom is None): X_nom = np.empty((0,0), dtype=np.int32)
         if(X_cont is None): X_cont = np.empty((0,0), dtype=np.float32)
         X_nom = X_nom.astype(np.int32)
@@ -309,13 +332,19 @@ def fit_spec_ext(stand):
                 val = x_nom_0[split]
                 spec_ext[c] = enc_split = encode_split(0,0,i4(split),val) 
                 
-                ext_w = calc_spec_ext_weight(tree, leaf, enc_split)
+                # if(enc_split not in branch_splits):                
+                
+                if(enc_split in branch_splits): 
+                    ext_w = 2.0
+                else:
+                    ext_w = calc_spec_ext_weight(tree, leaf, enc_split)
+
                 spec_ws[c] = ext_w
                 c += 1
 
-                if(enc_split not in branch_splits):
-                    ext_size += 1
-                    total_w += ext_w
+                # if(enc_split not in branch_splits):
+                ext_size += 1
+                total_w += ext_w
 
         # for split_enc in branch_splits:
         #     is_cont, negated, split, val = decode_split(split_enc)
@@ -356,7 +385,7 @@ def eval_specific_extension(stand, leaf, x_nom, x_cont):
     return ext_size, n_ext_matches, n_ext_fails, w_ext_matches, w_ext_fails
 
 @njit(cache=True)
-def stand_predict_y_density(stand, X_nom, X_cont):
+def stand_predict_y_density(stand, X_nom, X_cont, print_n_leaves=False):
     # NOTE: Should I really call this a probability? It's not a normalized one.
     tree = stand.op_tree
     L = max(len(X_nom),len(X_cont))
@@ -424,8 +453,9 @@ def stand_predict_y_density(stand, X_nom, X_cont):
             tot_samples[y] += n_samples
             ext_size, n_ext_matches, n_ext_fails, w_ext_matches, w_ext_fails = (
                 eval_specific_extension(stand, leaf, x_nom, x_cont))
-            # ext_prob = w_ext_matches / (w_ext_matches+w_ext_fails) if (w_ext_matches+w_ext_fails) > 0.0 else 1.0
-            ext_prob = w_ext_matches / (n_ext_matches + n_ext_fails) if (n_ext_matches + n_ext_fails) > 0.0 else 1.0
+            ext_prob = w_ext_matches / (w_ext_matches+w_ext_fails) if (w_ext_matches+w_ext_fails) > 0.0 else 1.0
+            # ext_prob = w_ext_matches / (n_ext_matches + n_ext_fails) if (n_ext_matches + n_ext_fails) > 0.0 else 1.0
+            # ext_prob = w_ext_matches / (w_ext_matches + w_ext_fails) if (w_ext_matches + w_ext_fails) > 0.0 else 1.0
             tot_w_ext_prob[y] += ext_prob
             tot_exts[y] += (n_ext_matches + n_ext_fails)
             # tot_exts[y] += n_ext_matches #/ (n_ext_matches + n_ext_fails)
@@ -444,6 +474,19 @@ def stand_predict_y_density(stand, X_nom, X_cont):
         best_ind = np.argmax(probs[i])
         
         # print("probs", probs[i], best_ind, best_p)
+        
+        # if(len(probs[i]) > 0):
+            
+            # probs[i,best_ind] -= .5*(probs[i,best_ind] - (np.sum(probs[i]) - probs[i,best_ind])/(len(probs[i])-1))
+            # sec_best = np.sort(probs[i])[-2]
+
+        # probs[i] *= probs[i] / np.sum(probs[i])
+
+        # probs[i] /= np.sum(probs[i] != 0) #(np.sum(probs[i]) - probs[i,best_ind])/len(probs[i])
+        # probs[i] = probs[i]#*probs[i] / np.sum(probs[i])
+        y_density[i] = probs[i]
+
+        # y_density[i][y_density[i] == 0.0] = 1.0 # np.max(y_density[i])*2
 
         for j, y_class in enumerate(y_uvs):
             # if(j == best_ind):
@@ -454,13 +497,15 @@ def stand_predict_y_density(stand, X_nom, X_cont):
             if(n_leaves[j] > 0):
                 # probs[i][j] /= tot_leaf_weight[j]
                 # probs[i][j] /= tot_samples[j]
-                y_density[i][j] / tot_samples[j]
+                # y_density[i][j] / tot_samples[j]
                 # probs[i][j] /= tot_leaf_weight[j]
                 probs[i][j] /= np.sum(tot_leaf_weight)
+                # y_density[i][j] /= np.sum(tot_leaf_weight)
                 # probs[i][j] /= np.sum(tot_leaf_weight)
 
+
         # probs[i] /= np.sum(tot_leaf_weight)
-        best_p = probs[i, best_ind]
+        best_p = probs[i, best_ind] #- .05 * (np.sum(n_leaves != 0) > 1)
 
         # These are all worse than what is below
         # a,b,c,d =(-8.33, 19.5, -13.667, 3.5)
@@ -470,16 +515,28 @@ def stand_predict_y_density(stand, X_nom, X_cont):
         # a,b,c,d =(-6.25, 14.25, -9.4375, 2.4375)   # (.7,.67) (.9,.93)
 
         # Add non-linearity to prediction, lower probability of low, increase high
-        a,b,c,d =(-7.91667, 18.25, -12.5208, 3.1875)   # (.7,.65) (.9,.93)
-        best_p = (a * best_p*best_p*best_p +
-                  b * best_p*best_p +
-                  c * best_p +
-                  d
-                 )
+        # a,b,c,d =(-7.91667, 18.25, -12.5208, 3.1875)   # (.7,.65) (.9,.93)
+        # best_p = (a * best_p*best_p*best_p +
+        #           b * best_p*best_p +
+        #           c * best_p +
+        #           d
+        #          )
 
         probs[i] = 1.0-best_p
         probs[i, best_ind] = best_p
 
+
+        # probs[i] = n_leaves / np.sum(n_leaves)
+
+        
+        # y_density[i] = tot_w_ext_prob / np.sum(tot_w_ext_prob)
+        # y_density[i] = np.sum(zz_leaf_density,axis=0) / np.sum(zz_leaf_density)
+        # y_density[i] = n_leaves / np.sum(n_leaves)
+
+        if(print_n_leaves):
+            print(i, n_leaves, "P=", probs[i], "D=",y_density[i], "LW=",tot_leaf_weight, [leaf.index for leaf in leaves])
+
+        y_density[i] = probs[i]
         # print("out_probs", out_probs[i], best_p)
 
         # probs[i] = probs[i] / n_leaves
@@ -507,6 +564,8 @@ def stand_predict_y_density(stand, X_nom, X_cont):
 
         # best_probs = 
         # print(best_probs)
+        # y_density[i] = zz_max[i] / np.sum(zz_max[i])
+        # print(i, n_leaves, probs[i], y_density[i])
 
 
 
@@ -529,14 +588,21 @@ def stand_predict_y_density(stand, X_nom, X_cont):
     return y_density, probs
 
 @njit(cache=True)
-def stand_predict_prob(stand, X_nom, X_cont):
+def stand_predict_proba(stand, X_nom, X_cont):
     tree = stand.op_tree
     y_uvs = tree.data_stats.u_ys
     y_density, probs = stand_predict_y_density(stand, X_nom, X_cont)
 
-
-
     return probs, y_uvs
+
+@njit(cache=True)
+def stand_predict_cert(stand, X_nom, X_cont):
+    tree = stand.op_tree
+    y_uvs = tree.data_stats.u_ys
+    y_density, probs = stand_predict_y_density(stand, X_nom, X_cont)
+
+    # print(y_density)
+    return y_density, y_uvs
 
 @njit(cache=True)
 def instance_certainty(stand, X_nom, X_cont):
