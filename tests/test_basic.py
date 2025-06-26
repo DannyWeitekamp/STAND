@@ -1,4 +1,5 @@
 from stand.stand import STANDClassifier
+from stand.tree_classifier import SeqCovClassifier
 import numpy as np
 
 np.set_printoptions(precision=3)
@@ -49,6 +50,13 @@ Xy = np.array([
 X,y = Xy[:,:-1], Xy[:,-1]
 # y = np.array([0, 1, 1, 1, 1, 0, 0, 0], dtype=np.int32)
 
+
+seq_cov = SeqCovClassifier()
+seq_cov.fit(X,None,y)
+print(seq_cov.__str__(leaf_inds=True, node_inds=True))
+
+raise ValueError()
+
 stand.fit(X,None,y)
 stand.fit(X,None,y)
 
@@ -92,3 +100,6 @@ probs, labels = stand.predict_proba(np.array(
 )
 
 print(probs)
+
+
+

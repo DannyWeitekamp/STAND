@@ -44,6 +44,7 @@ treenode_fields = [
     ### Attributes for Hierarchical Shrinkage ###
 
     ('nominal_split_cache_ptrs', i8[::1]),
+    # ('max_depth', i8),
 
 
     # ('y_counts_per_v', ListType(u4[:,::1])),
@@ -100,6 +101,8 @@ splitter_context_fields = [
 
     # The node in the output tree associated with this context
     ('node', TreeNodeType),
+
+    ('root_context_ptr', i8),
     # The indicies of all samples that filter into this node
     ('sample_inds', u4[::1]),
     # The counts of each class label in this node
@@ -153,15 +156,19 @@ SplitterContext.__str__ = lambda self: f"<SplitterContext at {hex(id(self))}>"
 @njit(cache=True)
 def SplitterContext_ctor(split_chain):
     st = new(SplitterContextType)    
-    st.split_chain = split_chain
     st.n_last_update = 0 
     st.nominal_split_cache_ptrs = np.zeros((32,),dtype=np.int64)
     st.continous_split_cache_ptrs = np.zeros((32,),dtype=np.int64)
     return st
 
 @njit(cache=True)
-def reinit_splittercontext(c, node, sample_inds, y_counts, impurity):
+def reinit_splittercontext(c, node, root_c, sample_inds, y_counts, impurity):
     c.node = node
+    if(root_c is None):
+        c.root_context_ptr = _pointer_from_struct(c)
+    else:
+        c.root_context_ptr = _pointer_from_struct(root_c)
+
     c.sample_inds = sample_inds
     c.y_counts = y_counts
     c.impurity = impurity
@@ -190,6 +197,8 @@ tree_params_fields = [
     ('lam_p', f8), # Probabilities
     ('lam_e', f8), # Specific Extensions
     ('lam_l', f8), # Leaves 
+
+   
 ]
 
 TreeParams, TreeParamsType = define_structref("TreeParams", tree_params_fields, define_constructor=True)
@@ -229,6 +238,9 @@ tree_fields = [
     
     ('params', TreeParamsType),
 
+    # The positive class (only relevant for sequential covering)
+    ('pos_y', i4),
+
     # Whether or not nodes should be cached
     ('cache_nodes', types.boolean),    
 
@@ -249,9 +261,11 @@ split_chooser_type = types.FunctionType(split_chooser_sig)
 pred_chooser_type = types.FunctionType(pred_chooser_sig)
 
 
+MIN_i4 = -2147483648
+
 @njit(cache=True)
 def Tree_ctor(tree_type, split_chooser_addr, pred_chooser_addr,
-         impurity_func_addr, cache_nodes, 
+         impurity_func_addr, cache_nodes, pos_y,
          # Tree Params
          slip, n_slip_atten, w_path_slip, lam_p, lam_l, lam_e):
     st = new(tree_type)
@@ -259,13 +273,17 @@ def Tree_ctor(tree_type, split_chooser_addr, pred_chooser_addr,
     st.leaves = List.empty_list(TreeNodeType)
     # st.u_ys = np.zeros(0,dtype=np.int32)
     st.context_cache = new_akd(u8_arr,SplitterContextType)#Dict.empty(i8_arr, SplitterContextType)
-    st.data_stats = DataStats_ctor()
+    st.pos_y = pos_y
+    ds = st.data_stats = DataStats_ctor(pos_y)
+
 
     st.impurity_func = _func_from_address(impurity_func_type, impurity_func_addr)
     st.split_chooser = _func_from_address(split_chooser_type, split_chooser_addr)
     st.pred_chooser = _func_from_address(pred_chooser_type, pred_chooser_addr)
-
+    
     par = st.params = TreeParams(slip, float(n_slip_atten), w_path_slip, lam_p, lam_l, lam_e)
+ 
+
 
     # par.slip = slip 
     # par.n_slip_atten = n_slip_atten 
@@ -281,7 +299,7 @@ def Tree_ctor(tree_type, split_chooser_addr, pred_chooser_addr,
     
 @njit(cache=True)
 def reinit_tree_datastats(tree, X_nom, X_cont, Y):
-    ds = tree.data_stats = DataStats_ctor()
+    ds = tree.data_stats = DataStats_ctor(tree.pos_y)
     reinit_datastats(ds, X_nom, X_cont, Y)
 
 

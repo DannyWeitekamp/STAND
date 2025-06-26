@@ -485,7 +485,7 @@ def build_root(tree, iterative=False):
     else:
         c = SplitterContext_ctor(empty_u8)
     
-    reinit_splittercontext(c, node, sample_inds, ds.y_counts, impurity)    
+    reinit_splittercontext(c, node, None, sample_inds, ds.y_counts, impurity)    
     if(tree.ifit_enabled): tree.context_cache[empty_u8] = c
 
     context_stack = List.empty_list(SplitterContextType)
@@ -499,6 +499,8 @@ def build_root(tree, iterative=False):
 
 TTYPE_NODE = u1(1)
 TTYPE_LEAF = u1(2)
+TTYPE_DISCARD = u1(3)
+TTYPE_JOIN = u1(4)
 
 @njit(cache=True)
 def encode_split(is_cont, negated, split, val):
@@ -525,10 +527,97 @@ def extend_split_chain(c, encoded_split):
     split_chain[l] = encoded_split
     return split_chain
 
+@njit(cache=True)
+def negate_split_chain_up_to_root(c, c_root):
+    old_chain = c.split_chain
+    L = len(old_chain)
+    root_start = len(c_root.split_chain)
+
+    split_chain = np.empty(L,dtype=np.uint64)
+    split_chain[:root_start] = old_chain[:root_start]
+    for i in range(root_start, L):
+        is_cont, negated, split, val = decode_split(old_chain[i])
+        split_chain[i] = encode_split(is_cont, ~negated, split, val)
+    return split_chain
+
+
+
+
+@njit(cache=True, locals={"c" : u4[::1]})
+def copy_and_remove_overlapping(a, b):
+    print("<<", a, b)
+    c = np.empty(len(a)-len(b), dtype=np.uint32)
+    i = 0
+    j = 0
+    for ind in a:
+        if(j < len(b) and ind == b[j]):
+            j += 1
+        else:
+            c[i] = ind
+            i += 1
+
+    return c
+
 
 
 @njit(cache=True)
-def new_node(locs, tree, sample_inds, y_counts, impurity, is_right):
+def new_seq_cov_root(locs, tree, leaf):
+    (c, best_split, best_val,  iterative,
+        node_dict, context_stack, conj_slip) = locs
+
+    sample_inds = leaf.sample_inds
+    root_c = _struct_from_pointer(SplitterContextType, c.root_context_ptr)
+    new_ind_pool = copy_and_remove_overlapping(root_c.node.sample_inds, sample_inds)
+
+    # old_ind_pool = c.ind_pool
+    # new_ind_pool = copy_and_remove_overlapping(old_ind_pool, sample_inds)
+
+    nodes = tree.nodes
+    node_id = i4(-1)
+    if (tree.cache_nodes): 
+        node_id = node_dict.get(new_ind_pool,-1)
+
+    print("new_ind_pool:", new_ind_pool, root_c.node.sample_inds, sample_inds)
+    print("node_id:", node_id)
+
+    if(node_id == -1):
+        node_id = i4(len(nodes))        
+        y_counts = root_c.y_counts - leaf.counts
+        impurity = tree.impurity_func(y_counts.astype(np.float32)/f4(len(new_ind_pool)))
+
+        # if(impurity <= 0.0):
+
+        split_chain = negate_split_chain_up_to_root(c, root_c)
+
+        if(iterative and split_chain in tree.context_cache):
+            new_c = tree.context_cache[split_chain]                
+        else:     
+            new_c = SplitterContext_ctor(split_chain)
+            if(tree.ifit_enabled): tree.context_cache[split_chain] = new_c
+
+        
+        node = TreeNode_ctor(TTYPE_NODE, node_id, new_ind_pool, y_counts, tree)
+        reinit_splittercontext(new_c, node, None, new_ind_pool, y_counts, impurity)
+        context_stack.append(new_c)
+
+        tree.nodes.append(node)
+        # else:
+        #     pass
+
+        
+    else:
+        node = tree.nodes[node_id]
+
+    # node.parents.append((c.node.index, -1))
+    node.conj_slip = leaf.conj_slip
+    node.path_conj_slip = leaf.path_conj_slip
+    return node
+
+    # print(node_id, "<<", sample_inds)
+
+
+@njit(cache=True)
+def new_node(locs, tree, sample_inds, y_counts, impurity, is_right, discard=False):
     ''' Creates a new node and a new context to compute its child nodes'''
     (c, best_split, best_val,  iterative,
         node_dict, context_stack, conj_slip) = locs
@@ -545,7 +634,11 @@ def new_node(locs, tree, sample_inds, y_counts, impurity, is_right):
         node_id = i4(len(nodes))        
         # if(cache_nodes): akd_insert(node_dict, sample_inds, node_id)
         if(tree.cache_nodes): node_dict[sample_inds] = node_id
-        if(impurity > 0.0):
+
+        if discard:
+            node = TreeNode_ctor(TTYPE_DISCARD, node_id, sample_inds, y_counts, tree)
+
+        elif impurity > 0.0:
             node = TreeNode_ctor(TTYPE_NODE, node_id, sample_inds, y_counts, tree)
 
             split_chain = extend_split_chain(c, encoded_split)
@@ -555,12 +648,12 @@ def new_node(locs, tree, sample_inds, y_counts, impurity, is_right):
                 new_c = SplitterContext_ctor(split_chain)
                 if(tree.ifit_enabled): tree.context_cache[split_chain] = new_c
 
-            reinit_splittercontext(new_c, node, sample_inds, y_counts, impurity)
+            root_c = _struct_from_pointer(SplitterContextType, c.root_context_ptr)
+            reinit_splittercontext(new_c, node, root_c, sample_inds, y_counts, impurity)
             context_stack.append(new_c)
-        else:
+        else: 
             node = TreeNode_ctor(TTYPE_LEAF, node_id, sample_inds, y_counts, tree)
             tree.leaves.append(node)
-
 
 
         tree.nodes.append(node)
@@ -689,17 +782,20 @@ def fit_tree(tree, iterative=False):
 
     # If not iterative and tree has split caches then clean them out
     params = tree.params
+
     if(not iterative):
         clean_split_caches(tree)
 
     context_stack, node_dict =  \
         build_root(tree)
     
+    
         
 
     while(len(context_stack) > 0):
         # print("AZ")
         c = context_stack.pop()
+
 
         # print("NODE:", c.node.index, len(c.node.sample_inds), c.node.sample_inds[:10], "..." if len(c.node.sample_inds) > 10 else "")
         
@@ -754,12 +850,14 @@ def fit_tree(tree, iterative=False):
                 c.node.ttype = TTYPE_LEAF
                 tree.leaves.append(c.node)
             else:
-                
                 ptr = _pointer_from_struct(c)
+
                 locs = (c, split, val, iterative, node_dict,
                         context_stack, conj_slip)
                 node_l = new_node(locs, tree, inds_l, y_counts_l, imp_l, 0)
                 node_r = new_node(locs, tree, inds_r, y_counts_r, imp_r, 1)
+
+
                 # print("S2", split, len(context_stack))
 
                 split_data = SplitData(i4(split), i4(val), i4(node_l), i4(node_r), u1(False))
@@ -767,6 +865,118 @@ def fit_tree(tree, iterative=False):
                 c.node.split_data.append(split_data)
                 c.node.op_enum = OP_EQ
                 # print("DONE NODE")
+
+        # print("B")
+        # if(not iterative):
+        #     SplitterContext_dtor(c)
+        # print("C")
+    
+    assert len(tree.leaves) <= len(tree.nodes)
+        # _decref_pointer(ptr)
+    return 0
+
+
+
+
+
+
+
+@njit(cache=True, locals={'y_counts_l' : u4[:], 'y_counts_r' : u4[:]})
+def fit_seq_cov(tree, iterative=False):
+    '''
+    Refits the tree from its DataStats
+    '''
+    # print(f"FIT P={int(tree.lam_p)} L={int(tree.lam_l)} E={int(tree.lam_e)}")
+
+    # If not iterative and tree has split caches then clean them out
+    params = tree.params
+    ds = tree.data_stats
+    if(not iterative):
+        clean_split_caches(tree)
+
+    context_stack, node_dict =  \
+        build_root(tree)
+    
+    while(len(context_stack) > 0):
+        # print("AZ")
+        c = context_stack.pop()
+
+        # print("NODE:", c.node.index, len(c.node.sample_inds), c.node.sample_inds[:10], "..." if len(c.node.sample_inds) > 10 else "")
+        
+        # This prevents nodes already known to be leaves from being added
+        #  to the set of leaves. Not sure why cannot check this outside of loop. 
+        if(c.node.ttype == TTYPE_LEAF):
+            #print("ALREADY LEAF:", c.node.index)
+            continue
+
+        update_nominal_impurities(tree, c, iterative)
+        
+        imp_decrease = c.impurity-c.impurities[:,0]
+        print("IMP:", imp_decrease)
+        max_imp_decrease = np.max(imp_decrease)
+
+        if(max_imp_decrease <= 0.0):
+            # print("BAIL", c.node.index)
+            c.node.ttype = TTYPE_LEAF
+            tree.leaves.append(c.node)
+            # c.node.conj_slip = 1.0
+            # c.node.path_conj_slip = min(c.node.conj_slip, c.node.path_conj_slip)
+            continue
+
+        best_splits, conj_slips = tree.split_chooser(params, imp_decrease, len(c.node.sample_inds))
+
+        # print(c.node.index, "best_splits", best_splits)
+
+        # print(c.node.sample_inds)
+
+        
+        # print(conj_slips)
+        # best_split = np.argmin(c.impurity-c.impurities[:,0])
+        # print("---")
+        for split, conj_slip in zip(best_splits, conj_slips):
+            inds_l, inds_r, y_counts_l, y_counts_r, imp_tot, imp_l, imp_r, val = \
+                extract_nominal_split_info(tree, c, split, iterative)
+            
+            # print("S1", split, inds_l, inds_r, val, "\n")
+
+            if(c.impurity - imp_tot <= 0):
+                raise ValueError("IMPOSSIBLE")
+                c.node.ttype = TTYPE_LEAF
+                tree.leaves.append(c.node)
+            else:
+                print("ds.pos_y_ind:", ds.pos_y_ind)
+                l_prop = y_counts_l[ds.pos_y_ind] / np.sum(y_counts_l)
+                r_prop = y_counts_r[ds.pos_y_ind] / np.sum(y_counts_r)
+                discard_left = l_prop < r_prop  
+
+                ptr = _pointer_from_struct(c)
+                locs = (c, split, val, iterative, node_dict,
+                        context_stack, conj_slip)
+
+                node_l = new_node(locs, tree, inds_l, y_counts_l, imp_l, 0, discard_left)
+                node_r = new_node(locs, tree, inds_r, y_counts_r, imp_r, 1, ~discard_left)
+
+                if(discard_left):
+                    split_data = SplitData(i4(split), i4(val), i4(node_l), i4(node_r), u1(False))
+                else:
+                    split_data = SplitData(i4(split), i4(val), i4(node_r), i4(node_l), u1(True))
+                #np.array([split, val, node_l, node_r, -1],dtype=np.int32)
+                c.node.split_data.append(split_data)
+                c.node.op_enum = OP_EQ
+
+                ###############
+                leaf = None
+                if(imp_l == 0.0 and ~discard_left):
+                    leaf = tree.nodes[node_l] 
+                elif(imp_r == 0.0 and discard_left):
+                    leaf = tree.nodes[node_r]
+
+                if(leaf is not None):
+                    new_seq_cov_root(locs, tree, leaf)
+
+                ##############
+
+                print("DONE NODE")
 
         # print("B")
         # if(not iterative):
@@ -1347,7 +1557,7 @@ tree_classifier_presets = {
     }
 }
 
-
+MIN_i4 = -2147483648
 
 class TreeClassifier(object):
     def __init__(self,
@@ -1360,6 +1570,7 @@ class TreeClassifier(object):
             slip=.3,
             n_slip_atten=50,
             w_path_slip=False,
+            pos_y=MIN_i4,
 
             lam_p = 0.0,
             lam_e = 0.0,
@@ -1393,6 +1604,7 @@ class TreeClassifier(object):
             _get_wrapper_address(pred_choosers[pred_choice], pred_chooser_sig),
             _get_wrapper_address(impurity_funcs[impurity_func], impurity_func_sig),
             cache_nodes,
+            pos_y,
             slip,
             n_slip_atten,
             w_path_slip,
@@ -1541,6 +1753,36 @@ class TreeClassifier(object):
         except Exception as e:
             print(e)
             pass
+
+
+class SeqCovClassifier(TreeClassifier):
+    def __init__(self, *args, pos_y=1, **kwargs):
+        super().__init__(*args, pos_y=pos_y, **kwargs)
+
+    def fit(self, X_nom, X_cont, Y, miss_mask=None, ft_weights=None):
+        if(X_nom is None): X_nom = np.empty((0,0), dtype=np.int32)
+        if(X_cont is None): X_cont = np.empty((0,0), dtype=np.float32)
+        # if(miss_mask is None): miss_mask = np.zeros_like(xc, dtype=np.bool)
+        # if(ft_weights is None): ft_weights = np.empty(xb.shape[1]+xc.shape[1], dtype=np.float64)
+        if(X_nom.ndim != 2): raise ValueError(f"X_nom shoud be 2 dimensional, got shape {X_nom.shape}")
+        if(X_cont.ndim != 2): raise ValueError(f"X_cont shoud be 2 dimensional, got shape {X_cont.shape}")
+        if(Y.ndim != 1): raise ValueError(f"Y shoud be 1 dimensional, got shape {Y.shape}")
+
+        X_nom = X_nom.astype(np.int32)
+        X_cont = X_cont.astype(np.float32)
+        Y = Y.astype(np.int32)
+        # miss_mask = miss_mask.astype(np.bool)
+        # ft_weights = ft_weights.astype(np.float64)
+        # assert miss_mask.shape == xc.shape
+
+        # self.tree = self._fit(xb, xc, y, miss_mask, ft_weights)
+        # self.tree.data_stats = DataStats_ctor()
+        # clear_tree_datastats(self.tree)
+        # print("A")
+        # print(X_nom,X_nom.dtype)
+        reinit_tree_datastats(self.tree, X_nom, X_cont, Y)
+        # print("B")
+        fit_seq_cov(self.tree, False)
 
     
     # def as_conditions(self,positive_class=None, only_pure_leaves=False):

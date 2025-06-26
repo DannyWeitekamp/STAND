@@ -83,6 +83,11 @@ data_stats_fields = [
     ('is_initialized', u1),
 
 
+    ### Sequential Covering ###
+    ("pos_y", i4),
+    ("pos_y_ind", i4),
+
+
     ### Control flags to reduce redundant processing ###
 
     # When user sets to true they promise incoming y labels start at 
@@ -104,7 +109,7 @@ DataStats, DataStatsType = \
 i4_i4_dict = DictType(i4,i4)
 
 @njit(cache=True)
-def DataStats_ctor(nom_v_contiguous=False, y_contiguous=False, ifit_enabled=False):
+def DataStats_ctor(pos_y, nom_v_contiguous=False, y_contiguous=False, ifit_enabled=False):
     ''' Constructor for an empty data stats object ''' 
     st = new(DataStatsType)
 
@@ -116,6 +121,11 @@ def DataStats_ctor(nom_v_contiguous=False, y_contiguous=False, ifit_enabled=Fals
     st.u_ys = np.empty(0, dtype=np.int32)
     st.y_counts = np.zeros(1,dtype=np.uint32)
     st.is_initialized = False
+
+
+    st.pos_y = pos_y
+    st.pos_y_ind = -1
+
     st.y_contiguous = y_contiguous
     st.nom_v_contiguous = nom_v_contiguous
     st.ifit_enabled = ifit_enabled
@@ -195,6 +205,9 @@ def _update_summary_stats_reinit(ds):
         ds.u_ys = np.empty(ds.n_classes, dtype=np.int32)
         for i, v in enumerate(ds.y_map.keys()):
             ds.u_ys[i] = v
+
+    print("UPDATE2", ds.y_map, ds.pos_y)
+    ds.pos_y_ind = ds.y_map.get(ds.pos_y, -1)
 
 
 @njit(cache=True)
@@ -316,6 +329,9 @@ def _update_summary_stats_update(ds):
             ds.u_ys = np.empty(ds.n_classes, dtype=np.int32)
             for i, v in enumerate(ds.y_map.keys()):
                 ds.u_ys[i] = v
+
+    print("UPDATE1", ds.y_map, ds.pos_y)
+    ds.pos_y_ind = ds.y_map.get(ds.pos_y, -1)
 
 @njit(cache=True)
 def update_data_stats(ds, x_nom, x_cont, y):
