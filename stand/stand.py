@@ -3,7 +3,7 @@ from stand.structref import define_structref, define_structref_template
 from stand.tree_classifier import (
     TreeClassifier, str_tree, fit_tree, _count_branches,
     _count_covering_branches, decode_split, encode_split,
-    filter_leaves, get_branch_splits, prob_item_type)
+    filter_leaves, get_branch_splits, prob_item_type, TTYPE_NODE, TTYPE_LEAF)
 from stand.tree_structs import TreeNodeType
 from stand.split_caches import NominalSplitCacheType
 from stand.utils import _struct_from_pointer
@@ -407,6 +407,97 @@ def eval_invar_exts(stand, leaf, x_nom, x_cont):
             n_spec_matches, n_spec_fails, w_spec_matches, w_spec_fails)
 
 
+@njit(cache=True,locals={"ZERO":u1, "TO_VISIT":u1, "VISITED": u1, "_n":i4})
+def stand_filter_example(tree, x_nom, x_cont):
+    ZERO, TO_VISIT, VISITED = 0, 1, 2
+    nom_v_maps = tree.data_stats.nom_v_maps
+    # Use a mask instead of a list to avoid repeats that can blow up
+    #  if multiple splits are possible. Keep track of visited in case
+    #  of loops (Although there should not be any loops).
+    visted_node_mask = np.zeros((len(tree.nodes),),dtype=np.uint8)
+    visted_node_mask[0] = TO_VISIT
+
+    # For each evaluation of a split that could lead to node i 
+    #  count the number of splits that lead the example to i or not i
+    dest_weights = np.zeros((len(tree.nodes), 2), dtype=np.float32)
+
+
+    nodes_to_visit = np.nonzero(visted_node_mask==TO_VISIT)[0]
+    leaves = List()
+
+    lam = tree.params.lam_l
+
+    while len(nodes_to_visit) > 0:
+        # Go through every node that has been queued for a visit. In a traditional
+        #  decision tree there should only ever be one next node.
+        # print(nodes_to_visit)
+        for ind in nodes_to_visit:
+            node = tree.nodes[ind]
+            op = node.op_enum
+            if(node.ttype == TTYPE_NODE):
+                n_samples = len(node.sample_inds)
+                node_weight = 1/(1.0+lam/n_samples)
+
+                # Test every split in the node. Again in a traditional decision tree
+                #  there should only be one split per node.
+                for sd in node.split_data:
+                    # Determine if this sample should feed right, left, or nan (if ternary)
+                    split_satisfied = False
+                    if(not sd.is_continous):
+                        # Nominal case
+                        mapped_val = nom_v_maps[sd.split_ind].get(x_nom[sd.split_ind],-1)
+                        split_satisfied = mapped_val==sd.val
+
+                        
+                    else:
+                        # Continous case : Need to reimplement
+                        pass
+
+                    # else:
+                    #     # Continous case
+                    #     thresh = np.int32(ithresh).view(np.float32)
+                    #     j = split_on-xb.shape[1] 
+
+                    #     if(exec_op(op,x_cont[i,j],thresh)):
+                    #         _n = right
+                    #     else:
+                    #         _n = left
+                    if(split_satisfied):
+                        dest_weights[sd.left, 0] += node_weight
+                        dest_weights[sd.right, 1] += node_weight
+                        _n = sd.right
+                    else:
+                        dest_weights[sd.right, 0] += node_weight
+                        dest_weights[sd.left, 1] += node_weight
+                        _n = sd.left
+
+                    if(visted_node_mask[_n] != VISITED):
+                        visted_node_mask[_n] = TO_VISIT
+                        
+            else:
+                leaves.append(node)
+
+        #Mark all nodes_to_visit as visited so we don't mark them for a revisit
+        for ind in nodes_to_visit:
+            visted_node_mask[ind] = VISITED
+
+        nodes_to_visit = np.nonzero(visted_node_mask==TO_VISIT)[0]
+
+    n_nonzero = 0
+    gen_prob = 0.0
+    gen_den = 0.0
+    for weights in dest_weights:
+        if(not (weights[0] == 0.0 and weights[1] == 0.0)):
+            gen_prob += np.max(weights)
+            gen_den += np.sum(weights) 
+
+
+    # print("gen_prob", gen_prob, gen_den)
+    gen_prob = gen_prob / gen_den if gen_den != 0.0 else 1.0
+
+    return leaves, gen_prob
+
+
 @njit(cache=True)
 def stand_predict_y_density(stand, X_nom, X_cont, print_n_leaves=False):
     # NOTE: Should I really call this a probability? It's not a normalized one.
@@ -435,7 +526,7 @@ def stand_predict_y_density(stand, X_nom, X_cont, print_n_leaves=False):
 
     for i in range(L):
         x_nom, x_cont = X_nom[i], X_cont[i]
-        leaves = filter_leaves(tree, x_nom, x_cont)
+        leaves, gen_prob = stand_filter_example(tree, x_nom, x_cont)
 
         n_leaves = np.zeros(len(y_uvs), dtype=np.int64)
         tot_leaf_weight = np.zeros(len(y_uvs), dtype=np.float32)
@@ -479,11 +570,11 @@ def stand_predict_y_density(stand, X_nom, X_cont, print_n_leaves=False):
              n_spec_matches, n_spec_fails, w_spec_matches, w_spec_fails) = \
                 eval_invar_exts(stand, leaf, x_nom, x_cont)
 
-            gen_prob = w_gen_matches / (w_gen_matches+w_gen_fails) if (w_gen_matches+w_gen_fails) > 0.0 else 1.0
+            # gen_prob = w_gen_matches / (w_gen_matches+w_gen_fails) if (w_gen_matches+w_gen_fails) > 0.0 else 1.0
             spec_prob = w_spec_matches / (w_spec_matches+w_spec_fails) if (w_spec_matches+w_spec_fails) > 0.0 else 1.0
             # gen_prob = w_gen_matches / (n_gen_matches+n_gen_fails) if (n_gen_matches+n_gen_fails) > 0.0 else 1.0
             # spec_prob = w_spec_matches / (n_spec_matches+n_spec_fails) if (n_spec_matches+n_spec_fails) > 0.0 else 1.0
-            ext_prob = gen_prob * spec_prob
+            ext_prob = spec_prob
             # ext_prob = w_ext_matches / (n_ext_matches + n_ext_fails) if (n_ext_matches + n_ext_fails) > 0.0 else 1.0
             # ext_prob = w_ext_matches / (w_ext_matches + w_ext_fails) if (w_ext_matches + w_ext_fails) > 0.0 else 1.0
             tot_w_ext_prob[y] += ext_prob
@@ -514,7 +605,7 @@ def stand_predict_y_density(stand, X_nom, X_cont, print_n_leaves=False):
 
         # probs[i] /= np.sum(probs[i] != 0) #(np.sum(probs[i]) - probs[i,best_ind])/len(probs[i])
         # probs[i] = probs[i]#*probs[i] / np.sum(probs[i])
-        y_density[i] = probs[i]
+        
 
         # y_density[i][y_density[i] == 0.0] = 1.0 # np.max(y_density[i])*2
 
@@ -533,10 +624,13 @@ def stand_predict_y_density(stand, X_nom, X_cont, print_n_leaves=False):
                 # y_density[i][j] /= np.sum(tot_leaf_weight)
                 # probs[i][j] /= np.sum(tot_leaf_weight)
 
+        # probs[i] 
+        y_density[i] = probs[i]
+        probs[i] *= gen_prob
 
         # probs[i] /= np.sum(tot_leaf_weight)
-        best_p = probs[i, best_ind] #- .05 * (np.sum(n_leaves != 0) > 1)
-
+        best_p = probs[i, best_ind]  #- .05 * (np.sum(n_leaves != 0) > 1)
+        best_p = (1.0 + best_p) / 2
         # These are all worse than what is below
         # a,b,c,d =(-8.33, 19.5, -13.667, 3.5)
         # a,b,c,d =(-12.0833, 28.25, -20.2292, 5.0625)  #  (.7,.6) (.9,.93),
@@ -552,8 +646,8 @@ def stand_predict_y_density(stand, X_nom, X_cont, print_n_leaves=False):
         #           d
         #          )
 
-        probs[i] = 1.0-best_p
-        probs[i, best_ind] = best_p
+        # probs[i] = 1.0-best_p
+        # probs[i, best_ind] = best_p
 
 
         # probs[i] = n_leaves / np.sum(n_leaves)
@@ -563,9 +657,11 @@ def stand_predict_y_density(stand, X_nom, X_cont, print_n_leaves=False):
         # y_density[i] = np.sum(zz_leaf_density,axis=0) / np.sum(zz_leaf_density)
         # y_density[i] = n_leaves / np.sum(n_leaves)
 
-        if(print_n_leaves):
-            print(i, n_leaves, "P=", probs[i], "D=",y_density[i], "LW=",tot_leaf_weight, [leaf.index for leaf in leaves])
 
+        if(print_n_leaves):
+            print(i, n_leaves, "gen_prob=", gen_prob, "P=", probs[i], "D=",y_density[i], "LW=",tot_leaf_weight, [leaf.index for leaf in leaves])
+
+        
         y_density[i] = probs[i]
         # print("out_probs", out_probs[i], best_p)
 

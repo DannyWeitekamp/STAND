@@ -168,7 +168,7 @@ def _fill_nominal_impurities(tree, splitter_context, split_cache, n_vals_j, k_j)
     y_counts_per_v = split_cache.y_counts_per_v
     w_v_probs       = split_cache.w_v_probs
     w_y_probs_per_v = split_cache.w_y_probs_per_v
-    
+
 
     impurity = splitter_context.impurity
     impurities = splitter_context.impurities
@@ -212,12 +212,13 @@ def _fill_nominal_impurities(tree, splitter_context, split_cache, n_vals_j, k_j)
                 # print("BAD TOTAL:", k_j, total_l, total_r)
             else:
 
-               
-                
+                # RR = np.sum(w_y_probs_per_v[ft_val]*np.array([0.0,1.0]))
+                # LL = 1.0 - RR
+                # print("A")
                 w_v_margin_r = np.sum(w_y_probs_per_v[ft_val])
                 w_y_prob_r = w_y_probs_per_v[ft_val] / w_v_margin_r
                 w_v_margin_l = 1.0-w_v_margin_r
-                w_y_prob_l = (w_y_probs - w_y_probs_per_v[ft_val]) / w_v_margin_l
+                w_y_prob_l = (w_y_probs - w_y_probs_per_v[ft_val]) / w_v_margin_l                # print("B")
                 # w_y_prob_l = (w_v_probs[ft_val]-w_y_probs_per_v[ft_val]) #/ w_v_margin_l
 
                 # print()
@@ -234,8 +235,8 @@ def _fill_nominal_impurities(tree, splitter_context, split_cache, n_vals_j, k_j)
                 # w_counts_l = w_y_counts-w_counts_r
                 # w_total_l = w_n_samples-w_total_r
 
-                l_pure = np.sum(counts_l != 0) == 1
-                r_pure = np.sum(counts_r != 0) == 1
+                l_pure = np.sum(counts_l != 0) <= 1
+                r_pure = np.sum(counts_r != 0) <= 1
 
                 if(l_pure):
                     imp_l = 0.0    
@@ -260,6 +261,9 @@ def _fill_nominal_impurities(tree, splitter_context, split_cache, n_vals_j, k_j)
             
             # print("Z1",ft_val)
             
+            # if(k_j == 100):
+            #     nom_v_inv_maps = tree.data_stats.nom_v_inv_maps
+            #     print("::", nom_v_inv_maps[k_j].get(ft_val,-1), imp_tot)
             
             if(imp_tot < b_imp_tot):
                 b_imp_tot, b_imp_l, b_imp_r, b_ft_val = imp_tot, imp_l, imp_r, ft_val
@@ -358,6 +362,10 @@ def update_nominal_impurities(tree, splitter_context, iterative):
             y_counts_per_v[X[i,j],y_i] += 1
             v_counts[X[i,j]] += 1
 
+            # if(y_i == 0):
+            #     y_counts_per_v[X[i,j],y_i] += 1
+            #     v_counts[X[i,j]] += 1
+
         # START HIERARCHICAL SHRINKAGE TWEAK 
         # print("START HIERARCHICAL SHRINKAGE TWEAK")
         
@@ -404,6 +412,8 @@ def update_nominal_impurities(tree, splitter_context, iterative):
 
             y_probs_per_v = y_counts_per_v / n_samples #np.sum(y_counts_per_v,axis=0, keepdims=True)
             v_probs = v_counts / n_samples #np.sum(v_counts)
+
+            # y_probs_per_v *= [[.7, ]]
 
             split_cache.w_y_probs_per_v = (avg_par_w_y_probs_per_v + self_w * y_probs_per_v).astype(np.float32)
             split_cache.w_v_probs = (avg_par_w_v_probs + self_w * v_probs).astype(np.float32)
@@ -1072,10 +1082,10 @@ u8_lst_lst = ListType(u8_lst)
 @njit(cache=True)
 def _opt_conjs_for_leaf(tree, _leaf):
     opt_conjs = List()
-    min_node_depths = np.zeros(len(tree.nodes), dtype=np.int32)
+    max_node_depths = np.zeros(len(tree.nodes), dtype=np.int32)
     for i, node in enumerate(tree.nodes):
         if(len(node.parents) > 0):
-            min_node_depths[i] = min([min_node_depths[p]+1 for p,_ in node.parents])
+            max_node_depths[i] = max([max_node_depths[p]+1 for p,_ in node.parents])
 
         lst = List.empty_list(u8_lst_lst)
         opt_conjs.append(lst)
@@ -1088,8 +1098,9 @@ def _opt_conjs_for_leaf(tree, _leaf):
     
     should_expand = np.zeros(len(tree.nodes), dtype=np.int32)
     should_expand[_leaf.index] = 1
-    for node_ind in (-min_node_depths).argsort():
+    for node_ind in (-max_node_depths).argsort():
         if(not should_expand[node_ind]):
+            # print("Skip", node_ind)
             continue
 
         node = tree.nodes[node_ind]
@@ -1097,10 +1108,10 @@ def _opt_conjs_for_leaf(tree, _leaf):
         
         # Group by parent_ind
         par_splits = Dict.empty(i4, u8_lst)
-        # print("Node:", node_ind, "npar=", len(node.parents), "mdepth=", min_node_depths[node_ind])
+        # print("Node:", node_ind, "npar=", len(node.parents), "mdepth=", max_node_depths[node_ind])
         for i, (p_node_ind, enc_split) in enumerate(node.parents):
             is_cont, negated, split, val = decode_split(enc_split)
-            # print("<<", is_cont, negated, split, val)
+            # print("<<", node_ind, p_node_ind)
             if(p_node_ind not in par_splits):
                 par_splits[p_node_ind] = List.empty_list(u8)
             lst = par_splits[p_node_ind]
@@ -1110,8 +1121,9 @@ def _opt_conjs_for_leaf(tree, _leaf):
 
         for node_opt_conj in node_opt_conjs:
             for p_node_ind, splits in par_splits.items():
+                # print("<<", p_node_ind)
                 cpy = node_opt_conj.copy()
-                cpy.append(splits)
+                cpy.insert(0,splits)
                 par_opt_conjs = opt_conjs[p_node_ind]
                 par_opt_conjs.append(cpy)
 
@@ -1123,6 +1135,7 @@ def _opt_conjs_for_leaf(tree, _leaf):
     #         print(i, len(opt_conjs[i]), "*" if i ==_leaf.index else "")
 
     # The root's slot holds the full set
+    print("<<", _leaf.index, len(opt_conjs[0]))
     return opt_conjs[0]
 
 
@@ -1138,12 +1151,19 @@ def get_opt_conjs_for_label(tree, y):
         if(np.max(leaf.counts) == leaf.counts[y_ind]):
             class_leaves.append(leaf)
 
+    print("n_class leaves", len(class_leaves))
+
     opt_conjs = List.empty_list(u8_lst_lst)
-    for leaf in class_leaves:
+    for i, leaf in enumerate(class_leaves):
         leaf_opt_conjs = _opt_conjs_for_leaf(tree, leaf)
+        print(i, len(leaf_opt_conjs))
         for oc in leaf_opt_conjs:
             opt_conjs.append(oc)
 
+    # # Reverse it
+    # rev_opt_conjs = List.empty_list(u8_lst_lst)
+    # for i in range(-1, len(opt_conjs)-1, -1):
+    #     rev_opt_conjs.append(opt_conjs[i])
 
     
     # print("L=", len(opt_conjs))
@@ -1488,9 +1508,9 @@ class TreeClassifier(object):
 
         key = split
         if(self.inv_mapper):
-            is_neg, key, val = self.inv_mapper(key, mapped_val)
+            is_neg, key, mapped_val = self.inv_mapper(key, mapped_val)
             negated ^= is_neg
-        return (negated, key, val)
+        return (negated, key, mapped_val)
 
 
     def get_conds(self, label, literals="all", conjuncts="all"):
