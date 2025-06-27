@@ -561,11 +561,10 @@ def copy_and_remove_overlapping(a, b):
 
 
 @njit(cache=True)
-def new_seq_cov_root(locs, tree, leaf):
+def new_seq_cov_root(locs, tree, sample_inds, y_counts):
     (c, best_split, best_val,  iterative,
         node_dict, context_stack, conj_slip) = locs
 
-    sample_inds = leaf.sample_inds
     root_c = _struct_from_pointer(SplitterContextType, c.root_context_ptr)
     new_ind_pool = copy_and_remove_overlapping(root_c.node.sample_inds, sample_inds)
 
@@ -581,9 +580,9 @@ def new_seq_cov_root(locs, tree, leaf):
     print("node_id:", node_id)
 
     if(node_id == -1):
-        node_id = i4(len(nodes))        
-        y_counts = root_c.y_counts - leaf.counts
-        impurity = tree.impurity_func(y_counts.astype(np.float32)/f4(len(new_ind_pool)))
+        node_id = i4(len(nodes))
+        conj_y_counts = root_c.y_counts - y_counts
+        impurity = tree.impurity_func(conj_y_counts.astype(np.float32)/f4(len(new_ind_pool)))
 
         # if(impurity <= 0.0):
 
@@ -596,8 +595,8 @@ def new_seq_cov_root(locs, tree, leaf):
             if(tree.ifit_enabled): tree.context_cache[split_chain] = new_c
 
         
-        node = TreeNode_ctor(TTYPE_NODE, node_id, new_ind_pool, y_counts, tree)
-        reinit_splittercontext(new_c, node, None, new_ind_pool, y_counts, impurity)
+        node = TreeNode_ctor(TTYPE_NODE, node_id, new_ind_pool, conj_y_counts, tree)
+        reinit_splittercontext(new_c, node, None, new_ind_pool, conj_y_counts, impurity)
         context_stack.append(new_c)
 
         tree.nodes.append(node)
@@ -608,9 +607,13 @@ def new_seq_cov_root(locs, tree, leaf):
     else:
         node = tree.nodes[node_id]
 
+
+    node.conj_slip = max(conj_slip, node.conj_slip)
+    node.path_conj_slip = max(node.path_conj_slip, c.node.path_conj_slip)
+    node.path_conj_slip = min(node.conj_slip, c.node.path_conj_slip)
     # node.parents.append((c.node.index, -1))
-    node.conj_slip = leaf.conj_slip
-    node.path_conj_slip = leaf.path_conj_slip
+    # node.conj_slip = leaf.conj_slip
+    # node.path_conj_slip = leaf.path_conj_slip
     return node
 
     # print(node_id, "<<", sample_inds)
@@ -850,7 +853,7 @@ def fit_tree(tree, iterative=False):
                 c.node.ttype = TTYPE_LEAF
                 tree.leaves.append(c.node)
             else:
-                ptr = _pointer_from_struct(c)
+                # ptr = _pointer_from_struct(c)
 
                 locs = (c, split, val, iterative, node_dict,
                         context_stack, conj_slip)
@@ -876,6 +879,16 @@ def fit_tree(tree, iterative=False):
     return 0
 
 
+def divide_and_conquer(locs, split_info):
+    (inds_l, inds_r, y_counts_l, y_counts_r, imp_tot,
+             imp_l, imp_r, val) = split_info
+    node_l = new_node(locs, tree, inds_l, y_counts_l, imp_l, 0)
+    node_r = new_node(locs, tree, inds_r, y_counts_r, imp_r, 1)
+
+
+def sequential_cover(loc, split_info):
+    (inds_l, inds_r, y_counts_l, y_counts_r, imp_tot,
+         imp_l, imp_r, val) = split_info
 
 
 
@@ -953,8 +966,24 @@ def fit_seq_cov(tree, iterative=False):
                 locs = (c, split, val, iterative, node_dict,
                         context_stack, conj_slip)
 
-                node_l = new_node(locs, tree, inds_l, y_counts_l, imp_l, 0, discard_left)
-                node_r = new_node(locs, tree, inds_r, y_counts_r, imp_r, 1, ~discard_left)
+                node_r = node_l = -1
+                if(discard_left):
+                    node_r = new_node(locs, tree, inds_r, y_counts_r, imp_r, 1)
+                    if(imp_r == 0.0):
+                        if(imp_l == 0.0):    
+                            node_l = new_node(locs, tree, inds_l, y_counts_l, imp_l, 0)    
+                        else:
+                            new_seq_cov_root(locs, tree, inds_r, y_counts_r)
+                else:
+                    node_l = new_node(locs, tree, inds_l, y_counts_l, imp_l, 0)
+                    if(imp_l == 0.0):
+                        
+                        if(imp_r == 0.0):    
+                            node_r = new_node(locs, tree, inds_r, y_counts_r, imp_r, 1)
+                        else:
+                            new_seq_cov_root(locs, tree, inds_l, y_counts_l)
+
+                
 
                 if(discard_left):
                     split_data = SplitData(i4(split), i4(val), i4(node_l), i4(node_r), u1(False))
@@ -965,14 +994,14 @@ def fit_seq_cov(tree, iterative=False):
                 c.node.op_enum = OP_EQ
 
                 ###############
-                leaf = None
-                if(imp_l == 0.0 and ~discard_left):
-                    leaf = tree.nodes[node_l] 
-                elif(imp_r == 0.0 and discard_left):
-                    leaf = tree.nodes[node_r]
+                # leaf = None
+                # if(imp_l == 0.0 and ~discard_left):
+                #     leaf = tree.nodes[node_l] 
+                # elif(imp_r == 0.0 and discard_left):
+                #     leaf = tree.nodes[node_r]
 
-                if(leaf is not None):
-                    new_seq_cov_root(locs, tree, leaf)
+                # if(leaf is not None):
+                #     new_seq_cov_root(locs, tree, leaf)
 
                 ##############
 
@@ -1442,6 +1471,13 @@ def str_tree(tree, inv_mapper=None, leaf_inds=False, node_inds=False):
             indent = len(s)
             for i, sd in enumerate(splits):
                 if(i > 0): s += "\n"+" "*indent
+
+
+                F = f"F:{sd.left}" if sd.left != -1 else ""
+                R = f"T:{sd.right}" if sd.right != -1 else ""
+                FR = ' '.join([F,R])
+                print("FR", sd.left, sd.right, F, R)
+
                 if(not sd.is_continous): #<-A threshold of 1 means it's binary
                     inv_map = nom_v_inv_maps[sd.split_ind]
 
@@ -1457,11 +1493,12 @@ def str_tree(tree, inv_mapper=None, leaf_inds=False, node_inds=False):
                         negated ^= is_neg
 
                     eq_neq = "!=" if negated else "=="
-                    s += f"({inp_key},{eq_neq}{inp_val!r})[F:{sd.left} T:{sd.right}"
+                    s += f"({inp_key},{eq_neq}{inp_val!r})[{FR}"
                 else:
                     thresh = np.int32(sd.val).view(np.float32) if op != OP_EQ else np.int32(sd.val)
+
                     instr = str_op(op)+str(thresh) if op != OP_ISNAN else str_op(op)
-                    s += f"({sd.split_ind},{instr})[F:{sd.left} T:{sd.right}"
+                    s += f"({sd.split_ind},{instr})[{FR}"
                     # s += "(%s,%s)[L:%s R:%s" % (sd.split_ind,instr,sd.left,sd.right)
                 s += "] "# if(split[4] == -1) else ("NaN:" + str(split[4]) + "] ")
             if(node_inds):
