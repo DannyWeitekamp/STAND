@@ -180,32 +180,45 @@ def _insert_w_ds_maps(i, ds, x_nom, y):
 
 
 @njit(cache=True)
-def _update_summary_stats_reinit(ds):
+def _update_summary_stats(ds, iterative=False):
     ''' Update summary helper stats '''
+
+    # Update X_nom and n_vals
     if(not ds.nom_v_contiguous):
-        ds.n_vals = np.empty(len(ds.nom_v_maps), dtype=np.int32)
+        if(not iterative):
+            ds.n_vals = np.empty(len(ds.nom_v_maps), dtype=np.int32)
         for j, nv_map in enumerate(ds.nom_v_maps):
             ds.n_vals[j] = len(nv_map)
     else:
-        ds.n_vals = np.empty(ds.X_nom.shape[1], dtype=np.int32)
-        for j in range(ds.X_nom.shape[1]):
-            mx = max(ds.X_nom[:,j]) if len(ds.X_nom[:,j]) > 0 else 0
-            ds.n_vals[j] = mx+1
+        if(iterative):
+            x_nom = ds.X_nom[-1]
+            # print("x_nom", x_nom)
+            for j in range(ds.X_nom.shape[1]):
+                if(x_nom[j]+1 > ds.n_vals[j]):
+                    ds.n_vals[j] = x_nom[j]+1 
+        else:
+            ds.n_vals = np.empty(ds.X_nom.shape[1], dtype=np.int32)
+            for j in range(ds.X_nom.shape[1]):
+                mx = max(ds.X_nom[:,j]) if len(ds.X_nom[:,j]) > 0 else 0
+                ds.n_vals[j] = mx+1
 
-            
+    # Update summary totals
     ds.n_samples = len(ds.Y)
     ds.n_nom_features = ds.X_nom.shape[1]
     ds.n_cont_features = ds.X_cont.shape[1]
-
+    prev_n_classes = ds.n_classes
     ds.n_classes = len(ds.y_counts)
 
-    if(ds.y_contiguous):
-        ds.u_ys = np.arange(ds.n_classes, dtype=np.int32)
-    else:
-        ds.u_ys = np.empty(ds.n_classes, dtype=np.int32)
-        for i, v in enumerate(ds.y_map.keys()):
-            ds.u_ys[i] = v
+    # Update u_ys
+    if(not iterative or prev_n_classes != ds.n_classes):
+        if(ds.y_contiguous):
+            ds.u_ys = np.arange(ds.n_classes, dtype=np.int32)
+        else:
+            ds.u_ys = np.empty(ds.n_classes, dtype=np.int32)
+            for i, v in enumerate(ds.y_map.keys()):
+                ds.u_ys[i] = v
 
+     # Update pos_y_ind
     ds.pos_y_ind = ds.y_map.get(ds.pos_y, -1)
     # print("UPDATE1", ds.y_map, ds.pos_y, ds.pos_y_ind)
 
@@ -244,7 +257,7 @@ def reinit_datastats(ds, X_nom, X_cont, Y):
     for i in range(len(X_nom)):
         _insert_w_ds_maps(i, ds, X_nom[i], Y[i])
 
-    _update_summary_stats_reinit(ds)
+    _update_summary_stats(ds, False)
     if(ds.ifit_enabled): _assign_buffers(ds)
     ds.is_initialized = True
     return 0
@@ -298,42 +311,6 @@ def _expand_buffers(ds, x_nom, x_cont, y):
     ds.Y = ds.Y_buffer[:l+1]
     # print("FLEEP", ds.Y.shape)
 
-
-
-@njit(cache=True)
-def _update_summary_stats_update(ds):
-    ''' Update summary helper stats '''
-
-    if(not ds.nom_v_contiguous):
-        # ds.n_vals = np.empty(len(ds.nom_v_maps), dtype=np.int32)
-        for j, nv_map in enumerate(ds.nom_v_maps):
-            ds.n_vals[j] = len(nv_map)
-    else:
-        # print(ds.X_nom)
-        x_nom = ds.X_nom[-1]
-        # print("x_nom", x_nom)
-        for j in range(ds.X_nom.shape[1]):
-            if(x_nom[j]+1 > ds.n_vals[j]):
-                ds.n_vals[j] = x_nom[j]+1 
-            
-    ds.n_samples = len(ds.Y)
-    ds.n_nom_features = ds.X_nom.shape[1]
-    ds.n_cont_features = ds.X_cont.shape[1]
-    prev_n_classes = ds.n_classes
-    ds.n_classes = len(ds.y_counts)
-
-    if(prev_n_classes != ds.n_classes):
-        if(ds.y_contiguous):
-            ds.u_ys = np.arange(ds.n_classes, dtype=np.int32)
-        else:
-            ds.u_ys = np.empty(ds.n_classes, dtype=np.int32)
-            for i, v in enumerate(ds.y_map.keys()):
-                ds.u_ys[i] = v
-
-    
-    ds.pos_y_ind = ds.y_map.get(ds.pos_y, -1)
-    # print("UPDATE1", ds.y_map, ds.pos_y, ds.pos_y_ind)
-
 @njit(cache=True)
 def update_data_stats(ds, x_nom, x_cont, y):
     ''' Update the data stats for an ifit() '''
@@ -368,6 +345,6 @@ def update_data_stats(ds, x_nom, x_cont, y):
 
     # print("D")
     # print(ds.n_vals)
-    _update_summary_stats_update(ds)
+    _update_summary_stats(ds, True)
     ds.is_initialized = True
     return 0
