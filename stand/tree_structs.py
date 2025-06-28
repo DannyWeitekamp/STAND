@@ -40,6 +40,7 @@ treenode_fields = [
     ('path_conj_slip',f8),
     ('ttype', u1),
     ('op_enum', u1),
+    ('is_root', u1),
 
     ### Attributes for Hierarchical Shrinkage ###
 
@@ -73,7 +74,7 @@ OP_EQ = u1(4)
 i4_u8_tup_type = Tuple((i4,u8))
 
 @njit(cache=True)
-def TreeNode_ctor(ttype, index, sample_inds, counts, tree):
+def TreeNode_ctor(ttype, index, sample_inds, counts, tree, is_root=False):
     st = new(TreeNodeType)
     st.index = index
     st.sample_inds = sample_inds    
@@ -85,6 +86,7 @@ def TreeNode_ctor(ttype, index, sample_inds, counts, tree):
     st.ttype = ttype
     st.op_enum = OP_NOP
     st.nominal_split_cache_ptrs = np.zeros(tree.data_stats.X_nom.shape[1], dtype=np.int64)
+    st.is_root = is_root
     return st
 
 
@@ -153,9 +155,10 @@ SplitterContext, SplitterContextType = define_structref("SplitterContext",splitt
 SplitterContextType.__str__ = lambda self: "SplitterContextType"
 SplitterContext.__str__ = lambda self: f"<SplitterContext at {hex(id(self))}>"
 
+
 @njit(cache=True)
 def SplitterContext_ctor(split_chain):
-    st = new(SplitterContextType)    
+    st = new(SplitterContextType)
     st.n_last_update = 0 
     st.nominal_split_cache_ptrs = np.zeros((32,),dtype=np.int64)
     st.continous_split_cache_ptrs = np.zeros((32,),dtype=np.int64)
@@ -165,9 +168,9 @@ def SplitterContext_ctor(split_chain):
 def reinit_splittercontext(c, node, root_c, sample_inds, y_counts, impurity):
     c.node = node
     if(root_c is None):
-        c.root_context_ptr = _pointer_from_struct(c)
+        c.root_context_ptr = _pointer_from_struct_incref(c)
     else:
-        c.root_context_ptr = _pointer_from_struct(root_c)
+        c.root_context_ptr = _pointer_from_struct_incref(root_c)
 
     c.sample_inds = sample_inds
     c.y_counts = y_counts
@@ -207,6 +210,7 @@ TreeParams, TreeParamsType = define_structref("TreeParams", tree_params_fields, 
 #### Tree ####
 
 i8_arr = i8[::1]
+# impurity_func_sig = f8(f4[:], i4[:], i4)
 impurity_func_sig = f8(f4[:])
 split_chooser_sig = Tuple((i8[::1],f8[::1]))(TreeParamsType, f8[::1], i8)
 pred_chooser_sig = i8(ListType(TreeNodeType))
@@ -216,6 +220,7 @@ pred_chooser_sig = i8(ListType(TreeNodeType))
 tree_fields = [
     # A list of the actual nodes of the tree.
     ('nodes', ListType(TreeNodeType)),
+    ('roots', ListType(TreeNodeType)),
     ('leaves', ListType(TreeNodeType)),
 
     # A cache of split contexts keyed by the sequence of splits so far
@@ -270,6 +275,7 @@ def Tree_ctor(tree_type, split_chooser_addr, pred_chooser_addr,
          slip, n_slip_atten, w_path_slip, lam_p, lam_l, lam_e):
     st = new(tree_type)
     st.nodes = List.empty_list(TreeNodeType)
+    st.roots = List.empty_list(TreeNodeType)
     st.leaves = List.empty_list(TreeNodeType)
     # st.u_ys = np.zeros(0,dtype=np.int32)
     st.context_cache = new_akd(u8_arr,SplitterContextType)#Dict.empty(i8_arr, SplitterContextType)

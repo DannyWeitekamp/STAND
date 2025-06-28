@@ -82,22 +82,26 @@ stand_fields = [
     #  are not also in the parents branches of the positive leaf. 
     ('invar_exts', DictType(i4, invar_ext_t)),
 
-    # The positive class 
-    ('positive_class', i4),
 ]
 
 STAND, STANDTypeTemplate = define_structref_template("STAND", stand_fields, define_constructor=False)
 
 
 class STANDClassifier(object):
-    def __init__(self, positive_class=1, pred_kind="max_leaves", **kwargs):
+    def __init__(self, posy_y=1, fit_method="divide_and_conquer", pred_kind="max_leaves",  **kwargs):
         kwargs['split_choice'] = kwargs.get('split_choice', 'dyn_all_near_max')
         # print("SPLIT CHOICE:", kwargs['split_choice'])
         self.pred_kind = pred_kind
-        self.op_tree_classifier = TreeClassifier(preset_type='option_tree', **kwargs)
+
+        if(fit_method == "divide_and_conquer"):
+            default_preset = 'option_tree'
+        else:
+            default_preset = 'option_seq_cov'
+        self.op_tree_classifier = TreeClassifier(
+            preset_type=default_preset, fit_method=fit_method, **kwargs)
         self.op_tree = self.op_tree_classifier.tree
         self.stand_type = self.gen_stand_type(self.op_tree_classifier.tree_type)
-        self.stand = STAND_ctor(self.stand_type, self.op_tree, positive_class)
+        self.stand = STAND_ctor(self.stand_type, self.op_tree)
 
 
     def gen_stand_type(self, tree_type):
@@ -206,10 +210,9 @@ u8_arr = u8[::1]
 
 
 @njit(cache=True)
-def STAND_ctor(stand_type, op_tree, positive_class):
+def STAND_ctor(stand_type, op_tree):
     st = new(stand_type)
     st.op_tree = op_tree
-    st.positive_class = positive_class
     st.invar_exts = Dict.empty(i4, invar_ext_t)
     return st
 
@@ -415,14 +418,17 @@ def stand_filter_example(tree, x_nom, x_cont):
     #  if multiple splits are possible. Keep track of visited in case
     #  of loops (Although there should not be any loops).
     visted_node_mask = np.zeros((len(tree.nodes),),dtype=np.uint8)
-    visted_node_mask[0] = TO_VISIT
+    nodes_to_visit = np.empty(len(tree.roots), dtype=np.int64)
+    for i, root in enumerate(tree.roots):
+        visted_node_mask[root.index] = TO_VISIT
+        nodes_to_visit[i] = root.index
 
     # For each evaluation of a split that could lead to node i 
     #  count the number of splits that lead the example to i or not i
     dest_weights = np.zeros((len(tree.nodes), 2), dtype=np.float32)
 
 
-    nodes_to_visit = np.nonzero(visted_node_mask==TO_VISIT)[0]
+    # nodes_to_visit = np.nonzero(visted_node_mask==TO_VISIT)[0]
     leaves = List()
 
     lam = tree.params.lam_l
@@ -471,10 +477,11 @@ def stand_filter_example(tree, x_nom, x_cont):
                         dest_weights[sd.left, 1] += node_weight
                         _n = sd.left
 
-                    if(visted_node_mask[_n] != VISITED):
+                    if(_n != -1 and visted_node_mask[_n] != VISITED):
                         visted_node_mask[_n] = TO_VISIT
                         
             else:
+                # print("LEAF", node.index)
                 leaves.append(node)
 
         #Mark all nodes_to_visit as visited so we don't mark them for a revisit
@@ -527,6 +534,10 @@ def stand_predict_y_density(stand, X_nom, X_cont, print_n_leaves=False):
     for i in range(L):
         x_nom, x_cont = X_nom[i], X_cont[i]
         leaves, gen_prob = stand_filter_example(tree, x_nom, x_cont)
+
+        if(len(leaves) == 0):
+            probs[i] = y_density[i] = np.ones(len(y_uvs))/len(y_uvs)
+            continue
 
         n_leaves = np.zeros(len(y_uvs), dtype=np.int64)
         tot_leaf_weight = np.zeros(len(y_uvs), dtype=np.float32)
@@ -591,8 +602,8 @@ def stand_predict_y_density(stand, X_nom, X_cont, print_n_leaves=False):
             # print(f"LEAF: {y} {leaf.index} {n_samples}\t", ext_prob, w_ext_matches, w_ext_fails)
             # print(i, y, ":", w_ext_matches/(w_ext_matches+w_ext_fails), w_ext_matches, w_ext_fails)
 
-
         best_ind = np.argmax(probs[i])
+
         
         # print("probs", probs[i], best_ind, best_p)
         
@@ -678,13 +689,14 @@ def stand_predict_y_density(stand, X_nom, X_cont, print_n_leaves=False):
         # print()
         # zz_max = np.empty((1,len(y_uvs)), dtype=np.float32)
 
+        # print("A")
         for j in range(len(y_uvs)):
             # print(j, "y[p]", -np.sort(-zz_leaf_probs[:,j]))
             # print(j, "y[d]", -np.sort(-zz_leaf_density[:,j]))
             max_k = np.argmax(zz_leaf_probs[:,j])
             zz_max[i,j] = zz_leaf_probs[max_k,j] #/ w_root #max_leaf_weight if max_leaf_weight != 0.0 else 1.0
             # print("BEST:", i, -np.sort(-zz_leaf_probs[:,i][zz_leaf_probs[:,i]>=zz_max[0,i]*.9]))
-
+        # print("B")
         # probs[i] = np.sum(zz_leaf_probs, axis=0)/tot_leaf_weight
         # probs[i] = np.sum(probs[i]*probs[i], axis=0)/np.sum(probs[i], axis=0)
 
@@ -793,11 +805,12 @@ def instance_certainty(stand, X_nom, X_cont):
 
 @njit(cache=True)
 def instance_ambiguity(stand, x_nom, x_cont):
-
     tree = stand.op_tree
-    if(stand.positive_class not in tree.data_stats.y_map):
+
+    pc = tree.data_stats.pos_y_ind
+    if(pc == -1):
         return 0.0
-    pc = tree.data_stats.y_map[stand.positive_class]
+    # pc = tree.data_stats.y_map[stand.positive_class]
     # nom_v_maps = tree.data_stats.nom_v_maps
     
     leaves = filter_leaves(tree, x_nom, x_cont)

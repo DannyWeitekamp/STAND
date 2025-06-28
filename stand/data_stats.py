@@ -206,8 +206,8 @@ def _update_summary_stats_reinit(ds):
         for i, v in enumerate(ds.y_map.keys()):
             ds.u_ys[i] = v
 
-    print("UPDATE2", ds.y_map, ds.pos_y)
     ds.pos_y_ind = ds.y_map.get(ds.pos_y, -1)
+    # print("UPDATE1", ds.y_map, ds.pos_y, ds.pos_y_ind)
 
 
 @njit(cache=True)
@@ -330,8 +330,9 @@ def _update_summary_stats_update(ds):
             for i, v in enumerate(ds.y_map.keys()):
                 ds.u_ys[i] = v
 
-    print("UPDATE1", ds.y_map, ds.pos_y)
+    
     ds.pos_y_ind = ds.y_map.get(ds.pos_y, -1)
+    # print("UPDATE1", ds.y_map, ds.pos_y, ds.pos_y_ind)
 
 @njit(cache=True)
 def update_data_stats(ds, x_nom, x_cont, y):
