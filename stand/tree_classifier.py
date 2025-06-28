@@ -36,7 +36,7 @@ config.THREADING_LAYER = 'thread_safe'
 # impurity_func_sig = f8(f4[:])
 
 @njit(impurity_func_sig, cache=True)
-def gini_impurity(probs):#, counts, pos_y_ind):
+def gini_impurity(probs, counts, pos_y_ind):
     # if(total > 0):
     # print("probs", probs)
     s = 0.0
@@ -45,21 +45,22 @@ def gini_impurity(probs):#, counts, pos_y_ind):
         s += prob * prob 
     return 1.0 - s
 
-# @njit(impurity_func_sig, cache=True)
-# def foil_impurity(probs, counts, pos_y_ind):
-#     # if(total > 0):
-#     # print("probs", probs)
-#     s = 0.0
-#     pos_prob = probs[pos_y_ind]
-#     pos_count = counts[pos_y_ind]
-#     return np.log(1.0-pos_prob) * pos_count
+@njit(impurity_func_sig, cache=True)
+def foil_impurity(probs, counts, pos_y_ind):
+    # if(total > 0):
+    # print("probs", probs)
+    s = 0.0
+    pos_prob = probs[pos_y_ind]
+    pos_count = counts[pos_y_ind]
+    # neg_count = np.sum(counts) - pos_count
+    return -np.log(pos_prob) * pos_count
     
 
 
 impurity_funcs = {
     "gini" : gini_impurity,
     "entropy"  : None,
-    # "foil_impurity" : foil_impurity
+    "foil" : foil_impurity
 }
 
 
@@ -187,6 +188,7 @@ def _fill_nominal_impurities(tree, splitter_context, split_cache, n_vals_j, k_j)
 
     n_samples = len(splitter_context.sample_inds)
     impurity_func = tree.impurity_func
+    pos_y_ind = tree.data_stats.pos_y_ind
 
     # print(v_counts)
 
@@ -250,12 +252,12 @@ def _fill_nominal_impurities(tree, splitter_context, split_cache, n_vals_j, k_j)
                 if(l_pure):
                     imp_l = 0.0    
                 else:
-                    imp_l = impurity_func(w_y_prob_l.astype(np.float32))
+                    imp_l = impurity_func(w_y_prob_l.astype(np.float32), counts_l,  pos_y_ind)
 
                 if(r_pure):
                     imp_r = 0.0    
                 else:
-                    imp_r = impurity_func(w_y_prob_r.astype(np.float32))
+                    imp_r = impurity_func(w_y_prob_r.astype(np.float32), counts_r, pos_y_ind)
                 imp_tot = (w_v_margin_l * imp_l) + \
                           (w_v_margin_r * imp_r)
 
@@ -474,7 +476,7 @@ def build_root(tree, iterative=False):
     Y = ds.Y
     sample_inds = np.arange(len(Y),dtype=np.uint32)
 
-    impurity = tree.impurity_func(ds.y_counts.astype(np.float32)/f4(len(Y)))
+    impurity = tree.impurity_func(ds.y_counts.astype(np.float32)/f4(len(Y)), ds.y_counts, ds.pos_y_ind)
     
     #Make Root Node
     node = TreeNode_ctor(TTYPE_NODE, i4(0), sample_inds, ds.y_counts, tree, True)
@@ -584,6 +586,7 @@ def new_seq_cov_root(locs, tree, sample_inds, y_counts):
     # new_ind_pool = copy_and_remove_overlapping(old_ind_pool, sample_inds)
 
     nodes = tree.nodes
+    ds = tree.data_stats
     node_id = i4(-1)
     if (tree.cache_nodes): 
         node_id = node_dict.get(new_ind_pool,-1)
@@ -596,7 +599,7 @@ def new_seq_cov_root(locs, tree, sample_inds, y_counts):
         if(tree.cache_nodes): node_dict[new_ind_pool] = node_id
 
         conj_y_counts = root_c.y_counts - y_counts
-        impurity = tree.impurity_func(conj_y_counts.astype(np.float32)/f4(len(new_ind_pool)))
+        impurity = tree.impurity_func(conj_y_counts.astype(np.float32)/f4(len(new_ind_pool)), conj_y_counts, ds.pos_y_ind)
         
         # if(impurity <= 0.0):
         

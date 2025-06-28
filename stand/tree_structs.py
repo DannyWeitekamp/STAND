@@ -210,8 +210,7 @@ TreeParams, TreeParamsType = define_structref("TreeParams", tree_params_fields, 
 #### Tree ####
 
 i8_arr = i8[::1]
-# impurity_func_sig = f8(f4[:], i4[:], i4)
-impurity_func_sig = f8(f4[:])
+impurity_func_sig = f8(f4[:], u4[:], i4)
 split_chooser_sig = Tuple((i8[::1],f8[::1]))(TreeParamsType, f8[::1], i8)
 pred_chooser_sig = i8(ListType(TreeNodeType))
 
