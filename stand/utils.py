@@ -1,11 +1,26 @@
 #COPIED FROM CRE EXPERIMENTAL BRANCH
 
-from numba import types, njit, u1,u2,u4,u8, i8,i2, literally
+from numba import types, njit, u1,u2,i4,u4,u8, i8,i2, literally
 from numba.types import Tuple, void
 from numba.experimental.structref import _Utils, imputils
 from numba.extending import intrinsic
 from numba.core import cgutils
 from llvmlite.ir import types as ll_types
+
+
+@njit(cache=True)
+def encode_split(is_cont, negated, split, val):
+    return u8((is_cont << 63) | (negated << 62) | (split << 32) | val)
+
+
+@njit(Tuple((u1,u1,i4,i4))(u8),cache=True)
+def decode_split(enc_split):
+    is_cont = enc_split >> 63
+    negated = enc_split >> 62  & u8(1)
+    split =  ((enc_split << 2) >> 34) & 0xFFFFFFFF
+    val =     enc_split               & 0xFFFFFFFF
+    return is_cont, negated, split, val
+
 
 
 

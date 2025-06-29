@@ -113,6 +113,7 @@ class STANDClassifier(object):
         self.op_tree_classifier.fit(X_nom, X_cont, Y, miss_mask, ft_weights)
         # with PrintElapse("fit_invar_ext"):
         try:
+            # print("fit_invar_ext")
             fit_invar_ext(self.stand)
         except Exception as e:
             print(self)
@@ -252,7 +253,6 @@ def calc_invar_weight(tree, leaf, enc_split):
 
             par_cache_ptr = p_node.nominal_split_cache_ptrs[split]
             par_spl_c = _struct_from_pointer(NominalSplitCacheType, par_cache_ptr)
-            
             # par_tot = np.sum(par_spl_c.par_w_v_probs)
 
             # print("A")

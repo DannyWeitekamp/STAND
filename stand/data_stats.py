@@ -1,4 +1,5 @@
 from stand.structref import define_structref, define_structref_template
+from stand.utils import encode_split, decode_split
 from numba import njit
 from numba import optional
 from numba import void,b1,u1,u2,u4,u8,i1,i2,i4,i8,f4,f8,c8,c16
@@ -41,6 +42,8 @@ data_stats_fields = [
     ('X_cont_buffer', f4[:,::1]),
     ('Y_buffer', i4[::1]),
 
+    ('all_nom_splits', u8[::1]),    
+
     ### Remapping (to make contiguous) / Reordering structures ###
 
     # Maps y labels to [0,...]
@@ -75,6 +78,9 @@ data_stats_fields = [
 
     # The total number of nominal features
     ('n_nom_features', i4),
+
+    # # The total number of unique nominal values over all features
+    # ('n_nom_vals', i4),
 
     # The total number of continous features
     ('n_cont_features', i4),
@@ -183,12 +189,14 @@ def _insert_w_ds_maps(i, ds, x_nom, y):
 def _update_summary_stats(ds, iterative=False):
     ''' Update summary helper stats '''
 
-    # Update X_nom and n_vals
+    # Update n_vals, n_nom_vals
+    
     if(not ds.nom_v_contiguous):
         if(not iterative):
             ds.n_vals = np.empty(len(ds.nom_v_maps), dtype=np.int32)
         for j, nv_map in enumerate(ds.nom_v_maps):
             ds.n_vals[j] = len(nv_map)
+
     else:
         if(iterative):
             x_nom = ds.X_nom[-1]
@@ -201,6 +209,19 @@ def _update_summary_stats(ds, iterative=False):
             for j in range(ds.X_nom.shape[1]):
                 mx = max(ds.X_nom[:,j]) if len(ds.X_nom[:,j]) > 0 else 0
                 ds.n_vals[j] = mx+1
+
+    # Update all_nom_splits
+    n_nom_vals = np.sum(ds.n_vals)
+    ds.all_nom_splits = np.empty(n_nom_vals, dtype=np.uint64)
+    k = 0
+    for i, nv in enumerate(ds.n_vals):
+        # print(":", i, nv, k, len(ds.all_nom_splits))
+        if(nv == 2): nv = 1
+        for j in range(nv):
+            ds.all_nom_splits[k] = encode_split(0,0,i,j)
+            k += 1
+    ds.all_nom_splits = ds.all_nom_splits[:k]
+
 
     # Update summary totals
     ds.n_samples = len(ds.Y)

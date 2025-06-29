@@ -1,5 +1,5 @@
 from stand.structref import define_structref, define_structref_template
-from stand.utils import _struct_from_pointer, _pointer_from_struct, _pointer_from_struct_incref, _decref_pointer, _decref_structref
+from stand.utils import encode_split, decode_split, _struct_from_pointer, _pointer_from_struct, _pointer_from_struct_incref, _decref_pointer, _decref_structref
 from numba.experimental.structref import new
 import numpy as np
 from numpy.random import choice
@@ -171,9 +171,9 @@ def unique_counts(inp):
 
 
 @njit(cache=True)
-def _fill_nominal_impurities(tree, splitter_context, split_cache, n_vals_j, k_j):
+def _fill_nominal_impurities(tree, splitter_context, split_cache, split_ind, ft_val):#, k_j):
     b_ft_val = 0 
-
+    # print("MOO")
     v_counts       = split_cache.v_counts
     y_counts_per_v = split_cache.y_counts_per_v
     w_v_probs       = split_cache.w_v_probs
@@ -190,84 +190,84 @@ def _fill_nominal_impurities(tree, splitter_context, split_cache, n_vals_j, k_j)
     impurity_func = tree.impurity_func
     pos_y_ind = tree.data_stats.pos_y_ind
 
-    # print(v_counts)
+    # print(ft_val, v_counts, y_counts_per_v[ft_val])
 
     #If this feature is found to be constant then skip computing impurity
-    if(np.sum(v_counts > 0) <= 1):
+    if(np.sum(v_counts > 0) <= 1 or v_counts[ft_val] == 0):
         # print("ZZAB")
         # split_cache.best_v = 0
-        impurities[k_j,0] = impurity
-        impurities[k_j,1] = impurity
-        impurities[k_j,2] = impurity
+        impurities[split_ind,0] = impurity
+        impurities[split_ind,1] = impurity
+        impurities[split_ind,2] = impurity
     else:
         # print("ZZBB")
-        b_imp_tot, b_imp_l, b_imp_r = np.inf, 0, 0,
-        for ft_val in range(n_vals_j):
+        # b_imp_tot, b_imp_l, b_imp_r = np.inf, 0, 0,
+        # for ft_val in range(n_vals_j):
 
-            counts_r = y_counts_per_v[ft_val]
-            total_r = np.sum(counts_r)
-            counts_l = y_counts-counts_r
-            total_l = n_samples-total_r
+        counts_r = y_counts_per_v[ft_val]
+        total_r = np.sum(counts_r)
+        counts_l = y_counts-counts_r
+        total_l = n_samples-total_r
+        # print(counts_l, counts_r)
 
+        if(total_l == 0 or total_r == 0):
+            imp_l = 1.0
+            imp_r = 1.0
+            imp_tot = 1.0
 
-            if(total_l == 0 or total_r == 0):
-                imp_l = 1.0
-                imp_r = 1.0
-                imp_tot = 1.0
+            # counts_l = y_counts-counts_r
+            # imp_l = impurity_func(f4(total_l), counts_l.astype(np.float32))
+            # imp_r = impurity_func(f4(total_r), counts_r.astype(np.float32))
+            # imp_tot = ((total_l/n_samples) * imp_l) + \
+            #           ((total_r/n_samples) * imp_r)
+            # print("BAD TOTAL:", k_j, total_l, total_r)
+        else:
 
-                # counts_l = y_counts-counts_r
-                # imp_l = impurity_func(f4(total_l), counts_l.astype(np.float32))
-                # imp_r = impurity_func(f4(total_r), counts_r.astype(np.float32))
-                # imp_tot = ((total_l/n_samples) * imp_l) + \
-                #           ((total_r/n_samples) * imp_r)
-                # print("BAD TOTAL:", k_j, total_l, total_r)
+            # RR = np.sum(w_y_probs_per_v[ft_val]*np.array([0.0,1.0]))
+            # LL = 1.0 - RR
+            # print("A")
+            w_v_margin_r = np.sum(w_y_probs_per_v[ft_val])
+            w_y_prob_r = w_y_probs_per_v[ft_val] / w_v_margin_r
+            w_v_margin_l = 1.0-w_v_margin_r
+            w_y_prob_l = (w_y_probs - w_y_probs_per_v[ft_val]) / w_v_margin_l                # print("B")
+            # w_y_prob_l = (w_v_probs[ft_val]-w_y_probs_per_v[ft_val]) #/ w_v_margin_l
+
+            # print()
+            # print("w_v_probs:", w_v_probs)
+            # print("w_y_probs_per_v:", ft_val)
+            # print(w_y_probs_per_v)
+            # print("w_y_prob_r", w_y_prob_r)
+            # print("w_v_margin_r", w_v_margin_r)
+            # print("w_y_prob_l", w_y_prob_l)
+            # print("w_v_margin_l:", w_v_margin_l)
+
+            # w_counts_r = w_y_counts_per_v[ft_val]
+            # w_total_r = np.sum(w_counts_r)
+            # w_counts_l = w_y_counts-w_counts_r
+            # w_total_l = w_n_samples-w_total_r
+
+            l_pure = np.sum(counts_l != 0) <= 1
+            r_pure = np.sum(counts_r != 0) <= 1
+
+            if(l_pure):
+                imp_l = 0.0    
             else:
+                imp_l = impurity_func(w_y_prob_l.astype(np.float32), counts_l,  pos_y_ind)
 
-                # RR = np.sum(w_y_probs_per_v[ft_val]*np.array([0.0,1.0]))
-                # LL = 1.0 - RR
-                # print("A")
-                w_v_margin_r = np.sum(w_y_probs_per_v[ft_val])
-                w_y_prob_r = w_y_probs_per_v[ft_val] / w_v_margin_r
-                w_v_margin_l = 1.0-w_v_margin_r
-                w_y_prob_l = (w_y_probs - w_y_probs_per_v[ft_val]) / w_v_margin_l                # print("B")
-                # w_y_prob_l = (w_v_probs[ft_val]-w_y_probs_per_v[ft_val]) #/ w_v_margin_l
+            if(r_pure):
+                imp_r = 0.0    
+            else:
+                imp_r = impurity_func(w_y_prob_r.astype(np.float32), counts_r, pos_y_ind)
+            imp_tot = (w_v_margin_l * imp_l) + \
+                      (w_v_margin_r * imp_r)
 
-                # print()
-                # print("w_v_probs:", w_v_probs)
-                # print("w_y_probs_per_v:", ft_val)
-                # print(w_y_probs_per_v)
-                # print("w_y_prob_r", w_y_prob_r)
-                # print("w_v_margin_r", w_v_margin_r)
-                # print("w_y_prob_l", w_y_prob_l)
-                # print("w_v_margin_l:", w_v_margin_l)
-
-                # w_counts_r = w_y_counts_per_v[ft_val]
-                # w_total_r = np.sum(w_counts_r)
-                # w_counts_l = w_y_counts-w_counts_r
-                # w_total_l = w_n_samples-w_total_r
-
-                l_pure = np.sum(counts_l != 0) <= 1
-                r_pure = np.sum(counts_r != 0) <= 1
-
-                if(l_pure):
-                    imp_l = 0.0    
-                else:
-                    imp_l = impurity_func(w_y_prob_l.astype(np.float32), counts_l,  pos_y_ind)
-
-                if(r_pure):
-                    imp_r = 0.0    
-                else:
-                    imp_r = impurity_func(w_y_prob_r.astype(np.float32), counts_r, pos_y_ind)
-                imp_tot = (w_v_margin_l * imp_l) + \
-                          (w_v_margin_r * imp_r)
-
-            # print("Z",ft_val, y_counts, counts_r)
+            # print("  ",ft_val, y_counts, counts_r)
 
             # counts_l = np.sum(y_counts_per_v[ft_val]) - 
             # total_l = np.sum(counts_r)
 
 
-            # print("Z",total_l, counts_l)
+            # print("  ",counts_l, counts_r)
 
             
             # print("Z1",ft_val)
@@ -276,13 +276,15 @@ def _fill_nominal_impurities(tree, splitter_context, split_cache, n_vals_j, k_j)
             #     nom_v_inv_maps = tree.data_stats.nom_v_inv_maps
             #     print("::", nom_v_inv_maps[k_j].get(ft_val,-1), imp_tot)
             
-            if(imp_tot < b_imp_tot):
-                b_imp_tot, b_imp_l, b_imp_r, b_ft_val = imp_tot, imp_l, imp_r, ft_val
+            # if(imp_tot < b_imp_tot):
+            #     b_imp_tot, b_imp_l, b_imp_r, b_ft_val = imp_tot, imp_l, imp_r, ft_val
         # print("ZZCB")            
-        impurities[k_j,0] = b_imp_tot
-        impurities[k_j,1] = b_imp_l
-        impurities[k_j,2] = b_imp_r
+        impurities[split_ind,0] = imp_tot
+        impurities[split_ind,1] = imp_l
+        impurities[split_ind,2] = imp_r
 
+
+    # print(ft_val, v_counts, y_counts_per_v[ft_val], impurities[split_ind,0])
     # print("ZZC")
     # split_cache.prev_best_v = split_cache.best_v
     split_cache.best_v = b_ft_val
@@ -341,9 +343,11 @@ def update_nominal_impurities(tree, splitter_context, iterative):
         new_sp_ptrs[:len_cache] = sc.nominal_split_cache_ptrs
         sc.nominal_split_cache_ptrs = new_sp_ptrs
 
-    sc.impurities = impurities = np.empty((X.shape[1],3),dtype=np.float64)
+
+    sc.impurities = impurities = np.empty((len(ds.all_nom_splits),3), dtype=np.float64)
 
     #Go through the samples in Fortran order (i.e. feature then sample)
+    split_ind = 0
     for j in prange(X.shape[1]):
         n_vals_j = n_vals[j]
         cache_ptr = sc.nominal_split_cache_ptrs[j]
@@ -456,12 +460,16 @@ def update_nominal_impurities(tree, splitter_context, iterative):
 
         ## 
 
-        # print("ZZB")
+        # print("ZZB", j, sc.node.index, impurity)
         # print(k_j, "::", v_counts, y_counts_per_v)
-        _fill_nominal_impurities(tree, sc, split_cache, n_vals_j, j)
+        nv = n_vals_j if n_vals_j > 2 else 1
+        for k in range(nv):
+            # print(k, n_vals_j)
+            _fill_nominal_impurities(tree, sc, split_cache, split_ind, k)#, j)
+            split_ind += 1
 
         # print("G")
-
+    # print("!!", split_ind, len(ds.all_nom_splits))
     sc.n_last_update = n_samples
     # print(impurities)
     # print("ZC")
@@ -515,18 +523,6 @@ TTYPE_LEAF = u1(2)
 TTYPE_DISCARD = u1(3)
 TTYPE_JOIN = u1(4)
 
-@njit(cache=True)
-def encode_split(is_cont, negated, split, val):
-    return u8((is_cont << 63) | (negated << 62) | (split << 32) | val)
-
-
-@njit(Tuple((u1,u1,i4,i4))(u8),cache=True)
-def decode_split(enc_split):
-    is_cont = enc_split >> 63
-    negated = enc_split >> 62  & u8(1)
-    split =  ((enc_split << 2) >> 34) & 0xFFFFFFFF
-    val =     enc_split               & 0xFFFFFFFF
-    return is_cont, negated, split, val
 
 @njit(cache=True)
 def extend_split_chain(c, encoded_split):
@@ -697,19 +693,21 @@ def new_node(locs, tree, sample_inds, y_counts, impurity, is_right, discard=Fals
 
 
 @njit(cache=True)
-def extract_nominal_split_info(tree, c, split, iterative=False):
+def extract_nominal_split_info(tree, c, split_ind, iterative=False):
     ds = tree.data_stats
-    bst_imps = c.impurities[split]
+    _,_,split,val = decode_split(ds.all_nom_splits[split_ind])
+    bst_imps = c.impurities[split_ind]
     imp_tot, imp_l, imp_r = bst_imps[0], bst_imps[1], bst_imps[2]
+    # print("Q", split)
     # print("\nQ", split, c.nominal_split_cache_ptrs[split])
     # print(c.split_chain)
 
     splt_c = _struct_from_pointer(NominalSplitCacheType, c.nominal_split_cache_ptrs[split])
 
-    best_v = splt_c.best_v
+    # best_v = splt_c.best_v
     # print(splt_c.y_counts_per_v)
-    # print(splt_c.best_v)
-    y_counts_r = splt_c.y_counts_per_v[splt_c.best_v]
+    # print("best_v", splt_c.best_v)
+    y_counts_r = splt_c.y_counts_per_v[val]
     y_counts_l = c.y_counts - y_counts_r
     # print("P")
     # print(tree.data_stats.n_samples,c.y_counts,y_counts_l, y_counts_r)
@@ -718,7 +716,7 @@ def extract_nominal_split_info(tree, c, split, iterative=False):
 
     # print("POOP", splt_c.best_v, splt_c.prev_best_v)
 
-    recalc_all = (splt_c.best_v != splt_c.prev_best_v)
+    
 
     # Ensure inds_l and inds_r are large enough
     prev_n_l, prev_n_r = 0,0
@@ -726,6 +724,7 @@ def extract_nominal_split_info(tree, c, split, iterative=False):
         inds_l = np.empty(n_l, dtype=np.uint32)
         inds_r = np.empty(n_r, dtype=np.uint32)
     else:
+        recalc_all = (splt_c.best_v != splt_c.prev_best_v)
         if(recalc_all):
             # print("INIT", splt_c.prev_best_v, "->", splt_c.best_v)
             splt_c.l_inds_buffer = np.empty(max(8,n_l*2),dtype=np.uint32)
@@ -762,7 +761,7 @@ def extract_nominal_split_info(tree, c, split, iterative=False):
 
     # print("BE", p_l,":", n_l,",", p_r,":", n_r, len(splt_c.l_inds_buffer), len(splt_c.r_inds_buffer))
     # print("UPDATED", splt_c.n_last_update, len(sample_inds), len(c.sample_inds))
-    # print("XXX", n_l, n_r, inds_l, inds_r)
+    
     # print(splt_c.best_v, splt_c.prev_best_v)
 
     # Append to inds_l and inds_r
@@ -771,13 +770,15 @@ def extract_nominal_split_info(tree, c, split, iterative=False):
     for ind in sample_inds:
         # print(ind)
         # print(ds.X_nom[ind, split])
-        if (ds.X_nom[ind, split]==splt_c.best_v):
+        # print("??", ind, split, ds.X_nom[ind, split], val)
+        if (ds.X_nom[ind, split]==val):
             inds_r[p_r] = ind
             p_r += 1
         else:
             inds_l[p_l] = ind
             p_l += 1
 
+    # print("XXX", n_l, n_r, inds_l, inds_r)
     # print("AF", p_l ,":", n_l, ",", p_r,":", n_r)
 
     # print(c.sample_inds)
@@ -787,14 +788,14 @@ def extract_nominal_split_info(tree, c, split, iterative=False):
     # if(p_l != n_l or p_r != n_r):
     #     raise RuntimeError("Failed to fully update counts.")
     splt_c.n_last_update = len(c.sample_inds)
-    splt_c.prev_best_v = splt_c.best_v
+    # splt_c.prev_best_v = splt_c.best_v
 
     
     
     # print("P")
     # print(inds_l, inds_r)
 
-    return (inds_l, inds_r, y_counts_l, y_counts_r, imp_tot, imp_l, imp_r), best_v
+    return (inds_l, inds_r, y_counts_l, y_counts_r, imp_tot, imp_l, imp_r)
             
 
 FITM_DIV_N_CONQ = u1(0)
@@ -809,6 +810,7 @@ def fit_tree(tree, fit_method=FITM_DIV_N_CONQ, iterative=False):
 
     # If not iterative and tree has split caches then clean them out
     params = tree.params
+    ds = tree.data_stats
 
     if(not iterative):
         clean_split_caches(tree)
@@ -829,8 +831,9 @@ def fit_tree(tree, fit_method=FITM_DIV_N_CONQ, iterative=False):
         update_nominal_impurities(tree, c, iterative)
 
         imp_decrease = c.impurity-c.impurities[:,0]
-        # print("IMP:", imp_decrease)
+        
         max_imp_decrease = np.max(imp_decrease)
+        # print("IMP:", max_imp_decrease, imp_decrease)
 
         if(max_imp_decrease <= 0.0):
             # print("BAIL", c.node.index)
@@ -838,16 +841,18 @@ def fit_tree(tree, fit_method=FITM_DIV_N_CONQ, iterative=False):
             tree.leaves.append(c.node)
             continue
 
-        best_splits, conj_slips = tree.split_chooser(params, imp_decrease, len(c.node.sample_inds))
-        # print(c.node.index, "best_splits", best_splits)
+        best_split_inds, conj_slips = tree.split_chooser(params, imp_decrease, len(c.node.sample_inds))
+        # print(c.node.index, "best_split_inds", best_split_inds)
 
         root_c = _struct_from_pointer(SplitterContextType, c.root_context_ptr)
         # print("<<", c.root_context_ptr, root_c.node.sample_inds, c.node.sample_inds)
         # print(conj_slips)
         # print("---")
-        for split, conj_slip in zip(best_splits, conj_slips):
-
-            split_info, val = extract_nominal_split_info(tree, c, split, iterative)
+        for split_ind, conj_slip in zip(best_split_inds, conj_slips):
+            # print("START")
+            _,_,split,val = decode_split(ds.all_nom_splits[split_ind])
+            # print(split,val, c.impurities[split_ind], max_imp_decrease, imp_decrease[split_ind])
+            split_info = extract_nominal_split_info(tree, c, split_ind, iterative)
 
             locs = (c, split, val, iterative, node_dict,
                     context_stack, conj_slip)
@@ -859,10 +864,12 @@ def fit_tree(tree, fit_method=FITM_DIV_N_CONQ, iterative=False):
                 split_data = divide_and_conquer(locs, tree, split_info)
             else:
                 split_data = sequential_cover(locs, tree, split_info)
+            # print("END")
             c.node.split_data.append(split_data)
             c.node.op_enum = OP_EQ
     
     assert len(tree.leaves) <= len(tree.nodes)
+    # print("RETURN")
     return 0
 
 @njit(cache=True)
@@ -1278,9 +1285,9 @@ def _opt_conjs_for_leaf(tree, _leaf):
         for i, (p_node_ind, enc_split) in enumerate(node.parents):
             is_cont, negated, split, val = decode_split(enc_split)
 
-            dec_val = nom_v_inv_maps[split].get(val,-1)
-            
-            enc_split = encode_split(is_cont, negated, split, dec_val)
+            # print(nom_v_inv_maps)
+            # dec_val = nom_v_inv_maps[split].get(val,-1)
+            # enc_split = encode_split(is_cont, negated, split, dec_val)
 
             # print("<<", node_ind, p_node_ind)
             if(p_node_ind not in par_splits):
@@ -1306,7 +1313,7 @@ def _opt_conjs_for_leaf(tree, _leaf):
     #         print(i, len(opt_conjs[i]), "*" if i ==_leaf.index else "")
 
     # The root's slot holds the full set
-    print("<<", _leaf.index, len(opt_conjs[0]))
+    # print("<<", _leaf.index, len(opt_conjs[0]))
     return opt_conjs[0]
 
 
@@ -1327,7 +1334,7 @@ def get_opt_conjs_for_label(tree, y):
     opt_conjs = List.empty_list(u8_lst_lst)
     for i, leaf in enumerate(class_leaves):
         leaf_opt_conjs = _opt_conjs_for_leaf(tree, leaf)
-        print(i, len(leaf_opt_conjs))
+        # print(i, len(leaf_opt_conjs))
         for oc in leaf_opt_conjs:
             opt_conjs.append(oc)
 
@@ -1572,7 +1579,7 @@ MIN_i4 = -2147483648
 class TreeClassifier(object):
     def __init__(self,
             preset_type='decision_tree', 
-            ifit_enabled = True,
+            ifit_enabled = False,
             # Optional userprovided function for mapping key value pairs back to their original
             #  values before they were vectorized 
             inv_mapper=None, 
@@ -1651,10 +1658,9 @@ class TreeClassifier(object):
         # self.tree = self._fit(xb, xc, y, miss_mask, ft_weights)
         # self.tree.data_stats = DataStats_ctor()
         # clear_tree_datastats(self.tree)
-        # print("A")
+        # print("reinit_tree_datastats")
         # print(X_nom,X_nom.dtype)
         reinit_tree_datastats(self.tree, X_nom, X_cont, Y)
-        # print("B")
         fit_tree(self.tree, self.fit_method_enum, False)
         # print("C")
     @property

@@ -8,8 +8,8 @@ stand = STANDClassifier(
    lam_p=25.0,
    lam_e=1.0,
    slip=.3,
-   impurity_func="foil",
-   fit_method="sequential_cover",
+   impurity_func="gini",
+   # fit_method="sequential_cover",
    split_choice="all_near_max",
    w_path_slip=True
    )
