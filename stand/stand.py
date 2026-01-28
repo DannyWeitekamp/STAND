@@ -93,6 +93,7 @@ class STANDClassifier(object):
         # print("SPLIT CHOICE:", kwargs['split_choice'])
         self.pred_kind = pred_kind
 
+
         if(fit_method == "divide_and_conquer"):
             default_preset = 'option_tree'
         else:

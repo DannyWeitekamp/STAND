@@ -1694,7 +1694,6 @@ class TreeClassifier(object):
         
     def predict(self, X_nom, X_cont, positive_class=None):
         if(self.tree is None): raise RuntimeError("TreeClassifier must be fit before predict() is called.")
-        if(positive_class is None): positive_class = self.positive_class
         if(X_nom is None): X_nom = np.empty((0,0), dtype=np.int32)
         if(X_cont is None): X_cont = np.empty((0,0), dtype=np.float32)
         X_nom = X_nom.astype(np.int32)
