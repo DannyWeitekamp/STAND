@@ -109,9 +109,9 @@ class STANDClassifier(object):
         sf = [('op_tree', tree_type), *stand_fields[1:]]
         return STANDTypeTemplate(sf)
 
-    def fit(self, X_nom, X_cont, Y, miss_mask=None, ft_weights=None):
+    def fit(self, X_nom, X_cont, Y, miss_mask=None, nom_ft_weights=None, cont_ft_weights=None):
         # with PrintElapse("fit option_tree"):
-        self.op_tree_classifier.fit(X_nom, X_cont, Y, miss_mask, ft_weights)
+        self.op_tree_classifier.fit(X_nom, X_cont, Y, miss_mask, nom_ft_weights, cont_ft_weights)
         # with PrintElapse("fit_invar_ext"):
         try:
             # print("fit_invar_ext")

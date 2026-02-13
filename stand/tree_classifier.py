@@ -176,7 +176,7 @@ def _fill_nominal_impurities(tree, splitter_context, split_cache, split_ind, ft_
     # print("MOO")
     v_counts       = split_cache.v_counts
     y_counts_per_v = split_cache.y_counts_per_v
-    w_v_probs       = split_cache.w_v_probs
+    # w_v_probs       = split_cache.w_v_probs
     w_y_probs_per_v = split_cache.w_y_probs_per_v
 
 
@@ -390,7 +390,7 @@ def update_nominal_impurities(tree, splitter_context, iterative):
         # print("A", self_node.index, "j=", j, cache_ptr)
         
         avg_par_w_y_probs_per_v = np.zeros(y_counts_per_v.shape, dtype=np.float32)
-        avg_par_w_v_probs = np.zeros(v_counts.shape, dtype=np.float32)
+        # avg_par_w_v_probs = np.zeros(v_counts.shape, dtype=np.float32)
 
         
 
@@ -417,13 +417,13 @@ def update_nominal_impurities(tree, splitter_context, iterative):
                 avg_par_w_y_probs_per_v += par_spl_c.par_w_y_probs_per_v 
                 avg_par_w_y_probs_per_v += (p_w-self_w) * par_y_probs_per_v
 
-                par_v_probs = par_spl_c.v_counts / p_len #np.sum(par_spl_c.v_counts)
-                avg_par_w_v_probs += par_spl_c.par_w_v_probs 
-                avg_par_w_v_probs += (p_w-self_w) * par_v_probs
+                # par_v_probs = par_spl_c.v_counts / p_len #np.sum(par_spl_c.v_counts)
+                # avg_par_w_v_probs += par_spl_c.par_w_v_probs 
+                # avg_par_w_v_probs += (p_w-self_w) * par_v_probs
                 # print("par", p_w, self_w, par_spl_c.v_counts)
 
             avg_par_w_y_probs_per_v /= len(sc.node.parents)
-            avg_par_w_v_probs /= len(sc.node.parents)
+            # avg_par_w_v_probs /= len(sc.node.parents)
 
             y_probs_per_v = y_counts_per_v / n_samples #np.sum(y_counts_per_v,axis=0, keepdims=True)
             v_probs = v_counts / n_samples #np.sum(v_counts)
@@ -431,7 +431,7 @@ def update_nominal_impurities(tree, splitter_context, iterative):
             # y_probs_per_v *= [[.7, ]]
 
             split_cache.w_y_probs_per_v = (avg_par_w_y_probs_per_v + self_w * y_probs_per_v).astype(np.float32)
-            split_cache.w_v_probs = (avg_par_w_v_probs + self_w * v_probs).astype(np.float32)
+            # split_cache.w_v_probs = (avg_par_w_v_probs + self_w * v_probs).astype(np.float32)
 
             # print(split_cache.w_y_probs_per_v)
             # print(y_probs_per_v)
@@ -440,7 +440,7 @@ def update_nominal_impurities(tree, splitter_context, iterative):
         else:
             
             split_cache.w_y_probs_per_v = (y_counts_per_v / n_samples).astype(np.float32)
-            split_cache.w_v_probs = (v_counts / n_samples).astype(np.float32)
+            # split_cache.w_v_probs = (v_counts / n_samples).astype(np.float32)
             # print("IS ROOT", self_w)
             # avg_par_w_v_probs = 
 
@@ -449,7 +449,7 @@ def update_nominal_impurities(tree, splitter_context, iterative):
 
         split_cache.par_w_y_probs_per_v = avg_par_w_y_probs_per_v
         # print("AAAAA", self_node.index, avg_par_w_v_probs)
-        split_cache.par_w_v_probs = avg_par_w_v_probs
+        # split_cache.par_w_v_probs = avg_par_w_v_probs
 
         # END HIERARCHICAL SHRINKAGE TWEAK 
 
@@ -840,6 +840,9 @@ def fit_tree(tree, fit_method=FITM_DIV_N_CONQ, iterative=False):
             c.node.ttype = TTYPE_LEAF
             tree.leaves.append(c.node)
             continue
+
+        if(ds.nom_ft_weights is not None):
+            imp_decrease *= ds.nom_ft_weights
 
         best_split_inds, conj_slips = tree.split_chooser(params, imp_decrease, len(c.node.sample_inds))
         # print(c.node.index, "best_split_inds", best_split_inds)
@@ -1639,7 +1642,8 @@ class TreeClassifier(object):
         return TreeTypeTemplate(tf)
 
         
-    def fit(self, X_nom, X_cont, Y, miss_mask=None, ft_weights=None):
+    def fit(self, X_nom, X_cont, Y, miss_mask=None, 
+            nom_ft_weights=None, cont_ft_weights=None):
         if(X_nom is None): X_nom = np.empty((0,0), dtype=np.int32)
         if(X_cont is None): X_cont = np.empty((0,0), dtype=np.float32)
         # if(miss_mask is None): miss_mask = np.zeros_like(xc, dtype=np.bool)
@@ -1651,6 +1655,8 @@ class TreeClassifier(object):
         X_nom = X_nom.astype(np.int32)
         X_cont = X_cont.astype(np.float32)
         Y = Y.astype(np.int32)
+        if(nom_ft_weights is not None): nom_ft_weights = nom_ft_weights.astype(np.float32)
+        if(cont_ft_weights is not None): cont_ft_weights = cont_ft_weights.astype(np.float32)
         # miss_mask = miss_mask.astype(np.bool)
         # ft_weights = ft_weights.astype(np.float64)
         # assert miss_mask.shape == xc.shape
@@ -1660,7 +1666,7 @@ class TreeClassifier(object):
         # clear_tree_datastats(self.tree)
         # print("reinit_tree_datastats")
         # print(X_nom,X_nom.dtype)
-        reinit_tree_datastats(self.tree, X_nom, X_cont, Y)
+        reinit_tree_datastats(self.tree, X_nom, X_cont, Y, nom_ft_weights, cont_ft_weights)
         fit_tree(self.tree, self.fit_method_enum, False)
         # print("C")
     @property

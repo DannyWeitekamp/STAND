@@ -44,13 +44,13 @@ nominal_split_cache_fields = [
 
     # The weighted y_count contributions of the parents
     ('par_w_y_probs_per_v', f4[:,:]),
-    # The weighted total contributions of the parents for each value
-    ('par_w_v_probs', f4[:]),
+    # # The weighted total contributions of the parents for each value
+    # ('par_w_v_probs', f4[:]),
 
     # The total weighted y_count contributions
     ('w_y_probs_per_v', f4[:,:]),
     # The weighted total contributions of the parents for each value
-    ('w_v_probs', f4[:]),
+    # ('w_v_probs', f4[:]),
     # How much the true counts in this split context count toward the total
     # ('self_w', f4),
 

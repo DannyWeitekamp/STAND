@@ -165,3 +165,13 @@ print(dt.__str__(leaf_inds=True, node_inds=True))
 print(easy_print(dt.__str__(leaf_inds=True, node_inds=True)))
 opt_conjs = dt.get_opt_conjs_for_label(1)
 print(opt_conjs_str(dt.tree, opt_conjs))
+
+#              1,  2,  3,  4,  5,  6,  7
+nom_weights = [1., 1., 5., 2., 1., 1., 1.]
+stand.fit(X,None,y,nom_ft_weights=np.array(nom_weights))
+
+print("------  STAND WEIGHTED  -------")
+print(stand.__str__(leaf_inds=True, node_inds=True))
+print(easy_print(stand.__str__(leaf_inds=True, node_inds=True)))
+opt_conjs = stand.get_opt_conjs_for_label(1)
+print(easy_print_opts(opt_conjs_str(stand.op_tree, opt_conjs)))

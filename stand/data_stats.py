@@ -37,6 +37,9 @@ data_stats_fields = [
     #  if necessary
     ('Y', i4[::1]),
 
+    ('nom_ft_weights', optional(f4[::1])),
+    ('cont_ft_weights', optional(f4[::1])),
+
     # When ifit_enabled keep around buffers to avoid excessive copying
     ('X_nom_buffer', i4[:,::1]),
     ('X_cont_buffer', f4[:,::1]),
@@ -252,7 +255,8 @@ def _assign_buffers(ds):
 
 
 @njit(cache=True)
-def reinit_datastats(ds, X_nom, X_cont, Y):
+def reinit_datastats(ds, X_nom, X_cont, Y, 
+        nom_ft_weights=None, cont_ft_weights=None):
     ''' Initialize the data stats for a fit()  '''
 
     # print(X_nom, X_cont, Y)
@@ -274,6 +278,15 @@ def reinit_datastats(ds, X_nom, X_cont, Y):
     else:
         ds.Y = np.empty(Y.shape,dtype=np.int32)
         ds.y_counts = np.zeros(0,dtype=np.uint32)
+
+    ds.nom_ft_weights = nom_ft_weights
+    ds.cont_ft_weights = cont_ft_weights
+
+    if(nom_ft_weights is not None):
+        assert(len(nom_ft_weights) == X_nom.shape[1])
+
+    if(cont_ft_weights is not None):
+        assert(len(cont_ft_weights) == X_cont.shape[1])
 
     for i in range(len(X_nom)):
         _insert_w_ds_maps(i, ds, X_nom[i], Y[i])

@@ -304,8 +304,9 @@ def Tree_ctor(tree_type, split_chooser_addr, pred_chooser_addr,
     
     
 @njit(cache=True)
-def reinit_tree_datastats(tree, X_nom, X_cont, Y):
+def reinit_tree_datastats(tree, X_nom, X_cont, Y, 
+                          nom_ft_weights=None, cont_ft_weights=None):
     ds = tree.data_stats = DataStats_ctor(tree.pos_y)
-    reinit_datastats(ds, X_nom, X_cont, Y)
+    reinit_datastats(ds, X_nom, X_cont, Y, nom_ft_weights, cont_ft_weights)
 
 
