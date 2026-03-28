@@ -1777,6 +1777,13 @@ class TreeClassifier(object):
             print(e)
             pass
 
+    # NOTE: Stub Functions for Skelearn (should actually implement)
+    def get_params(self, deep=True):
+        return {}
+
+    def set_params(self, **params):
+        pass
+
 
 
 class SeqCovClassifier(TreeClassifier):
