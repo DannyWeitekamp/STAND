@@ -103,17 +103,29 @@ def expand_nominal_split_cache(st, n_vals,n_classes):
 
 
 
-#### ContinousSplitCache ####
+#### ContinuousSplitCache ####
 
-continous_split_cache_field = [
-    ('is_const', u1),
-    ('threshold', f8),
-    ('op', i4),
-    ('left_counts', i4[:]),
-    ('right_counts', i4[:]),
-    ('nan_counts', i4[:]),
+continuous_split_cache_fields = [
+    # The best threshold found (split point: left < best_thresh, right >= best_thresh)
+    ('best_thresh', f4),
+    # Label counts for samples going left (X_cont[i,j] < best_thresh)
+    ('y_counts_l', u4[:]),
+    # Label counts for samples going right (X_cont[i,j] >= best_thresh)
+    ('y_counts_r', u4[:]),
 ]
 
-ContinousSplitCache, ContinousSplitCacheType = \
-    define_structref("ContinousSplitCache", continous_split_cache_field,
-        define_constructor=False) 
+ContinuousSplitCache, ContinuousSplitCacheType = \
+    define_structref("ContinuousSplitCache", continuous_split_cache_fields,
+        define_constructor=False)
+
+@njit(cache=True)
+def ContinuousSplitCache_ctor(n_classes):
+    st = new(ContinuousSplitCacheType)
+    st.best_thresh = f4(0.0)
+    st.y_counts_l = np.zeros(n_classes, dtype=np.uint32)
+    st.y_counts_r = np.zeros(n_classes, dtype=np.uint32)
+    return st
+
+# Keep old name as alias for backward compatibility
+ContinousSplitCache = ContinuousSplitCache
+ContinousSplitCacheType = ContinuousSplitCacheType

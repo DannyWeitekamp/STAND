@@ -22,13 +22,13 @@ Y_unorder_contig = np.array([3,3,0,1,2,0,1,2], dtype=np.int32)
 
 @njit(cache=False)
 def do_init(X_nom, X_cont, Y, v_contig, y_contig):
-    ds = DataStats_ctor(nom_v_contiguous=v_contig, y_contiguous=y_contig)
+    ds = DataStats_ctor(1, nom_v_contiguous=v_contig, y_contiguous=y_contig)
     err = reinit_datastats(ds, X_nom, X_cont, Y)
     return err, ds
 
 @njit(cache=False)
 def do_update(X_nom, X_cont, Y, v_contig, y_contig):
-    ds = DataStats_ctor(nom_v_contiguous=v_contig, y_contiguous=y_contig, ifit_enabled=True)
+    ds = DataStats_ctor(1, nom_v_contiguous=v_contig, y_contiguous=y_contig, ifit_enabled=True)
     for i in range(len(Y)): 
         # print(i,X_nom[i],X_cont[i],Y[i])
         update_data_stats(ds, X_nom[i], X_cont[i], Y[i])

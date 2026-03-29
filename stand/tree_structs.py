@@ -19,7 +19,7 @@ split_data_fields = [
     ('val', i4),
     ('left', i4),
     ('right', i4),
-    ('is_continous', u1),
+    ('is_continuous', u1),
 ]
 SplitData, SplitDataType = define_structref("SplitData", split_data_fields)
 SplitDataType.__str__ = lambda self: "SplitDataType"
@@ -119,7 +119,7 @@ splitter_context_fields = [
     # The impurity of the node after the best split
     ('best_split_impurity', f8),
     # Whether the best split is nominal 0 or continuous 1
-    ('best_is_continous', u1),
+    ('best_is_continuous', u1),
     # The index of the best split 
     ('best_split', i4),
     # In the nominal case the value of the best literal
@@ -134,7 +134,7 @@ splitter_context_fields = [
     # Whether or not the y_counts associated with selecting on each nominal
     #  value are cached
     ('nominal_split_cache_ptrs', i8[:]),
-    ('continous_split_cache_ptrs', i8[:]),
+    ('cont_split_cache_ptrs', i8[:]),
 
     # ('val_y_counts_cached', u1),
     # # Whether or not the left and right y_counts are cached 
@@ -159,9 +159,9 @@ SplitterContext.__str__ = lambda self: f"<SplitterContext at {hex(id(self))}>"
 @njit(cache=True)
 def SplitterContext_ctor(split_chain):
     st = new(SplitterContextType)
-    st.n_last_update = 0 
+    st.n_last_update = 0
     st.nominal_split_cache_ptrs = np.zeros((32,),dtype=np.int64)
-    st.continous_split_cache_ptrs = np.zeros((32,),dtype=np.int64)
+    st.cont_split_cache_ptrs = np.zeros((32,),dtype=np.int64)
     return st
 
 @njit(cache=True)
@@ -181,6 +181,9 @@ def reinit_splittercontext(c, node, root_c, sample_inds, y_counts, impurity):
 @njit(cache=True)
 def SplitterContext_dtor(sc):
     for ptr in sc.nominal_split_cache_ptrs:
+        if(ptr != 0):
+            _decref_pointer(ptr)
+    for ptr in sc.cont_split_cache_ptrs:
         if(ptr != 0):
             _decref_pointer(ptr)
 

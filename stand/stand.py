@@ -457,7 +457,7 @@ def stand_filter_example(tree, x_nom, x_cont):
                 for sd in node.split_data:
                     # Determine if this sample should feed right, left, or nan (if ternary)
                     split_satisfied = False
-                    if(not sd.is_continous):
+                    if(not sd.is_continuous):
                         # Nominal case
                         mapped_val = nom_v_maps[sd.split_ind].get(x_nom[sd.split_ind],-1)
                         split_satisfied = mapped_val==sd.val

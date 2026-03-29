@@ -149,8 +149,22 @@ def DataStats_ctor(pos_y, nom_v_contiguous=False, y_contiguous=False, ifit_enabl
     return st
 
 @njit(cache=True)
-def _insert_w_ds_maps(i, ds, x_nom, y):
-    ''' Insert a sample into the nominal value and y label mapping dictionaries'''
+def _insert_nom_map(i, ds, x_nom):
+    ''' Insert a sample into the nominal value mapping dictionaries'''
+    if(not ds.nom_v_contiguous and len(x_nom) > 0):
+        for j, x_n in enumerate(x_nom):
+            # print(i,j,len(ds.nom_v_maps))
+            mp, inv_mp = ds.nom_v_maps[j], ds.nom_v_inv_maps[j]
+            if(x_n not in mp):
+                l = len(mp)
+                inv_mp[l] = x_n
+                mp[x_n] = l
+
+            ds.X_nom[i,j] = mp[x_n]
+
+@njit(cache=True)
+def _insert_y_map(i, ds, y):
+    ''' Insert a sample into the y label mapping dictionaries'''
     # print(ds.y_counts, y, ds.y_contiguous)
     if(ds.y_contiguous):
         ds.y_counts[y] += 1
@@ -172,16 +186,7 @@ def _insert_w_ds_maps(i, ds, x_nom, y):
         ds.Y[i] = y_mapped
         # print('p', len(ds.Y), i)
 
-    if(not ds.nom_v_contiguous):
-        for j, x_n in enumerate(x_nom):
-            # print(i,j,len(ds.nom_v_maps))
-            mp, inv_mp = ds.nom_v_maps[j], ds.nom_v_inv_maps[j]
-            if(x_n not in mp):
-                l = len(mp)
-                inv_mp[l] = x_n
-                mp[x_n] = l
-
-            ds.X_nom[i,j] = mp[x_n]
+    
 
     # print("DONE")
 
@@ -288,10 +293,13 @@ def reinit_datastats(ds, X_nom, X_cont, Y,
     if(cont_ft_weights is not None):
         assert(len(cont_ft_weights) == X_cont.shape[1])
 
-    for i in range(len(X_nom)):
-        _insert_w_ds_maps(i, ds, X_nom[i], Y[i])
+    for i in range(len(Y)):
+        _insert_y_map(i, ds, Y[i])
+        if(X_nom.shape[0] > 0):
+            _insert_nom_map(i, ds, X_nom[i])
 
     _update_summary_stats(ds, False)
+
     if(ds.ifit_enabled): _assign_buffers(ds)
     ds.is_initialized = True
     return 0
@@ -369,7 +377,10 @@ def update_data_stats(ds, x_nom, x_cont, y):
     # print("B")
 
     _expand_buffers(ds, x_nom, x_cont, y)
-    _insert_w_ds_maps(n_samples, ds, x_nom, y)
+
+    _insert_y_map(n_samples, ds, y)
+    if(len(x_nom) > 0):
+        _insert_nom_map(n_samples, ds, x_nom)
     # print("C")
     if(ds.nom_v_contiguous):
         ds.X_nom[n_samples] = x_nom
