@@ -67,6 +67,7 @@ class PrintElapse():
 
 # spec_ext_data_t = Tuple((u8[::1],f4[::1], u4, f4))
 invar_ext_t = Tuple((u8[::1],f4[::1], b1[::1]))
+bounds_ext_t = Tuple((u8[::1],f4[::1], f4[:, ::1]))
 
 stand_fields = [
     # The option tree that characterizes the general set G
@@ -80,7 +81,11 @@ stand_fields = [
     #  These conditions are encoded as 64 unisigned ints using encode_split().
     #  "ext_size" is the how many of the conditions in the specific extension,
     #  are not also in the parents branches of the positive leaf. 
-    ('invar_exts', DictType(i4, invar_ext_t)),
+    ('nom_spec_exts', DictType(i4, invar_ext_t)),
+
+
+    # Specific extensions for continuous features, holds the bounds of features values
+    ('cont_spec_exts', DictType(i4, bounds_ext_t))
 
 ]
 
@@ -112,10 +117,10 @@ class STANDClassifier(object):
     def fit(self, X_nom, X_cont, Y, miss_mask=None, nom_ft_weights=None, cont_ft_weights=None):
         # with PrintElapse("fit option_tree"):
         self.op_tree_classifier.fit(X_nom, X_cont, Y, miss_mask, nom_ft_weights, cont_ft_weights)
-        # with PrintElapse("fit_invar_ext"):
+        # with PrintElapse("fit_specific_ext"):
         try:
-            # print("fit_invar_ext")
-            fit_invar_ext(self.stand)
+            # print("fit_specific_ext")
+            fit_specific_ext(self.stand)
         except Exception as e:
             print(self)
             raise e
@@ -186,7 +191,7 @@ class STANDClassifier(object):
         if(x_cont is None): x_cont = np.empty((0,), dtype=np.float32)
         self.op_tree_classifier.fit(x_nom, x_cont, y, miss_mask, ft_weights)
         
-        fit_invar_ext(self.stand)
+        fit_specific_ext(self.stand)
 
     def instance_ambiguity(self, x_nom=None, x_cont=None):
         if(x_nom is None): x_nom = np.empty((0,), dtype=np.int32)
@@ -222,7 +227,8 @@ u8_arr = u8[::1]
 def STAND_ctor(stand_type, op_tree):
     st = new(stand_type)
     st.op_tree = op_tree
-    st.invar_exts = Dict.empty(i4, invar_ext_t)
+    st.nom_spec_exts = Dict.empty(i4, invar_ext_t)
+    st.cont_spec_exts = Dict.empty(i4, bounds_ext_t)
     return st
 
 @njit(cache=True)
@@ -307,14 +313,16 @@ def calc_invar_weight(tree, leaf, enc_split):
 
 
 
+
+
+
 @njit(cache=True)
-def fit_invar_ext(stand):
+def fit_nom_specific_ext(stand):
     ''' 
-    Builds specific extension for each positive leaf of the fitted option tree. 
-    A positive leaf is a leaf that contains some positive instances.
+    Builds specific extension each leaf in the tree. 
     '''
     tree = stand.op_tree
-    stand.invar_exts = Dict.empty(i4, invar_ext_t)
+    stand.nom_spec_exts = Dict.empty(i4, invar_ext_t)
 
     # TODO: Check edge case when the training set doesn't contain the positive class
     # pc = tree.data_stats.y_map[stand.positive_class]
@@ -327,10 +335,10 @@ def fit_invar_ext(stand):
 
         nom_invt_mask = calc_invariant_nom_mask(trm_ss_nom)
 
-        L = np.sum(nom_invt_mask, dtype=np.int64)
-        invar_splits = np.empty(L, dtype=np.uint64)
-        weights = np.empty(L, dtype=np.float32)
-        is_spec = np.empty(L, dtype=np.bool_)
+        nom_L = np.sum(nom_invt_mask, dtype=np.int64)
+        invar_splits = np.empty(nom_L, dtype=np.uint64)
+        weights = np.empty(nom_L, dtype=np.float32)
+        is_spec = np.empty(nom_L, dtype=np.bool_)
 
         branch_splits = get_branch_splits(tree, leaf)
         # Build "spec_ext" the conditions for the specific extention of "leaf". 
@@ -366,18 +374,55 @@ def fit_invar_ext(stand):
         #     if(nom_invt_mask[split] and negated ^ (x_nom_0[split]==val)):
         #         ext_size -= 1
 
-        # Insert extension and size into "invar_exts" dict of the STAND structref
+        # Insert extension and size into "nom_spec_exts" dict of the STAND structref
         # assert ext_size >= 0 and ext_size <= L
-        stand.invar_exts[leaf.index] = (invar_splits, weights, is_spec)
+        stand.nom_spec_exts[leaf.index] = (invar_splits, weights, is_spec)
+
 
 @njit(cache=True)
-def eval_invar_exts(stand, leaf, x_nom, x_cont):
+def calc_cont_feature_bounds(X_cont):
+    n_cont = X_cont.shape[1]
+    bounds = np.empty((n_cont, 2), dtype=np.float32)
+    for j in range(n_cont):
+        col = X_cont[:, j]
+        bounds[j, 0] = np.min(col)
+        bounds[j, 1] = np.max(col)
+    return bounds
+
+@njit(cache=True)
+def fit_cont_specific_ext(stand):
+    stand.cont_spec_exts = Dict.empty(i4, bounds_ext_t)
+    tree = stand.op_tree
+    X_cont = tree.data_stats.X_cont
+    n_cont = X_cont.shape[1]
+
+    for leaf in tree.leaves:
+        trm_ss_cont = X_cont[leaf.sample_inds]
+        bounds = calc_cont_feature_bounds(trm_ss_cont)
+
+        enc_splits = np.empty(n_cont, dtype=np.uint64)
+        weights = np.ones(n_cont, dtype=np.float32)
+        for j in range(n_cont):
+            enc_splits[j] = encode_split(u1(1), u1(0), i4(j), i4(0))
+
+        stand.cont_spec_exts[leaf.index] = (enc_splits, weights, bounds)
+
+
+
+
+
+@njit(cache=True)
+def fit_specific_ext(stand):
+    fit_nom_specific_ext(stand)
+    fit_cont_specific_ext(stand)
+
+@njit(cache=True)
+def eval_spec_exts(stand, leaf, x_nom, x_cont):
     nom_v_maps = stand.op_tree.data_stats.nom_v_maps
     
-    if(leaf.index not in stand.invar_exts):
+    if(leaf.index not in stand.nom_spec_exts):
         return 0, 0, 0.0, 0.0, 0, 0, 0.0, 0.0
 
-    invar_exts, weights, is_specs = stand.invar_exts[leaf.index]
     n_spec_matches = 0
     n_spec_fails = 0
     w_spec_matches = 0.0
@@ -387,32 +432,46 @@ def eval_invar_exts(stand, leaf, x_nom, x_cont):
     n_gen_fails = 0
     w_gen_matches = 0.0
     w_gen_fails = 0.0
-    for enc_split, weight, is_spec in zip(invar_exts, weights, is_specs):
-        is_cont, negated, split, val = decode_split(enc_split)
-        if(is_cont):
-            # Not implemented
-            pass
-        else:
-            mapped_val = nom_v_maps[split].get(x_nom[split],-1)
 
-            if(not is_spec):
-                if(mapped_val == val):
-                    n_gen_matches += 1
-                    w_gen_matches += weight
-                    w_gen_fails += 1.0-weight
-                else:
-                    n_gen_fails += 1
-                    w_gen_matches += 1.0-weight
-                    w_gen_fails += weight
-            else:            
-                if(mapped_val == val):
-                    n_spec_matches += 1
-                    w_spec_matches += weight
-                    w_spec_fails += 1.0-weight
-                else:
-                    n_spec_fails += 1
-                    w_spec_matches += 1.0-weight
-                    w_spec_fails += weight
+    (nom_spec_exts, weights, is_specs) = stand.nom_spec_exts[leaf.index]
+    
+    for enc_split, weight, is_spec in zip(nom_spec_exts, weights, is_specs):
+        _, negated, split, val = decode_split(enc_split)
+        
+        mapped_val = nom_v_maps[split].get(x_nom[split],-1)
+
+        if(not is_spec):
+            if(mapped_val == val):
+                n_gen_matches += 1
+                w_gen_matches += weight
+                w_gen_fails += 1.0-weight
+            else:
+                n_gen_fails += 1
+                w_gen_matches += 1.0-weight
+                w_gen_fails += weight
+        else:            
+            if(mapped_val == val):
+                n_spec_matches += 1
+                w_spec_matches += weight
+                w_spec_fails += 1.0-weight
+            else:
+                n_spec_fails += 1
+                w_spec_matches += 1.0-weight
+                w_spec_fails += weight
+
+    if leaf.index in stand.cont_spec_exts:
+        (cont_spec_exts, cont_weights, bounds) = stand.cont_spec_exts[leaf.index]
+        for j in range(len(cont_spec_exts)):
+            weight = cont_weights[j]
+            in_bounds = bounds[j, 0] <= x_cont[j] <= bounds[j, 1]
+            if in_bounds:
+                n_spec_matches += 1
+                w_spec_matches += weight
+                w_spec_fails += 1.0 - weight
+            else:
+                n_spec_fails += 1
+                w_spec_matches += 1.0 - weight
+                w_spec_fails += weight
 
     return (n_gen_matches, n_gen_fails, w_gen_matches, w_gen_fails,
             n_spec_matches, n_spec_fails, w_spec_matches, w_spec_fails)
@@ -464,18 +523,12 @@ def stand_filter_example(tree, x_nom, x_cont):
 
                         
                     else:
-                        # Continous case : Need to reimplement
-                        pass
+                        # Continuous case
+                        # TODO: is there a better way to do a bitcast?
+                        thresh_arr = np.array([sd.val], dtype=np.int32)
+                        thresh = thresh_arr.view(np.float32)[0]
+                        split_satisfied = x_cont[sd.split_ind] >= thresh
 
-                    # else:
-                    #     # Continous case
-                    #     thresh = np.int32(ithresh).view(np.float32)
-                    #     j = split_on-xb.shape[1] 
-
-                    #     if(exec_op(op,x_cont[i,j],thresh)):
-                    #         _n = right
-                    #     else:
-                    #         _n = left
                     if(split_satisfied):
                         dest_weights[sd.left, 0] += node_weight
                         dest_weights[sd.right, 1] += node_weight
@@ -587,7 +640,7 @@ def stand_predict_y_density(stand, X_nom, X_cont, print_n_leaves=False):
             # ext_size, n_ext_matches, n_ext_fails, w_ext_matches, w_ext_fails = (
             (n_gen_matches,  n_gen_fails,  w_gen_matches,  w_gen_fails,
              n_spec_matches, n_spec_fails, w_spec_matches, w_spec_fails) = \
-                eval_invar_exts(stand, leaf, x_nom, x_cont)
+                eval_spec_exts(stand, leaf, x_nom, x_cont)
 
             # gen_prob = w_gen_matches / (w_gen_matches+w_gen_fails) if (w_gen_matches+w_gen_fails) > 0.0 else 1.0
             spec_prob = w_spec_matches / (w_spec_matches+w_spec_fails) if (w_spec_matches+w_spec_fails) > 0.0 else 1.0
@@ -780,7 +833,7 @@ def instance_certainty(stand, X_nom, X_cont):
 
             (n_gen_matches,  n_gen_fails,  w_gen_matches,  w_gen_fails,
              n_spec_matches, n_spec_fails, w_spec_matches, w_spec_fails) = \
-                eval_invar_exts(stand, leaf, x_nom, x_cont)
+                eval_spec_exts(stand, leaf, x_nom, x_cont)
 
             gen_prob = w_gen_matches / (w_gen_matches+w_gen_fails) if (w_gen_matches+w_gen_fails) > 0.0 else 1.0
             spec_prob = w_spec_matches / (w_spec_matches+w_spec_fails) if (w_spec_matches+w_spec_fails) > 0.0 else 1.0
@@ -839,7 +892,7 @@ def instance_ambiguity(stand, x_nom, x_cont):
         # Find the number of conditions failed in the specific extension 
         (n_gen_matches,  n_gen_fails,  w_gen_matches,  w_gen_fails,
          n_spec_matches, n_spec_fails, w_spec_matches, w_spec_fails) = \
-            eval_invar_exts(stand, leaf, x_nom, x_cont)
+            eval_spec_exts(stand, leaf, x_nom, x_cont)
 
         ext_size = n_spec_matches + n_spec_fails
 

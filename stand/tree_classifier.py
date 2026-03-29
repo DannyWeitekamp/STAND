@@ -1623,7 +1623,7 @@ def str_tree(tree, inv_mapper=None, leaf_inds=False, node_inds=False):
                     # print("THIS", op, np.int32(sd.val).view(np.float32))
 
                     # instr = str_op(False, op)+str(thresh) if op != OP_ISNAN else str_op(op)
-                    instr = ">" + str(thresh)
+                    instr = ">=" + str(thresh)
                     s += f"([{sd.split_ind}]{instr})[{FR}"
                     # s += "(%s,%s)[L:%s R:%s" % (sd.split_ind,instr,sd.left,sd.right)
                 s += "] "# if(split[4] == -1) else ("NaN:" + str(split[4]) + "] ")
