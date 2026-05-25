@@ -282,6 +282,7 @@ if __name__ == "__main__":
     # test_memleaks()
     # test_decision_tree()
     # test_option_tree()
+    # test_cont_equiv_nom_option_tree()
     if(False):
         v = 0
         for i in range(10):

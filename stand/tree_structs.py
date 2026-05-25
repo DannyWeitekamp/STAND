@@ -279,6 +279,7 @@ def Tree_ctor(tree_type, split_chooser_addr, pred_chooser_addr,
     # st.u_ys = np.zeros(0,dtype=np.int32)
     st.context_cache = new_akd(u8_arr,SplitterContextType)#Dict.empty(i8_arr, SplitterContextType)
     st.pos_y = pos_y
+    print("pos_y", pos_y)
     ds = st.data_stats = DataStats_ctor(pos_y)
 
 

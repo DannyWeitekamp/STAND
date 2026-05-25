@@ -1456,9 +1456,10 @@ def str_tree(tree, inv_mapper=None, leaf_inds=False, node_inds=False):
                     eq_neq = "!=" if negated else "=="
                     s += f"([{inp_key}]{eq_neq}{inp_val!r})[{FR}"
                 else:
-                    thresh = np.int32(sd.val).view(np.float32) if op != OP_EQ else np.int32(sd.val)
+                    thresh = np.int32(sd.val).view(np.float32)# if op != OP_EQ else np.int32(sd.val)
 
-                    instr = str_op(False, op)+str(thresh) if op != OP_ISNAN else str_op(op)
+                    # instr = str_op(False, op)+str(thresh) if op != OP_ISNAN else str_op(op)
+                    instr = "<="
                     s += f"([{sd.split_ind}]{instr})[{FR}"
                     # s += "(%s,%s)[L:%s R:%s" % (sd.split_ind,instr,sd.left,sd.right)
                 s += "] "# if(split[4] == -1) else ("NaN:" + str(split[4]) + "] ")
@@ -1615,7 +1616,7 @@ class TreeClassifier(object):
             itemgetter('fit_method', 'impurity_func', 'split_choice', 'pred_choice',
                 'sep_nan', 'cache_nodes', 'pos_y')(kwargs)
 
-        print("pos_y", pos_y)
+        # print("pos_y", pos_y)
 
         self.pos_y = pos_y
         self.tree_type = self.gen_tree_type(ifit_enabled)
